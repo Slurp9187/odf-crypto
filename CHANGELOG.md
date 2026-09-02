@@ -1,0 +1,132 @@
+Status: Living — dated entries, newest first
+
+# Changelog
+
+Keyed by **date, not release**. Nothing is published, the version has stayed `0.1.0`
+throughout, and the work is organized by arc — a release-style changelog would have one
+heading and tell you nothing. When the crate is first published this file gains version
+headings above the dates; the dates stay.
+
+Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
+[the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
+LibreOffice citation and a reproduction for each.
+
+## 2026-09-02
+
+Documentation only — no code changed, and the suite stayed at 66 passing.
+
+**All four plan open questions are now closed, and with them arc
+[#1](https://github.com/Slurp9187/odf-crypto/issues/1).** The last two were settled from
+the LibreOffice source at the pin rather than from a corpus, because the corpus that
+gated them does not exist and was not coming:
+
+- **The nested `content.xml` latch stays keyed on the short name** ([#8](https://github.com/Slurp9187/odf-crypto/issues/8)).
+  No LibreOffice or Apache OpenOffice save path emits a package whose *only* complete
+  latch row is a nested `content.xml` — a per-entry save always writes and encrypts a
+  root one, and in a wholesome package the nested copy is sealed inside the
+  `encrypted-package` blob where `classify` never sees it. More decisively, no corpus
+  evidence *could* change the implementation: a third-party file shaped that way would
+  still be latched by LibreOffice, so matching it stays correct.
+- **SHA512-1K cannot reach a written manifest** ([#9](https://github.com/Slurp9187/odf-crypto/issues/9)).
+  The GPG path does briefly default the checksum to SHA512-1K, but `ManifestExport`
+  throws on any digest id other than SHA1-1K and SHA256-1K, unconditionally — so the
+  default is unreachable whether or not the save path overrides it first. `Checksum`
+  gains no variant and the URI table is complete.
+
+Three things were also moved from "undecided" to decided, which matters mostly to
+whoever builds the decrypt arc on top of this:
+
+- **`classify` is normal-load-only.** LibreOffice suppresses about a dozen of the
+  refusals below under Repair; reproducing that is out of scope. Every refusal this
+  crate makes assumes a normal load.
+- **`Classification` will not grow LibreOffice's internal storage flags** — with one
+  named limitation: `media_type` carries no provenance, so a consumer cannot tell a
+  manifest-declared type from one sniffed off the `mimetype` stream.
+- **The unaudited remainder of LibreOffice's zip structural checks** (overlapping
+  entries, STORED size mismatch, data-descriptor holes, `Count != Total`, name length)
+  is recorded as *unquantified* risk rather than low risk. Two members of that family
+  turned out to be major bugs; the rest simply were not looked at.
+
+## 2026-09-01
+
+The crate was written, adversarially audited against LibreOffice `package/` at
+`07047a02f94d`, and repaired — all on the same day. If you are picking this up cold,
+this is the entry that matters.
+
+### What it does
+
+`classify(&[u8]) -> Result<Classification, DetectError>` is the only entry point. It
+answers whether a file is an ODF package, whether it is encrypted, in which zip shape
+(`Plain` / `PerEntry` / `Wholesome`), and with which algorithm tuple. **It does not
+derive keys and does not decrypt** — there is no crypto dependency in `Cargo.toml`, so
+that is structurally guaranteed rather than merely intended.
+
+It is not a port. It re-derives LibreOffice's accept predicates by running the same two
+machines — `ManifestImport`, then `ZipPackage::parseManifest` — because LibreOffice's
+answer is not a pure function of independent manifest rows. State leaks across rows in
+ways a tidy per-row implementation gets wrong on constructible input: a sticky
+`key_info` pointer, an order-dependent derived key size, a lookup cache that can resolve
+a row onto a stream its path does not name.
+
+`classify` also **refuses archives LibreOffice refuses to open** — invalid entry names,
+duplicate names, stream/folder collisions, STORED-with-data-descriptor entries the
+manifest never accepted as encrypted. Before that, it answered confidently for files
+LibreOffice will not open at all, which let a crafted archive pick its own verdict.
+
+Four real LibreOffice files back this up in `tests/goldens/` — wholesome GCM+Argon2id,
+per-entry AES-CBC, Blowfish+PBKDF2, and an unencrypted document — with every URI they
+contain recorded in `URIS.md`. All of them match the plan's predictions, which is the
+strongest evidence the URI tables have.
+
+### If you used an earlier build
+
+- The crate was **renamed from `odf-decrypt` to `odf-crypto`**; the lib target is now
+  `odf_crypto`.
+- **`derived_key_len` is `i32`, not `u8`.** LibreOffice keeps `manifest:key-size` as a
+  `sal_Int32` with no floor or ceiling; the old type silently clamped `key-size="256"`
+  to 255 and `"-8"` to 0 (`C2`).
+- **`EntryEncryption::path` is the resolved tree path**, not the manifest's `full-path`.
+  These differ only when LibreOffice's own lookup lands a row on a different stream than
+  its path names (`A10`).
+- **A malformed `manifest.xml` now yields `Plain` with zero rows** instead of an error —
+  or, worse than an error, a package reported as encrypted from half-parsed rows.
+  LibreOffice swallows the parse failure and opens the file (`A3`).
+- **The `base64` dependency is gone.** Its strict decoder rejected input LibreOffice
+  accepts, silently handing back an empty salt or IV on a row still reported as
+  encrypted (`C1`).
+
+### Corrected behaviour
+
+Ten divergences changed the answer `classify` gives. The ones most likely to bite a real
+file:
+
+- Integer parsing did not match `OUString::toInt`: a leading `+` read as 0, flipping an
+  Argon2-encrypted file to `Plain` (`A1`).
+- A mistyped root element dropped every `file-entry`, because level-2 elements were
+  gated on the root's validity where LibreOffice has no such check (`A2`).
+- `Mode::Wholesome` keyed on any row whose short name matched, so a nested
+  `Object 1/encrypted-package` could force it (`A4`).
+- Root-membership lookups consulted the flat zip namelist instead of the folder tree —
+  the one anti-pattern the plan names outright (`A6`, `A7`).
+- Folder rows could not clear a media-type or version that an earlier row had set (`A5`).
+- Leading-slash and doubled-slash paths resolved differently than
+  `hasByHierarchicalName` (`A8`, `A9`, `A10`).
+- Manifest parsing was quadratic in nesting depth: an 854-byte zip occupied `classify`
+  for 12–25 seconds. It now takes 23 ms (`B7`).
+- Entity references in element text were silently deleted, attribute values were not
+  whitespace-normalized, and a second `encryption-data` element read its checksum from
+  the wrong place (`C3`, `C4`, `C5`).
+
+Seven behaviours were already correct but had no test holding them there — each survived
+being deliberately broken with the suite still green, including the one the plan calls
+its marquee quirk. They have fixtures now (`D1`–`D7`).
+
+### Where the reasoning lives
+
+- [The plan](docs/plans/odf-encryption-detection-2026-09-01.md) is the design record:
+  predicates, URI tables, the two-stage machine, and the LibreOffice quirks that make a
+  row-independent implementation wrong. Stamped `Shipped (2026-09-01)`.
+- [The audit](docs/audits/classify-lo-fidelity-2026-09-01.md) records all 54 findings —
+  including the 2 that were refuted and the 13 narrowed under challenge — and, at the
+  end, what was deliberately left uncovered.
+- [The plan/slice workflow](docs/plan-workflow.md) is how arcs get filed and closed here.
