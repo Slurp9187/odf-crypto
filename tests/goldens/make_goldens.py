@@ -5,8 +5,9 @@ Produces:
   lo-wholesome-gcm-argon2.odt  — default / ODF latest extended
   lo-legacy-aes-cbc.odt        — ODF 1.2 per-entry AES-CBC
   aoo-blowfish-pbkdf2.odt      — ODF 1.1 Blowfish + PBKDF2 (classic path)
+  lo-odf11-nonascii-password.odt — ODF 1.1, non-ASCII password (decrypt OQ1)
 
-Password for every encrypted file: password
+Password: `password`, except lo-odf11-nonascii-password.odt (see NONASCII_PASSWORD).
 
 Run with LibreOffice's bundled Python (the system one has no `uno`):
 
@@ -35,6 +36,16 @@ from com.sun.star.connection import NoConnectException
 
 SOFFICE = Path(r"C:\Program Files\LibreOffice\program\soffice.exe")
 PASSWORD = "password"
+
+# Decrypt-plan OQ1 probe. Both properties are load-bearing:
+#   * one non-ASCII char (U+00E4) -> UTF-8 and MS-1252 encodings differ,
+#     separating PACKAGE_ENCRYPTIONDATA_SHA1UTF8 from ...SHA1MS1252;
+#   * 52 chars -> 53 UTF-8 bytes and 52 MS-1252 bytes, both inside the
+#     len%64 in {52,53,54,55} window where rtl_digest_SHA1 emits a spurious
+#     block (tdf#114939, sal/rtl/digest.cxx:1053), separating the correct
+#     SHA-1 from the StarOffice one on *both* encodings.
+# All four SHA-1 start-key candidates are therefore distinct for this string.
+NONASCII_PASSWORD = "\u00e4bcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP"
 
 # officecfg Office.Common.Save.ODF.DefaultVersion
 ODF_LATEST = 3
@@ -75,7 +86,7 @@ def _bootstrap(profile: Path):
     )
     url = f"uno:{connect}StarOffice.ComponentContext"
     last = None
-    for i in range(30):
+    for i in range(90):  # cold profile creation can take ~40s
         try:
             ctx = resolver.resolve(url)
             print(f"connected after {i}s", flush=True)
@@ -131,6 +142,11 @@ GOLDENS = {
     "lo-wholesome-gcm-argon2": ("S6 wholesome GCM+Argon2 golden.", ODF_LATEST, PASSWORD),
     "lo-legacy-aes-cbc": ("S6 legacy per-entry AES-CBC golden.", ODF_012, PASSWORD),
     "aoo-blowfish-pbkdf2": ("S6 classic Blowfish+PBKDF2 golden.", ODF_011, PASSWORD),
+    "lo-odf11-nonascii-password": (
+        "Decrypt OQ1: ODF 1.1 start-key probe, non-ASCII password.",
+        ODF_011,
+        NONASCII_PASSWORD,
+    ),
 }
 
 
