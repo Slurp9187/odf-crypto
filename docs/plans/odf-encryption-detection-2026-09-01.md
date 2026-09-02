@@ -49,8 +49,8 @@ LibreOffice does **not** use HPKE / DHKEM (`package/` has zero matches). Combina
 UTF-8(password)
   → start key (SHA-1 or SHA-256)
   → KDF (PBKDF2-HMAC-SHA1 or Argon2id; PGP wrap is a third path)
-  → cipher (Blowfish-CFB-8, AES-CBC, or AES-GCM)
-  → optional checksum (SHA-1-1K / SHA-256-1K); omitted for GCM
+  → cipher (Blowfish — typed `BlowfishCfb8`; wire is 64-bit-segment CFB — AES-CBC, or AES-GCM)
+  → optional checksum (SHA-1-1K / SHA-256-1K); omitted for GCM (cipher selects the verifier on decrypt)
 ```
 
 Version strings compare with `OUString::compareTo` — **byte-lexicographic, not semver.** `"1.10" < "1.2"`. Real ODF versions are `"1.0"` … `"1.4"`, so this does not bite produced files; constructed fixtures must not invent dotted tails.
@@ -319,8 +319,8 @@ S6 goldens are in `tests/goldens/` (written URIs in `URIS.md`). The odfdecrypt c
 **Borrow from odfdecrypt** (as notes, not detector logic):
 
 - Modern LO files are one `encrypted-package` member, typically Argon2id + AES-256-GCM, `loext:` argon2 attrs, experimental Argon2 URN.
-- AOO Blowfish is CFB-64; LO is CFB-8 — decrypt-arc only.
-- Raw DEFLATE after decrypt; GCM IV is prepended (W3C).
+- Blowfish on the wire is **64-bit-segment CFB** in both LO sal backends (`sal/rtl/cipher.cxx` `BF_updateCFB` / `EVP_bf_cfb`). The class name `BlowfishCFB8CipherContext` is a lie. odfdecrypt’s LO decryptor uses true CFB-8 and only works on LO Blowfish files because the origin detector routes them to the AOO path. Decrypt-arc only; see [odf-encryption-decrypt-2026-09-02.md](odf-encryption-decrypt-2026-09-02.md).
+- Raw DEFLATE after decrypt; GCM IV is prepended (W3C). The wholesome `encrypted-package` blob is deflated then encrypted, same as per-entry.
 
 **Do not copy:**
 
@@ -336,6 +336,8 @@ S6 goldens are in `tests/goldens/` (written URIs in `URIS.md`). The odfdecrypt c
 - A row-independent `classify` that would miss F1/F2
 
 ## 9. Decrypt notes (interpret fields; do not implement)
+
+Arc: [docs/plans/odf-encryption-decrypt-2026-09-02.md](odf-encryption-decrypt-2026-09-02.md) (Planned). Notes below are the contract that plan consumes.
 
 Needed later so checksum / IV / start-key fields are not misread.
 
