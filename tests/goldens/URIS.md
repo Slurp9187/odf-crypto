@@ -1,6 +1,6 @@
 # S6 golden written URIs
 
-Produced 2026-09-01 with local LibreOffice UNO (`tests/goldens/make_goldens.py`). Password for every file: `password`.
+Produced 2026-09-01 with local LibreOffice UNO (`tests/goldens/make_goldens.py`). Password for every file: `password` — except `lo-odf11-nonascii-password.odt` (added 2026-09-02), which uses `NONASCII_PASSWORD`.
 
 These strings are what LO *wrote*. They match plan §4 emit (no alias-table change).
 
@@ -62,3 +62,28 @@ Written 2026-09-01 by LibreOffice 26.2.1.2 at `DefaultVersion=3` with no
 | root `/` row | `manifest:version="1.4"`, media-type `application/vnd.oasis.opendocument.text` |
 | Zip members | `mimetype` (stored, first), `manifest.rdf`, `Configurations2/`, `styles.xml`, `settings.xml`, `meta.xml`, `Thumbnails/thumbnail.png`, `content.xml`, `META-INF/manifest.xml` |
 | Shapes exercised | explicit `Configurations2/` directory entry; implicit `Thumbnails/` folder with no directory entry of its own; every stream listed in the manifest |
+
+## `lo-odf11-nonascii-password.odt`
+
+Added 2026-09-02 to close decrypt-plan OQ1. Same written tuple as `aoo-blowfish-pbkdf2.odt`
+— the file differs only in its **password**, which is `NONASCII_PASSWORD` in
+`make_goldens.py`: 52 characters, one of them U+00E4, giving 53 UTF-8 bytes and 52
+MS-1252 bytes. Both lengths sit in the `len % 64 ∈ {52,53,54,55}` window where
+`rtl_digest_SHA1` diverges from real SHA-1 (tdf#114939), so the four SHA-1 start-key
+candidates LibreOffice keeps — correct/StarOffice × UTF-8/MS-1252 — are all distinct for
+this string. Only **correct SHA-1 over UTF-8** decrypts the file.
+
+| Field | Written |
+|---|---|
+| `manifest:manifest/@manifest:version` | omitted (ODF 1.1) |
+| `/` file-entry | present, media-type only, no version |
+| algorithm-name | `Blowfish CFB` |
+| start-key-generation | omitted (→ SHA-1) |
+| key-derivation-name | `PBKDF2` |
+| iteration-count | `100000` |
+| KDF `key-size` | omitted (→ `derived_key_len` 16) |
+| checksum-type | `SHA1/1K` |
+| encrypted members | `manifest.rdf`, `styles.xml`, `settings.xml`, `meta.xml`, `content.xml` |
+
+Regenerating it changes salts, IVs and `manifest:size`; the OQ1 conclusion does not
+depend on those, but the recorded sizes do.
