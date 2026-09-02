@@ -841,13 +841,15 @@ second classify arc.
   suppressed under Repair (`ZipPackage.cxx:461-465`, `:469`, `:512`, `:540`; the
   `\`→`/` rewrite at `:636-640`). Every Group B finding assumes `m_bForceRecovery ==
   false`. Repair is a different product.
-- **`m_bMediaTypeFallbackUsed`** (`ZipPackage.cxx:503-507`) and
-  **`m_bHasNonEncryptedEntries`** (`:441`) are computed by LO in `parseManifest` and
-  stay off `Classification`. `encrypted_entries` is the complete tuples.
+- **`m_bHasNonEncryptedEntries`** (`ZipPackage.cxx:441`) stays off `Classification`.
+  Incomplete tuples never enter `encrypted_entries`.
+- **`m_bMediaTypeFallbackUsed`** (`:503-507`) stays off `Classification`. Known
+  limitation: it records whether the root media-type came from the manifest or was
+  sniffed off the `mimetype` stream. `Classification.media_type` has no provenance.
 - **The remaining `readCEN` structural checks** — overlapping entries (`ZipFile.cxx:1436-1481`),
   STORED with inconsistent size (`:1427-1430`), data-descriptor holes (`:1521+`),
-  `Count != Total`, name length. Same family as Group B; noted, never audited; not a
-  decrypt-arc blocker.
+  `Count != Total`, name length. Same family as Group B; noted, never audited.
+  Unaudited; same family as the checks above. Risk is unquantified, not known-low.
 - **LO's out-of-bounds `aSequence[PKG_MNFST_*]` writes** when a crypto element appears
   with no enclosing file-entry (e.g. `loext:keyinfo` > `manifest:encryption-data`). That
   shape has no defined LO semantics to match, so the crate's safe behaviour there cannot
