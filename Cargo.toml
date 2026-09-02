@@ -1,0 +1,11 @@
+[package]
+name = "odf-decrypt"
+version = "0.1.0"
+edition = "2021"
+description = "LibreOffice-faithful ODF package encryption detection"
+rust-version = "1.85"
+
+[dependencies]
+quick-xml = "0.38"
+thiserror = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }

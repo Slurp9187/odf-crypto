@@ -153,8 +153,8 @@ LO **reads** both names and URLs. LO **writes** the emit column. Implement **rea
 | PBKDF2 | `"PBKDF2"` or oasis `#pbkdf2` | `"PBKDF2"` | `http://www.w3.org/2001/04/xmlenc#pbkdf2` |
 | Argon2id | oasis `…manifest:1.5#argon2id` **or** `urn:org:documentfoundation:names:experimental:office:manifest:argon2id` | experimental URN | Python accepts only the experimental URN |
 | Argon2 params | `manifest:argon2-{iterations,memory,lanes}` **or** `loext:…` (prefer `manifest:` if both) | `loext:…` | Hardcoded defaults when attrs missing — LO rejects t/m/p ≤ 0 (then still writes KDF+salt) |
-| Start SHA-256 | `http://www.w3.org/2001/04/xmlenc#sha256` **or** `http://www.w3.org/2000/09/xmldsig#sha256` (OFFICE-3708) | GCM → xmlenc; AES-CBC → **xmldsig** | Python accepts only xmlenc |
-| Start SHA-1 | `"SHA1"` or `http://www.w3.org/2000/09/xmldsig#sha1` | `"SHA1"` | `http://www.w3.org/2001/04/xmlenc#sha1` |
+| Start SHA-256 | `http://www.w3.org/2001/04/xmlenc#sha256` **or** `http://www.w3.org/2000/09/xmldsig#sha256` (OFFICE-3708) | GCM → xmlenc; AES-CBC → **xmldsig**. Also writes `manifest:key-size="32"` on `<start-key-generation>` (`ManifestExport.cxx` 456–463); `doStartKeyAlg` ignores it on read. | Python accepts only xmlenc |
+| Start SHA-1 | `"SHA1"` or `http://www.w3.org/2000/09/xmldsig#sha1` | `"SHA1"`. Also writes `manifest:key-size="20"` on `<start-key-generation>`; ignored on read. | `http://www.w3.org/2001/04/xmlenc#sha1` |
 | Checksum SHA-1-1K | `"SHA1/1K"` or oasis `#sha1-1k` | `"SHA1/1K"` | — |
 | Checksum SHA-256-1K | oasis `#sha256-1k` | that URL | Python does not parse it |
 | PGP KDF | `"PGP"` and only after `bPgpEncryption` (a valid encrypted-key already seen) | `"PGP"` | — |
@@ -208,7 +208,7 @@ struct EntryEncryption {
     checksum: Checksum,
     iv: Vec<u8>,
     size: i64,                 // manifest:size is sal_Int64
-    derived_key_len: u8,       // the one LO value; PGP uses GetDefaultDerivedKeySize
+    derived_key_len: i32,      // sal_Int32; PGP uses GetDefaultDerivedKeySize
 }
 
 struct Classification {
@@ -273,9 +273,9 @@ Carry across rows: sticky `key_info` (starts null; set when a bag has `KeyInfo`;
 | **S3** | Wholesome: zip `hasByName` required; XML-only `encrypted-package` is not wholesome. Media-type from that member. Version on first entry when `/` is missing. Mimetype-fallback gate: no `application/vnd.` prefix → root version stays empty. | Member present vs manifest-only; mimetype present vs missing vs wrong prefix. |
 | **S4** | Always compute `has_unexpected_streams`. `odf12_fatal` only when root version `>= "1.2"`. Wholesome allow-list vs per-entry “must be in manifest.” | Extra root stream, with and without a 1.2 root version. Plus `encrypted-package` member present with an *incomplete* row: mode is not `Wholesome`, scan still uses the wholesome allow-list. |
 | **S5** | PGP bag shape typed, not decrypted. Both `loext:` and `manifest:` trees, no version switch. Derived key size from `GetDefaultDerivedKeySize`, `key-size` ignored. Malformed encrypted-key poisons one entry and suppresses package KeyInfo. | Constructed PGP manifests classify; no gpg. |
-| **S6** | Golden fixtures from real LO/AOO files once a corpus exists. Record exact written URIs. | At least one wholesome GCM+Argon2, one legacy AES-CBC, one Blowfish+PBKDF2. |
+| **S6** | Golden fixtures from real LO/AOO files. Record exact written URIs. | At least one wholesome GCM+Argon2, one legacy AES-CBC, one Blowfish+PBKDF2. |
 
-S6 is gated on sample files. The odfdecrypt clone’s `tests/resources/` was **empty** on 2026-09-01.
+S6 goldens are in `tests/goldens/` (written URIs in `URIS.md`). The odfdecrypt clone’s `tests/resources/` was empty on 2026-09-01; that gate is closed.
 
 ## 8. Borrow / do not copy
 
@@ -312,10 +312,10 @@ Needed later so checksum / IV / start-key fields are not misread.
 
 Close these in the plan (amend in place) when evidence lands. Do not guess.
 
-1. **Import order is load-bearing (F2 + old Q1).** `nDerivedKeySize` is a `ManifestImport` member, reset per `encryption-data`, written by `doAlgorithm`, read by `doKeyDerivation`. The same flag/`ignore` early-return makes unknown start-key URI order-dependent. LO-written files emit algorithm then start-key then KDF (`ManifestExport.cxx`), so produced files match the “cipher default applies” story. Constructed files can disagree. **S2 must fixture the reversal** (`aes256-cbc`, no `key-size`, KDF first → `derived_key_len == 16`). Whether we *document* that as “LO quirk, we match it” is already decided: we match it. This question is only whether any **producer** emits reversed children; if none do, the fixture stays synthetic.
+1. **Import order is load-bearing (F2 + old Q1).** `nDerivedKeySize` is a `ManifestImport` member, reset per `encryption-data`, written by `doAlgorithm`, read by `doKeyDerivation`. The same flag/`ignore` early-return makes unknown start-key URI order-dependent. LO-written files emit algorithm then start-key then KDF (`ManifestExport.cxx`), so produced files match the “cipher default applies” story. Constructed files can disagree. **S2 must fixture the reversal** (`aes256-cbc`, no `key-size`, KDF first → `derived_key_len == 16`). Whether we *document* that as “LO quirk, we match it” is already decided: we match it. **Producer half (2026-09-01):** all three S6 goldens write `<algorithm>` then optional `<start-key-generation>` then `<key-derivation>`. No producer in the corpus emits the reversed order; the reversal fixture stays synthetic.
 2. **Nested `content.xml` latch.** Specified as short name. Confirm whether any real producer writes `…/content.xml` encrypted without a root `content.xml`. Tracked as [#8](https://github.com/Slurp9187/odf-decrypt-rs/issues/8), gated on the same corpus as question 4.
 3. **PGP + SHA512-1K.** `ZipPackage::setPropertyValue` defaults PGP checksum to `SHA512_1K` (`ZipPackage.cxx` 1920–1923) but `ManifestExport` only writes SHA1-1K / SHA256-1K. Unknown checksum-type ⇒ no digest-alg ⇒ non-GCM PGP fails the accept predicate. Likely the save path overrides to GCM before export; not fully traced.
-4. **Sample corpus.** Restore or collect real LO/AOO files before S6. Until then, constructed fixtures are the authority.
+4. **Sample corpus.** Closed 2026-09-01: `tests/goldens/` holds the three issue-#7 files plus (when generated) a real unencrypted ODT. Constructed fixtures remain the authority for order-dependent / malformed cases.
 
 Settled 2026-09-01: `Mode` is zip shape only (`Plain` / `PerEntry` / `Wholesome`). PGP lives on `Kdf`.
 
