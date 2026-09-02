@@ -7,7 +7,7 @@ A live plan is a **dated file** in `docs/plans/`. A **parent GitHub issue**
 coordinates state on top of it. The file is the design; the issues are the
 handles. Nothing restates another.
 
-Worked example: [docs/plans/odf-encryption-detection-2026-09-01.md](plans/odf-encryption-detection-2026-09-01.md) → parent [#1](https://github.com/Slurp9187/odf-decrypt-rs/issues/1), slices [#2](https://github.com/Slurp9187/odf-decrypt-rs/issues/2)–[#7](https://github.com/Slurp9187/odf-decrypt-rs/issues/7).
+Worked example: [docs/plans/odf-encryption-detection-2026-09-01.md](plans/odf-encryption-detection-2026-09-01.md) → parent [#1](https://github.com/Slurp9187/odf-crypto/issues/1), slices [#2](https://github.com/Slurp9187/odf-crypto/issues/2)–[#7](https://github.com/Slurp9187/odf-crypto/issues/7).
 
 ## Surfaces
 

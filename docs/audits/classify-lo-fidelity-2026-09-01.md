@@ -2,10 +2,10 @@ Status: Audit — applied and verified 2026-09-01 against `07047a02f94d` · A1�
 
 # Audit — `classify` vs LibreOffice `package/`
 
-> **Scope.** Adversarial audit of the full arc [#1](https://github.com/Slurp9187/odf-decrypt-rs/issues/1)
+> **Scope.** Adversarial audit of the full arc [#1](https://github.com/Slurp9187/odf-crypto/issues/1)
 > implementation — S1–S6, `src/` and `src/classify_tests.rs` — against LibreOffice
-> `package/` at the plan's pin. Not a code review: the question is only *where does
-> `classify` answer differently than LibreOffice*, on input that can be constructed.
+> `package/` at the plan's pin. Not a code review: the question is only _where does
+> `classify` answer differently than LibreOffice_, on input that can be constructed.
 >
 > **Verdict.** The crate reproduces LO's **manifest semantics** closely and its
 > **zip-acceptance semantics** hardly at all. The accept predicates, both latch sites,
@@ -18,10 +18,10 @@ Status: Audit — applied and verified 2026-09-01 against `07047a02f94d` · A1�
 
 Same trees and pin as the plan. Do not re-download.
 
-| Tree | Path | Pin |
-|---|---|---|
+| Tree             | Path                                         | Pin                                                |
+| ---------------- | -------------------------------------------- | -------------------------------------------------- |
 | LibreOffice core | `O:\projects-github-clones\LibreOffice\core` | `07047a02f94d`, verified checked out at audit time |
-| odfdecrypt | `O:\projects-github-clones\odfdecrypt` | not consulted; this audit scores against LO only |
+| odfdecrypt       | `O:\projects-github-clones\odfdecrypt`       | not consulted; this audit scores against LO only   |
 
 Files cited beyond the plan's list: `package/source/manifest/ManifestReader.cxx`,
 `package/source/zipapi/ZipFile.cxx`, `comphelper/source/misc/base64.cxx`,
@@ -33,12 +33,12 @@ Files cited beyond the plan's list: `package/source/manifest/ManifestReader.cxx`
 Every finding has a stable id. Cite the id in an issue body; do not restate the
 finding there.
 
-| Group | Meaning | Ids |
-|---|---|---|
+| Group | Meaning                                                                                                        | Ids    |
+| ----- | -------------------------------------------------------------------------------------------------------------- | ------ |
 | **A** | `classify` returns a different `Mode` / `package_encrypted` / `common` / `odf_version` / `odf12_fatal` than LO | A1–A10 |
-| **B** | LO refuses the archive outright; `classify` returns a confident `Classification` | B1–B7 |
-| **C** | Verdict agrees; a reported field of `EntryEncryption` / `Classification` is wrong | C1–C7 |
-| **D** | Implementation is correct, but the named behaviour survives mutation with the suite green | D1–D7 |
+| **B** | LO refuses the archive outright; `classify` returns a confident `Classification`                               | B1–B7  |
+| **C** | Verdict agrees; a reported field of `EntryEncryption` / `Classification` is wrong                              | C1–C7  |
+| **D** | Implementation is correct, but the named behaviour survives mutation with the suite green                      | D1–D7  |
 
 Findings marked **unrefuted** came from the completeness pass after verification
 closed. They carry less evidence than the rest — treat them as the next thing to
@@ -71,7 +71,7 @@ iteration-count="+100000" → 0 (LO 100000) · key-size="+32" → 0 (LO 32)
 embedded '-' ("12-3")     → 0 (LO 12)
 ```
 
-**Fix.** Port `toInt` directly: skip LO's `implIsWhitespace` set — *not* Rust's
+**Fix.** Port `toInt` directly: skip LO's `implIsWhitespace` set — _not_ Rust's
 `trim`, which also strips U+00A0 — take at most one sign character, fold ASCII
 digits, return 0 on overflow. A hand-written loop, not `take_while` + `str::parse`.
 
@@ -105,7 +105,7 @@ Found independently by three dimensions. Read in-source during write-up.
 `src/manifest.rs:490-530`, `src/classify.rs:43` · `ManifestReader.cxx:46-75`, `ZipPackage.cxx:453`
 
 An entire LO layer is unmodelled. `ManifestReader::readManifestSequence` declares
-its result sequence *before* parsing, converts the accumulated vector only on
+its result sequence _before_ parsing, converts the accumulated vector only on
 success, and catches `SAXParseException` / `SAXException` / `IOException` — so any
 XML error discards every row already collected. `ZipPackage::parseManifest` then runs
 a zero-iteration row loop and still sets `bManifestParsed = true`, so nothing
@@ -129,7 +129,7 @@ failures. Note this also subsumes C6.
 
 `src/classify.rs:118-125`
 
-Plan §6 step 12 and issue [#4](https://github.com/Slurp9187/odf-decrypt-rs/issues/4)'s
+Plan §6 step 12 and issue [#4](https://github.com/Slurp9187/odf-crypto/issues/4)'s
 first Do bullet both say Wholesome requires the zip's root `encrypted-package` member
 **and that member's** bag to be complete. The implementation sets
 `encrypted_package_complete` from `short_name(entry.path) == "encrypted-package"`, so
@@ -144,7 +144,7 @@ root member's media-type and does not throw.
 **Fix.** Gate on `bag.full_path == "encrypted-package"`; better, store media-type on
 the resolved stream node and read it back from the tree.
 
-### A5 — Folder rows never *clear* media-type or version
+### A5 — Folder rows never _clear_ media-type or version
 
 `src/zip_tree.rs:120-146`, `src/classify.rs:114` · `ZipPackage.cxx:237`, `:289-290`
 
@@ -172,7 +172,7 @@ it — and assign unconditionally in `set_folder_meta`.
 
 `src/classify.rs:31`, `src/zip_tree.rs:51-53` · `ZipPackageFolder.cxx:221-224`, `ZipPackage.cxx:520`, `:535-536`
 
-A zip carrying `encrypted-package/inner.bin` gives LO a root *folder* of that name.
+A zip carrying `encrypted-package/inner.bin` gives LO a root _folder_ of that name.
 `hasByName` matches it, so LO runs the wholesome allow-list scan and takes the
 folder's empty media-type into the mimetype comparison, throwing at
 `ZipPackage.cxx:525`. The crate reports `zip_has_encrypted_package = false` and a
@@ -185,8 +185,8 @@ clean result. (measured)
 
 `src/classify.rs:48-63` · `ZipPackage.cxx:474`
 
-The one anti-pattern plan §1 names verbatim — *"Do not implement 'path exists in the
-zip' as `zip.namelist().contains(path)`"* — and one of the four state leaks arc #1
+The one anti-pattern plan §1 names verbatim — _"Do not implement 'path exists in the
+zip' as `zip.namelist().contains(path)`"_ — and one of the four state leaks arc #1
 lists as its close condition. Three of the four are honoured; this is the leak.
 
 LO uses `m_xRootFolder->hasByName(u"mimetype")`. A package whose only root node named
@@ -318,7 +318,7 @@ also rejected by LO, accepted here:
 ```
 
 The comment at `src/zip_tree.rs:215` is right that LO's `\`→`/` rewrite is
-recovery-only; the missing piece is the *rejection* at CEN time.
+recovery-only; the missing piece is the _rejection_ at CEN time.
 
 **Fix.** Port `IsValidZipEntryFileName(name, true)` over every member name in
 `classify` before the tree is built.
@@ -334,7 +334,7 @@ so two records named `META-INF/manifest.xml` resolve last-wins: order the plain
 manifest first and the encrypted one second to pick the verdict. (measured — the
 crate parsed the second manifest)
 
-A related claim that the *folder tree* keeps the first occurrence was **refuted**:
+A related claim that the _folder tree_ keeps the first occurrence was **refuted**:
 `ZipFile::aEntries` is an `unordered_map` (`package/inc/HashMaps.hxx:30-31`), so
 first-wins was never LO's behaviour.
 
@@ -345,7 +345,7 @@ first-wins was never LO's behaviour.
 When a path component names something already bound to a stream, LO throws at
 tree-build time. `insert_path` is infallible: it returns, dropping the member and
 every later component, and `classify` returns a clean `Ok`. Verification narrowed one
-detail — LO does not iterate the zip in physical order, so *which* member wins the
+detail — LO does not iterate the zip in physical order, so _which_ member wins the
 collision is not deterministic from file order — but the divergence holds.
 
 ### B5 — FAT directory entries LO skips are inserted and flagged inconsistent
@@ -447,7 +447,7 @@ reports 255; `"-8"` reports 0, which is also the legitimate value LO produces fo
 
 quick-xml 0.38 splits element text at `&…;` and delivers the reference as its own
 event; the `_ => {}` arm deletes it. The comment at `src/manifest.rs:513-515` —
-*"decode already unescapes entities when the reader is configured that way"* — is
+_"decode already unescapes entities when the reader is configured that way"_ — is
 false: there is no `unescape()` on `BytesText` in 0.38 and `decode()` does charset
 decoding only. Attribute values are fine (`decode_and_unescape_value`); only text
 nodes are affected.
@@ -473,7 +473,7 @@ is `"Blowfish CFB"` to LO — row accepted, package encrypted — and a rejected
 so `Plain`. (measured)
 
 This flips the verdict, but only on a hand-written manifest. Verification corrected
-the trigger: a character reference (`&#x0A;`) is *protected* from normalization and
+the trigger: a character reference (`&#x0A;`) is _protected_ from normalization and
 behaves identically in both, so the trigger needs a raw byte.
 
 **Fix.** Map literal `\t`, `\n`, `\r` to a single space after unescaping, in the
@@ -483,8 +483,8 @@ attribute loop in `parse_manifest`. Do not collapse runs.
 
 `src/manifest.rs:337-348` · `ManifestImport.cxx:158-177`
 
-LO reads `manifest:checksum` whenever the *accumulated* `DigestAlgorithm` already has
-a value (`:171-177`); the crate reads it only when *this* element's checksum-type
+LO reads `manifest:checksum` whenever the _accumulated_ `DigestAlgorithm` already has
+a value (`:171-177`); the crate reads it only when _this_ element's checksum-type
 mapped. With a second element carrying `checksum-type="bogus"`, LO reports that
 element's digest bytes and the crate keeps the first; if the second omits the
 attribute entirely, LO reports an empty digest. (measured)
@@ -528,7 +528,7 @@ the suite stayed at 33/33. The implementation is right in every case.
 
 `src/classify_tests.rs:418-437`; behaviour at `src/manifest.rs:360-364`
 
-The row named *"KDF before algorithm, no `key-size`, `aes256-cbc` → `derived_key_len == 16`"*
+The row named _"KDF before algorithm, no `key-size`, `aes256-cbc` → `derived_key_len == 16`"_
 is one-sided. Delete the cipher-implied `nDerivedKeySize` write in `do_algorithm`
 entirely and all 33 tests still pass, because nothing asserts the normal-order case
 where it must produce 32. This is plan open question 1 / F2 — the order-dependence the
@@ -540,8 +540,8 @@ plan says makes a row-independent `classify` wrong.
 
 `src/manifest.rs:220` · `ManifestImport.cxx:461-466`
 
-Issue [#4](https://github.com/Slurp9187/odf-decrypt-rs/issues/4) sets this in bold:
-*"The gate is `rManVector.empty()` — **not** '`/` is omitted'."* The shipped code is
+Issue [#4](https://github.com/Slurp9187/odf-crypto/issues/4) sets this in bold:
+_"The gate is `rManVector.empty()` — **not** '`/` is omitted'."_ The shipped code is
 correct, but replacing the gate with `&& self.bag.full_path != "/"` leaves the suite
 green. The effect is visible in `odf_version` and `odf12_fatal`.
 
@@ -577,7 +577,7 @@ then assert `has_unexpected_streams`.
 `src/classify_tests.rs:190-199`, `:245-256`; `tests/goldens/`
 
 The only literally unmet close condition in the arc — issue
-[#2](https://github.com/Slurp9187/odf-decrypt-rs/issues/2) close-when 1, plan §7 S1.
+[#2](https://github.com/Slurp9187/odf-crypto/issues/2) close-when 1, plan §7 S1.
 All three goldens are encrypted, and `classify_unencrypted_odt_is_plain` runs on the
 constructed fixture.
 
@@ -587,12 +587,12 @@ property. Dropping that property yields a real `.odt` with `Thumbnails/` and
 `Configurations2/` — the first realistic exercise of the non-wholesome scan, and the
 answer `classify` gives most often in production.
 
-### D6 — The *empty*-root-version arm of the ODF-1.2 gate is untested
+### D6 — The _empty_-root-version arm of the ODF-1.2 gate is untested
 
 `src/classify_tests.rs:698-712` uses root version `"1.1"`
 
-Issue [#5](https://github.com/Slurp9187/odf-decrypt-rs/issues/5) close-when 2 asks for
-*"extra root stream, **empty** / pre-1.2 root version"*; only the pre-1.2 arm exists.
+Issue [#5](https://github.com/Slurp9187/odf-crypto/issues/5) close-when 2 asks for
+_"extra root stream, **empty** / pre-1.2 root version"_; only the pre-1.2 arm exists.
 The empty arm is the one plan §3 and F7 single out — the outcome of the
 mimetype-fallback gate failing, and the only path on which a wholesome package with a
 missing or non-`application/vnd.` mimetype stays non-fatal.
@@ -643,13 +643,13 @@ Negative results, recorded so nobody re-litigates them.
 
 Amend `docs/plans/odf-encryption-detection-2026-09-01.md` in place, per its own rule.
 
-| # | Change |
-|---|---|
-| 1 | **§5 is wrong about `derived_key_len`.** LO carries `manifest:key-size` as a `sal_Int32` end to end (C2). The plan says `u8` and the implementation matches the plan exactly, so the type moves in both places or the fix reads as a spec violation. Issue #2's "`derived_key_len` as the one LO value" moves with it. |
-| 2 | **OQ4 is stale.** §10 and the §7 S6 row still read as though `tests/resources/` were empty; the three files issue #7 required are in-tree and passing. |
-| 3 | **OQ1's producer half now has evidence.** All three goldens write `<manifest:algorithm>` before `<manifest:key-derivation>`, with `<start-key-generation>` between them where present — direct evidence that no producer emits the reversed order, which is exactly what OQ1 asks. Record it rather than re-deriving it. |
-| 4 | **§4 omits a real emit detail.** LO also writes `manifest:key-size` on `<start-key-generation>` (32 for SHA-256, 20 for SHA-1 — `ManifestExport.cxx:456-463`), and `doStartKeyAlg` (`ManifestImport.cxx:306-317`) ignores it on read. The crate ignoring it is correct; the table should say so. |
-| 5 | **Zip-acceptance fidelity is undecided, not out of scope.** §2's "the path resolves in the folder tree" is manifest-side only. Group B needs either a scope line in the plan or a slice. |
+| #   | Change                                                                                                                                                                                                                                                                                                                   |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | **§5 is wrong about `derived_key_len`.** LO carries `manifest:key-size` as a `sal_Int32` end to end (C2). The plan says `u8` and the implementation matches the plan exactly, so the type moves in both places or the fix reads as a spec violation. Issue #2's "`derived_key_len` as the one LO value" moves with it.   |
+| 2   | **OQ4 is stale.** §10 and the §7 S6 row still read as though `tests/resources/` were empty; the three files issue #7 required are in-tree and passing.                                                                                                                                                                   |
+| 3   | **OQ1's producer half now has evidence.** All three goldens write `<manifest:algorithm>` before `<manifest:key-derivation>`, with `<start-key-generation>` between them where present — direct evidence that no producer emits the reversed order, which is exactly what OQ1 asks. Record it rather than re-deriving it. |
+| 4   | **§4 omits a real emit detail.** LO also writes `manifest:key-size` on `<start-key-generation>` (32 for SHA-256, 20 for SHA-1 — `ManifestExport.cxx:456-463`), and `doStartKeyAlg` (`ManifestImport.cxx:306-317`) ignores it on read. The crate ignoring it is correct; the table should say so.                         |
+| 5   | **Zip-acceptance fidelity is undecided, not out of scope.** §2's "the path resolves in the folder tree" is manifest-side only. Group B needs either a scope line in the plan or a slice.                                                                                                                                 |
 
 **Arc #1 cannot close as filed.** Its close condition is "every slice sub-issue is
 closed" and all six are open. #6 and #7 are closeable today; #2 is blocked on D5;
@@ -667,8 +667,8 @@ clean.
 
 ### V1 — the depth cap unbalanced the element stack
 
-`src/manifest.rs`. B7's fix capped depth by pushing a frame that stored the *raw*
-element name while `end_element` still compared against the *converted* name, and
+`src/manifest.rs`. B7's fix capped depth by pushing a frame that stored the _raw_
+element name while `end_element` still compared against the _converted_ name, and
 `convert_name` searched only the top 8 frames. For an element deeper than 8 whose
 prefix was bound above that window, the two disagreed, so the frame never popped —
 and with A3's new contract (`Eof` with a non-empty stack → zero rows) the entire
@@ -739,15 +739,15 @@ repro, so it was verified in source before the port was judged:
 `parseManifest` applies the bag to whatever object comes back — `dynamic_cast`
 picks folder vs stream (`:282-296`). The root folder is constructed at `:167`
 without `setName`, so `getName()` is `""`, which is what makes the `Pictures/`
-cache hit *fail* its name check and fall through to the poisoning walk. All three
+cache hit _fail_ its name check and fall through to the poisoning walk. All three
 scenarios were then reproduced through the public `classify()` and match.
 
 Two repairs on review:
 
 - **The control was missing.** `Pictures/album/photo.png` + a `Pictures/` row +
   `Pictures/content.xml` proves the poison fires, and the `Pictures/photo.png`
-  variant proves a correct cache hit does not — but neither pins that the *folder
-  row* is what writes the shallow entry. Seeding every ancestor prefix at insert
+  variant proves a correct cache hit does not — but neither pins that the _folder
+  row_ is what writes the shallow entry. Seeding every ancestor prefix at insert
   time is a plausible bug that leaves both green. Added
   `nested_row_without_a_folder_row_does_not_latch` and
   `nested_member_alone_does_not_poison`: same zip, no folder row, must stay
@@ -771,7 +771,7 @@ Two repairs on review:
   rejected), so the doubled-slash member really does reach the tree.
 - **C1** — `decode_b64` is a faithful port of `decodeSomeChars`, including `'='`
   decrementing the output width only at positions 3 and 4.
-- **C4** — `normalize_attr_value` expands references *before* normalizing, so
+- **C4** — `normalize_attr_value` expands references _before_ normalizing, so
   `&#x0A;` survives as a newline and a literal newline becomes a space. Correct per
   XML §3.3.3; the audit's own note said character references are protected.
 - **A5 / mimetype fallback** — `ZipPackage.cxx` 496–507 read in source: the version
@@ -807,6 +807,7 @@ Two repairs on review:
   re-checking the `size` assertions and `URIS.md`; naming one avoids churning the
   three already validated against LO. The three encrypted goldens were not
   regenerated.
+
 - **Ordering nuance:** LO runs `checkZipEntriesWithDD` at `ZipPackage.cxx:456`,
   before the mimetype block; `classify` runs it after `stage_b`. A package that trips
   both reports the mimetype conflict where LO reports the data-descriptor error.

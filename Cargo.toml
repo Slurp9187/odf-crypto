@@ -1,5 +1,5 @@
 [package]
-name = "odf-decrypt"
+name = "odf-crypto"
 version = "0.1.0"
 edition = "2021"
 description = "LibreOffice-faithful ODF package encryption detection"

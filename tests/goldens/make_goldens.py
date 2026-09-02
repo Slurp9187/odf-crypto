@@ -143,7 +143,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     out_dir = Path(__file__).resolve().parent
-    profile = Path(os.environ.get("TEMP", "/tmp")) / f"odf-decrypt-goldens-lo-{os.getpid()}"
+    profile = Path(os.environ.get("TEMP", "/tmp")) / f"odf-crypto-goldens-lo-{os.getpid()}"
     profile.mkdir(parents=True, exist_ok=True)
 
     ctx, proc = _bootstrap(profile)
