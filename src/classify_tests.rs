@@ -242,20 +242,25 @@ fn pgp_two_row_zip() -> Vec<u8> {
     ])
 }
 
+/// Issue #2 close-when 1 / plan §7 S1. A real LibreOffice `.odt`: `mimetype`
+/// stored first, an explicit `Configurations2/` directory entry, an implicit
+/// `Thumbnails/` folder with no directory entry of its own, and every stream
+/// listed in the manifest. This is the only fixture that runs the non-wholesome
+/// unexpected-stream scan over a member set a producer actually writes.
 #[test]
 fn classify_real_unencrypted_odt_is_plain() {
-    let path = golden_path("lo-unencrypted.odt");
-    if !path.exists() {
-        // Constructed stand-in until make_goldens.py writes the real file.
-        let class = classify(&unencrypted_odt()).expect("constructed");
-        assert_eq!(class.mode, Mode::Plain);
-        assert!(!class.package_encrypted);
-        return;
-    }
-    let class = classify(&std::fs::read(&path).unwrap()).expect("real unencrypted");
+    let class = classify(&load_golden("lo-unencrypted.odt")).expect("real unencrypted");
     assert_eq!(class.mode, Mode::Plain);
     assert!(!class.package_encrypted);
+    assert!(class.common.is_none());
+    assert!(class.encrypted_entries.is_empty());
     assert!(!class.zip_has_encrypted_package);
+    // Root row carries both; no mimetype fallback is needed.
+    assert_eq!(class.odf_version.as_deref(), Some("1.4"));
+    assert_eq!(class.media_type.as_deref(), Some(MIME_TEXT));
+    // Every stream is in the manifest, so the scan stays quiet even though the
+    // root version is >= 1.2 and would make an unlisted stream fatal.
+    assert!(!class.has_unexpected_streams);
     assert!(!class.odf12_fatal);
 }
 
@@ -312,16 +317,11 @@ fn pgp_two_row_key_info_leaks_to_styles() {
 
 enum S2Expect {
     Plain,
-    PerEntryLatch {
-        check: fn(&EntryEncryption),
-    },
+    PerEntryLatch { check: fn(&EntryEncryption) },
 }
 
 fn s2_min_zip() -> [(&'static str, &'static [u8]); 2] {
-    [
-        ("mimetype", MIME_TEXT.as_bytes()),
-        ("content.xml", b"x"),
-    ]
+    [("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")]
 }
 
 #[test]
@@ -798,7 +798,11 @@ fn s4_extra_root_stream_version_12_is_fatal() {
 
 #[test]
 fn s4_extra_root_stream_pre_12_is_not_fatal() {
-    let body = format!("{}{}", root_row("1.1", MIME_TEXT), file_entry(PwOpts::default()));
+    let body = format!(
+        "{}{}",
+        root_row("1.1", MIME_TEXT),
+        file_entry(PwOpts::default())
+    );
     let class = classify_pkg(
         &manifest_wrap(Some("1.1"), &body),
         &[
@@ -824,7 +828,11 @@ fn s4_incomplete_encrypted_package_member_still_uses_wholesome_allow_list() {
         iteration_count: None,
         ..PwOpts::default()
     });
-    let extra_listed = format!("{}{}", body, plain_row("extra.bin", "application/octet-stream"));
+    let extra_listed = format!(
+        "{}{}",
+        body,
+        plain_row("extra.bin", "application/octet-stream")
+    );
     let class = classify_pkg(
         &manifest_wrap(Some("1.3"), &extra_listed),
         &[
@@ -859,10 +867,7 @@ fn s4_xml_only_encrypted_package_uses_non_wholesome_scan() {
     );
     let class = classify_pkg(
         &manifest_wrap(Some("1.3"), &body),
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("extra.bin", b"listed"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("extra.bin", b"listed")],
     );
     assert!(!class.zip_has_encrypted_package);
     assert_ne!(class.mode, Mode::Wholesome);
@@ -874,7 +879,11 @@ fn s4_xml_only_encrypted_package_uses_non_wholesome_scan() {
 
 #[test]
 fn s4_nested_mimetype_is_not_exempt() {
-    let body = format!("{}{}", root_row("1.2", MIME_TEXT), file_entry(PwOpts::default()));
+    let body = format!(
+        "{}{}",
+        root_row("1.2", MIME_TEXT),
+        file_entry(PwOpts::default())
+    );
     let class = classify_pkg(
         &manifest_wrap(Some("1.2"), &body),
         &[
@@ -960,10 +969,7 @@ fn s5_loext_tree_classifies_as_pgp() {
     );
     let class = classify_pkg(
         &xml,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     assert_eq!(class.mode, Mode::PerEntry);
     assert!(matches!(
@@ -984,10 +990,7 @@ fn s5_manifest_tree_classifies_as_pgp_without_version_gate() {
     );
     let class = classify_pkg(
         &xml,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     assert_eq!(class.mode, Mode::PerEntry);
     assert!(matches!(
@@ -1022,10 +1025,7 @@ fn s5_wrong_wrap_uri_discards_key_and_suppresses_keyinfo() {
 
     let class = classify_pkg(
         &xml,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     assert!(class.encrypted_entries.is_empty());
     assert!(!class.package_encrypted);
@@ -1043,10 +1043,7 @@ fn s5_pgp_derived_key_len_ignores_lying_key_size() {
     );
     let gcm = classify_pkg(
         &xml,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     assert_eq!(gcm.common.as_ref().unwrap().derived_key_len, 32);
     assert_eq!(gcm.common.as_ref().unwrap().cipher, Cipher::AesGcmW3c);
@@ -1068,10 +1065,7 @@ fn s5_pgp_derived_key_len_ignores_lying_key_size() {
     );
     let cbc = classify_pkg(
         &xml,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     assert_eq!(cbc.common.as_ref().unwrap().derived_key_len, 32);
     assert_eq!(cbc.common.as_ref().unwrap().cipher, Cipher::AesCbcW3c);
@@ -1134,7 +1128,13 @@ fn s6_legacy_aes_cbc() {
     let common = class.common.as_ref().expect("latch");
     assert_eq!(common.path, "content.xml");
     assert_eq!(common.cipher, Cipher::AesCbcW3c);
-    assert!(matches!(common.kdf, Kdf::Pbkdf2 { iterations: 100000, .. }));
+    assert!(matches!(
+        common.kdf,
+        Kdf::Pbkdf2 {
+            iterations: 100000,
+            ..
+        }
+    ));
     assert_eq!(common.start_key, StartKeyAlg::Sha256);
     assert!(matches!(common.checksum, Checksum::Sha256_1K(_)));
     assert_eq!(common.derived_key_len, 32);
@@ -1155,7 +1155,13 @@ fn s6_blowfish_pbkdf2() {
     let common = class.common.as_ref().expect("latch");
     assert_eq!(common.path, "content.xml");
     assert_eq!(common.cipher, Cipher::BlowfishCfb8);
-    assert!(matches!(common.kdf, Kdf::Pbkdf2 { iterations: 100000, .. }));
+    assert!(matches!(
+        common.kdf,
+        Kdf::Pbkdf2 {
+            iterations: 100000,
+            ..
+        }
+    ));
     assert_eq!(common.start_key, StartKeyAlg::Sha1);
     assert!(matches!(common.checksum, Checksum::Sha1_1K(_)));
     assert_eq!(common.derived_key_len, 16);
@@ -1222,10 +1228,7 @@ fn s4_extra_root_stream_empty_root_version_is_not_fatal() {
     let xml = manifest_wrap(Some("1.3"), &wholesome_body(false));
     let class = classify_pkg(
         &xml,
-        &[
-            ("encrypted-package", b"inner"),
-            ("extra.bin", b"nope"),
-        ],
+        &[("encrypted-package", b"inner"), ("extra.bin", b"nope")],
     );
     assert!(class.odf_version.is_none());
     assert!(class.has_unexpected_streams);
@@ -1283,10 +1286,7 @@ fn s5_pgp_start_key_clamps_to_sha256() {
     );
     let class = classify_pkg(
         &xml,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     assert_eq!(
         class.common.as_ref().map(|e| e.start_key),
@@ -1334,10 +1334,7 @@ fn typo_root_element_still_imports_file_entries() {
     );
     let class = classify_pkg(
         &xml,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     assert_eq!(class.mode, Mode::PerEntry);
     assert!(class.package_encrypted);
@@ -1350,10 +1347,7 @@ fn truncated_manifest_is_plain_not_partial() {
     let truncated = &xml[..xml.len().saturating_sub(20)];
     let class = classify_pkg(
         truncated,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     assert_eq!(class.mode, Mode::Plain);
     assert!(!class.package_encrypted);
@@ -1425,10 +1419,7 @@ fn double_slash_member_resolves_and_latches() {
     });
     let class = classify_pkg(
         &manifest_wrap(Some("1.2"), &body),
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("a//content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("a//content.xml", b"x")],
     );
     assert!(class.package_encrypted);
     assert_eq!(class.mode, Mode::PerEntry);
@@ -1454,13 +1445,131 @@ fn second_encryption_data_rereads_checksum() {
     );
     let class = classify_pkg(
         &xml,
-        &[
-            ("mimetype", MIME_TEXT.as_bytes()),
-            ("content.xml", b"x"),
-        ],
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
     );
     match class.common.as_ref().map(|e| &e.checksum) {
         Some(Checksum::Sha1_1K(d)) => assert_eq!(d, b"ABCD"),
         other => panic!("{other:?}"),
     }
+}
+
+/// A deep subtree must not swallow the rest of the manifest. LO invalidates
+/// everything past level 6 but keeps parsing; a depth cap that unbalanced the
+/// element stack made the whole document read as malformed (zero rows → Plain).
+#[test]
+fn deep_subtree_does_not_drop_later_entries() {
+    let mut deep = String::from(
+        " <manifest:file-entry manifest:full-path=\"junk\" manifest:media-type=\"text/xml\" \
+         xmlns:m2=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\">\n",
+    );
+    for _ in 0..40 {
+        deep.push_str("<m2:foo>");
+    }
+    for _ in 0..40 {
+        deep.push_str("</m2:foo>");
+    }
+    deep.push_str(" </manifest:file-entry>\n");
+
+    let body = format!(
+        "{}{}{}",
+        root_row("1.2", MIME_TEXT),
+        deep,
+        file_entry(PwOpts::default())
+    );
+    let class = classify_pkg(
+        &manifest_wrap(Some("1.2"), &body),
+        &[
+            ("mimetype", MIME_TEXT.as_bytes()),
+            ("content.xml", b"x"),
+            ("junk", b"x"),
+        ],
+    );
+    assert_eq!(class.mode, Mode::PerEntry);
+    assert!(class.package_encrypted);
+    assert_eq!(class.encrypted_entries.len(), 1);
+    assert_eq!(class.odf_version.as_deref(), Some("1.2"));
+}
+
+/// `hasByHierarchicalName("/content.xml")` is false in LO: the walk breaks on
+/// the empty first segment and then looks up the whole remainder, leading slash
+/// included, as a single child name. The row must not latch.
+#[test]
+fn leading_slash_stream_row_is_not_applied() {
+    let body = format!(
+        "{}{}",
+        root_row("1.2", MIME_TEXT),
+        file_entry(PwOpts {
+            path: "/content.xml",
+            ..PwOpts::default()
+        })
+    );
+    let class = classify_pkg(
+        &manifest_wrap(Some("1.2"), &body),
+        &[("mimetype", MIME_TEXT.as_bytes()), ("content.xml", b"x")],
+    );
+    assert_eq!(class.mode, Mode::Plain);
+    assert!(!class.package_encrypted);
+    assert!(class.encrypted_entries.is_empty());
+}
+
+/// A10: nested `Pictures/album/photo.png` seeds `m_aRecent["Pictures/album"]`
+/// only. A `Pictures/` folder row then caches `pPrevious` (root). The following
+/// `Pictures/content.xml` complete row resolves as **root** `content.xml` and
+/// latches. Folder meta from `Pictures/` still lands on the Pictures folder
+/// (`pCurrent`), not the poisoned cache parent.
+#[test]
+fn pictures_folder_row_poisons_nested_content_xml_onto_root() {
+    let body = format!(
+        r#" <manifest:file-entry manifest:full-path="Pictures/" manifest:version="1.2" manifest:media-type="image/"/>
+{}"#,
+        file_entry(PwOpts {
+            path: "Pictures/content.xml",
+            ..PwOpts::default()
+        })
+    );
+    let class = classify_pkg(
+        &manifest_wrap(None, &body),
+        &[
+            ("content.xml", b"plain-root"),
+            ("Pictures/album/photo.png", b"png"),
+        ],
+    );
+    assert_eq!(class.mode, Mode::PerEntry);
+    assert!(class.package_encrypted);
+    assert_eq!(
+        class.common.as_ref().map(|e| e.path.as_str()),
+        Some("content.xml")
+    );
+    assert_eq!(class.encrypted_entries.len(), 1);
+    assert_eq!(class.encrypted_entries[0].path, "content.xml");
+    // Pictures/ version and media-type must not have landed on the root.
+    assert!(class.odf_version.is_none());
+    assert!(class.media_type.is_none());
+}
+
+/// A10 negative: `Pictures/photo.png` insert already cached `"Pictures"`
+/// correctly, so a later `Pictures/` is a hit and does not poison.
+#[test]
+fn pictures_photo_insert_then_folder_row_does_not_poison() {
+    let body = format!(
+        r#" <manifest:file-entry manifest:full-path="Pictures/" manifest:version="1.2" manifest:media-type="image/"/>
+{}"#,
+        file_entry(PwOpts {
+            path: "Pictures/content.xml",
+            ..PwOpts::default()
+        })
+    );
+    let class = classify_pkg(
+        &manifest_wrap(None, &body),
+        &[
+            ("content.xml", b"plain-root"),
+            ("Pictures/photo.png", b"png"),
+        ],
+    );
+    assert_eq!(class.mode, Mode::Plain);
+    assert!(!class.package_encrypted);
+    assert!(class.common.is_none());
+    assert!(class.encrypted_entries.is_empty());
+    assert!(class.odf_version.is_none());
+    assert!(class.media_type.is_none());
 }

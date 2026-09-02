@@ -46,3 +46,19 @@ Classic path: current LO with ODF 1.1 (`DefaultVersion=2`), not Apache OpenOffic
 | key-derivation-name | `PBKDF2` |
 | iteration-count | `100000` |
 | checksum-type | `SHA1/1K` |
+
+## `lo-unencrypted.odt`
+
+S1, not S6: no encryption-data, so no URIs to record. Kept because it is the only
+fixture whose member set a producer actually wrote — the non-wholesome
+unexpected-stream scan runs over it for real.
+
+Written 2026-09-01 by LibreOffice 26.2.1.2 at `DefaultVersion=3` with no
+`Password` property.
+
+| Field | Written |
+|---|---|
+| `manifest:manifest/@manifest:version` | `1.4` |
+| root `/` row | `manifest:version="1.4"`, media-type `application/vnd.oasis.opendocument.text` |
+| Zip members | `mimetype` (stored, first), `manifest.rdf`, `Configurations2/`, `styles.xml`, `settings.xml`, `meta.xml`, `Thumbnails/thumbnail.png`, `content.xml`, `META-INF/manifest.xml` |
+| Shapes exercised | explicit `Configurations2/` directory entry; implicit `Thumbnails/` folder with no directory entry of its own; every stream listed in the manifest |

@@ -1,19 +1,31 @@
-"""Create the three S6 goldens with a local LibreOffice (UNO).
+"""Create the S1/S6 goldens with a local LibreOffice (UNO).
 
 Produces:
+  lo-unencrypted.odt           — S1 real unencrypted ODT (no password)
   lo-wholesome-gcm-argon2.odt  — default / ODF latest extended
   lo-legacy-aes-cbc.odt        — ODF 1.2 per-entry AES-CBC
   aoo-blowfish-pbkdf2.odt      — ODF 1.1 Blowfish + PBKDF2 (classic path)
 
-Password for every file: password
+Password for every encrypted file: password
+
+Run with LibreOffice's bundled Python (the system one has no `uno`):
+
+    "C:\\Program Files\\LibreOffice\\program\\python.exe" make_goldens.py
+
+Name one or more goldens to write only those; with no arguments it writes all
+four. Each save produces fresh salts, IVs and sizes, so regenerating a golden
+means re-checking the `size` assertions in `classify_tests.rs` and the recorded
+URIs in `URIS.md`. Prefer naming the one you actually need:
+
+    ... make_goldens.py lo-unencrypted
 """
 
 from __future__ import annotations
 
 import os
 import random
-import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -87,7 +99,7 @@ def _set_odf_version(ctx, version: int) -> None:
     access.commitChanges()
 
 
-def _save_encrypted(ctx, dest: Path, text: str, odf_version: int) -> None:
+def _save(ctx, dest: Path, text: str, odf_version: int, password: str | None) -> None:
     print(f"set ODF version {odf_version}", flush=True)
     _set_odf_version(ctx, odf_version)
     desktop = ctx.ServiceManager.createInstanceWithContext(
@@ -106,64 +118,39 @@ def _save_encrypted(ctx, dest: Path, text: str, odf_version: int) -> None:
     if dest.exists():
         dest.unlink()
     print(f"storing {dest.name}", flush=True)
-    doc.storeToURL(
-        _file_url(dest),
-        (
-            _prop("FilterName", "writer8"),
-            _prop("Password", PASSWORD),
-        ),
-    )
+    args = [_prop("FilterName", "writer8")]
+    if password is not None:
+        args.append(_prop("Password", password))
+    doc.storeToURL(_file_url(dest), tuple(args))
     doc.close(True)
     print(f"  wrote {dest.stat().st_size} bytes", flush=True)
 
 
-def main() -> int:
+GOLDENS = {
+    "lo-unencrypted": ("S1 real unencrypted ODT.", ODF_LATEST, None),
+    "lo-wholesome-gcm-argon2": ("S6 wholesome GCM+Argon2 golden.", ODF_LATEST, PASSWORD),
+    "lo-legacy-aes-cbc": ("S6 legacy per-entry AES-CBC golden.", ODF_012, PASSWORD),
+    "aoo-blowfish-pbkdf2": ("S6 classic Blowfish+PBKDF2 golden.", ODF_011, PASSWORD),
+}
+
+
+def main(argv: list[str]) -> int:
+    wanted = argv or list(GOLDENS)
+    unknown = [n for n in wanted if n not in GOLDENS]
+    if unknown:
+        print(f"unknown golden(s): {', '.join(unknown)}", flush=True)
+        print(f"choose from: {', '.join(GOLDENS)}", flush=True)
+        return 2
+
     out_dir = Path(__file__).resolve().parent
     profile = Path(os.environ.get("TEMP", "/tmp")) / f"odf-decrypt-goldens-lo-{os.getpid()}"
     profile.mkdir(parents=True, exist_ok=True)
 
     ctx, proc = _bootstrap(profile)
     try:
-        dest = out_dir / "lo-unencrypted.odt"
-        print(f"set ODF version {ODF_LATEST} (unencrypted)", flush=True)
-        _set_odf_version(ctx, ODF_LATEST)
-        desktop = ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.frame.Desktop", ctx
-        )
-        doc = desktop.loadComponentFromURL(
-            "private:factory/swriter",
-            "_blank",
-            0,
-            (_prop("Hidden", True),),
-        )
-        cursor = doc.Text.createTextCursor()
-        doc.Text.insertString(cursor, "S1 real unencrypted ODT.", False)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            dest.unlink()
-        doc.storeToURL(_file_url(dest), (_prop("FilterName", "writer8"),))
-        doc.close(True)
-        print(f"  wrote {dest.stat().st_size} bytes", flush=True)
-
-        jobs = [
-            (
-                out_dir / "lo-wholesome-gcm-argon2.odt",
-                "S6 wholesome GCM+Argon2 golden.",
-                ODF_LATEST,
-            ),
-            (
-                out_dir / "lo-legacy-aes-cbc.odt",
-                "S6 legacy per-entry AES-CBC golden.",
-                ODF_012,
-            ),
-            (
-                out_dir / "aoo-blowfish-pbkdf2.odt",
-                "S6 classic Blowfish+PBKDF2 golden.",
-                ODF_011,
-            ),
-        ]
-        for dest, text, version in jobs:
-            _save_encrypted(ctx, dest, text, version)
+        for name in wanted:
+            text, version, password = GOLDENS[name]
+            _save(ctx, out_dir / f"{name}.odt", text, version, password)
     finally:
         try:
             desktop = ctx.ServiceManager.createInstanceWithContext(
@@ -181,4 +168,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

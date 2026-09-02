@@ -2,8 +2,12 @@
 //!
 //! Path existence is not `zip.namelist().contains(path)`. Implicit folders are
 //! synthesized from member paths, and `"/"` always resolves.
+//!
+//! `recent` is LO's `m_aRecent`: a mutable pointer cache keyed on everything
+//! before the last `/`. Insert seeds the containing folder (correct). A folder
+//! miss on the walk stores `pPrevious` (one level too shallow).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FolderMeta {
@@ -32,9 +36,22 @@ pub(crate) enum ResolvedKind {
     Stream,
 }
 
+/// One `hasByHierarchicalName` / `getByHierarchicalName` result.
+///
+/// `tree_path` is the node actually returned (`pCurrent` for a folder, the
+/// resolved stream for a stream) — not the cache key and not the bag path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    pub kind: ResolvedKind,
+    pub tree_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FolderTree {
     root: FolderNode,
+    /// `m_aRecent`: folder path from root (`[]` = root, `getName` `""`).
+    /// Insert seeds the containing folder. Folder miss/walk stores `pPrevious`.
+    recent: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -47,10 +64,20 @@ impl FolderTree {
         S: AsRef<str>,
     {
         let mut root = FolderNode::default();
+        let mut recent = HashMap::new();
         for name in names {
-            insert_path(&mut root, name.as_ref())?;
+            let name = name.as_ref();
+            insert_path(&mut root, name)?;
+            // `getZipFileContents` (`ZipPackage.cxx` 641–680): on cache miss
+            // the walk starts at root, then `m_aRecent[sDirName] = pCurrent`.
+            if let Some(i) = name.rfind('/') {
+                let s_dir_name = &name[..i];
+                if !s_dir_name.is_empty() && !recent.contains_key(s_dir_name) {
+                    recent.insert(s_dir_name.to_string(), walk_containing_folder(name));
+                }
+            }
         }
-        Ok(Self { root })
+        Ok(Self { root, recent })
     }
 
     pub(crate) fn root_has_entry(&self, name: &str) -> bool {
@@ -73,30 +100,163 @@ impl FolderTree {
         &self.root.meta
     }
 
-    /// `hasByHierarchicalName`. `"/"` is unconditionally true.
+    #[cfg(test)]
+    pub(crate) fn folder_meta(&self, tree_path: &str) -> Option<&FolderMeta> {
+        folder_at(&self.root, tree_path).map(|f| &f.meta)
+    }
+
+    /// `hasByHierarchicalName` cache + walk, returning `getByHierarchicalName`'s
+    /// node. `"/"` is unconditionally true. Empty path is not found.
     ///
     /// A leading empty segment (`/Pictures/`) stops the walk on the node
     /// reached so far — the root. Stream-as-folder is `Err`.
-    pub(crate) fn resolve(&self, path: &str) -> Result<Option<ResolvedKind>, StreamAsFolder> {
-        resolve_kind(&self.root, path)
+    pub(crate) fn resolve(&mut self, path: &str) -> Result<Option<Resolved>, StreamAsFolder> {
+        if path == "/" {
+            return Ok(Some(Resolved {
+                kind: ResolvedKind::Folder,
+                tree_path: "/".into(),
+            }));
+        }
+        if path.is_empty() {
+            return Ok(None);
+        }
+
+        let n_stream_index = path.rfind('/');
+        let b_folder = n_stream_index == Some(path.len() - 1);
+
+        if let Some(n_stream_index) = n_stream_index {
+            let s_dir_name = &path[..n_stream_index];
+            if let Some(cached) = self.recent.get(s_dir_name).cloned() {
+                if b_folder {
+                    // `lastIndexOf('/', nStreamIndex)` searches length
+                    // `nStreamIndex`, so the trailing slash is excluded.
+                    let n_dir_index = path[..n_stream_index].rfind('/');
+                    let s_temp = match n_dir_index {
+                        None => &path[..n_stream_index],
+                        Some(d) => &path[d + 1..n_stream_index],
+                    };
+                    if s_temp == get_name(&cached) {
+                        return Ok(Some(Resolved {
+                            kind: ResolvedKind::Folder,
+                            tree_path: folder_tree_path(&cached),
+                        }));
+                    }
+                    self.recent.remove(s_dir_name);
+                } else {
+                    let s_temp = &path[n_stream_index + 1..];
+                    if let Some(kind) = child_kind(&self.root, &cached, s_temp) {
+                        return Ok(Some(Resolved {
+                            kind,
+                            tree_path: match kind {
+                                ResolvedKind::Stream => stream_tree_path(&cached, s_temp),
+                                ResolvedKind::Folder => {
+                                    let mut parts = cached;
+                                    parts.push(s_temp.to_string());
+                                    folder_tree_path(&parts)
+                                }
+                            },
+                        }));
+                    }
+                    self.recent.remove(s_dir_name);
+                }
+            }
+        } else {
+            return Ok(match self.root.children.get(path) {
+                Some(TreeNode::Folder(_)) => Some(Resolved {
+                    kind: ResolvedKind::Folder,
+                    tree_path: folder_tree_path(&[path.to_string()]),
+                }),
+                Some(TreeNode::Stream { .. }) => Some(Resolved {
+                    kind: ResolvedKind::Stream,
+                    tree_path: path.to_string(),
+                }),
+                None => None,
+            });
+        }
+
+        self.walk_resolve(path, b_folder, n_stream_index)
     }
 
-    pub(crate) fn set_folder_meta(
+    fn walk_resolve(
         &mut self,
         path: &str,
-        media_type: Option<String>,
-        version: Option<String>,
-    ) {
-        if let Ok(Some(ResolvedKind::Folder)) = resolve_kind(&self.root, path) {
-            if let Some(node) = folder_mut(&mut self.root, path) {
-                node.meta.media_type = media_type;
-                node.meta.version = version;
+        b_folder: bool,
+        n_stream_index: Option<usize>,
+    ) -> Result<Option<Resolved>, StreamAsFolder> {
+        let mut current: Vec<String> = Vec::new();
+        let mut previous: Option<Vec<String>> = None;
+        let mut n_old = 0;
+        loop {
+            let rest = &path[n_old..];
+            match rest.find('/') {
+                None => break,
+                Some(0) => break,
+                Some(i) => {
+                    let s_temp = &rest[..i];
+                    match child_kind(&self.root, &current, s_temp) {
+                        Some(ResolvedKind::Folder) => {
+                            previous = Some(current.clone());
+                            current.push(s_temp.to_string());
+                            n_old += i + 1;
+                        }
+                        Some(ResolvedKind::Stream) => return Err(StreamAsFolder),
+                        None => return Ok(None),
+                    }
+                }
             }
+        }
+
+        if b_folder {
+            // Folder miss: cache `pPrevious`. Do not invent ROOT when previous
+            // is None (`ZipPackage.cxx` 1079 / 996). Still return `pCurrent`.
+            if let Some(n_stream_index) = n_stream_index {
+                if let Some(prev) = previous {
+                    self.recent.insert(path[..n_stream_index].to_string(), prev);
+                }
+            }
+            return Ok(Some(Resolved {
+                kind: ResolvedKind::Folder,
+                tree_path: folder_tree_path(&current),
+            }));
+        }
+
+        let s_temp = &path[n_old..];
+        match child_kind(&self.root, &current, s_temp) {
+            Some(kind) => {
+                if let Some(n_stream_index) = n_stream_index {
+                    self.recent
+                        .insert(path[..n_stream_index].to_string(), current.clone());
+                }
+                let tree_path = match kind {
+                    ResolvedKind::Stream => stream_tree_path(&current, s_temp),
+                    ResolvedKind::Folder => {
+                        let mut parts = current;
+                        parts.push(s_temp.to_string());
+                        folder_tree_path(&parts)
+                    }
+                };
+                Ok(Some(Resolved { kind, tree_path }))
+            }
+            None => Ok(None),
         }
     }
 
-    pub(crate) fn mark_from_manifest(&mut self, path: &str, media_type: Option<String>) {
-        if let Some(stream) = stream_mut(&mut self.root, path) {
+    /// Apply folder meta at a **resolved** tree path. Does not touch `recent`.
+    pub(crate) fn set_folder_meta(
+        &mut self,
+        tree_path: &str,
+        media_type: Option<String>,
+        version: Option<String>,
+    ) {
+        if let Some(node) = folder_at_mut(&mut self.root, tree_path) {
+            node.meta.media_type = media_type;
+            node.meta.version = version;
+        }
+    }
+
+    /// Mark a stream at a **resolved** tree path. Does not touch `recent`.
+    pub(crate) fn mark_from_manifest(&mut self, tree_path: &str, media_type: Option<String>) {
+        if let Some(stream) = stream_at_mut(&mut self.root, tree_path) {
             *stream.0 = true;
             *stream.1 = media_type;
         }
@@ -108,136 +268,118 @@ impl FolderTree {
     }
 }
 
-fn resolve_kind(root: &FolderNode, path: &str) -> Result<Option<ResolvedKind>, StreamAsFolder> {
-    if path == "/" {
-        return Ok(Some(ResolvedKind::Folder));
-    }
-    if path.is_empty() {
-        return Ok(None);
-    }
-    let folder_path = path.ends_with('/');
-    let stream_name = path.rsplit('/').next().filter(|s| !s.is_empty());
-    let mut node = root;
-    let mut rest = path;
-    loop {
-        if rest.is_empty() {
-            return Ok(Some(ResolvedKind::Folder));
-        }
-        match rest.find('/') {
-            None => {
-                return match node.children.get(rest) {
-                    Some(TreeNode::Folder(_)) => Ok(Some(ResolvedKind::Folder)),
-                    Some(TreeNode::Stream { .. }) => {
-                        if folder_path {
-                            Err(StreamAsFolder)
-                        } else {
-                            Ok(Some(ResolvedKind::Stream))
-                        }
-                    }
-                    None => Ok(None),
-                };
-            }
-            Some(0) => {
-                // `nIndex == nOldIndex` → LO breaks; the row applies to the
-                // folder reached. A stream path looks up the name after the
-                // final `/` there (`a//content.xml` → `a/content.xml`).
-                if folder_path {
-                    return Ok(Some(ResolvedKind::Folder));
-                }
-                return match stream_name.and_then(|n| node.children.get(n)) {
-                    Some(TreeNode::Stream { .. }) => Ok(Some(ResolvedKind::Stream)),
-                    Some(TreeNode::Folder(_)) => Ok(Some(ResolvedKind::Folder)),
-                    None => Ok(None),
-                };
-            }
-            Some(i) => {
-                let part = &rest[..i];
-                match node.children.get(part) {
-                    Some(TreeNode::Folder(f)) => {
-                        node = f;
-                        rest = &rest[i + 1..];
-                    }
-                    Some(TreeNode::Stream { .. }) => return Err(StreamAsFolder),
-                    None => return Ok(None),
-                }
-            }
-        }
+/// `getName()`: last component, or `""` for the root.
+fn get_name(folder: &[String]) -> &str {
+    folder.last().map(String::as_str).unwrap_or("")
+}
+
+fn folder_tree_path(parts: &[String]) -> String {
+    if parts.is_empty() {
+        "/".into()
+    } else {
+        format!("{}/", parts.join("/"))
     }
 }
 
-fn folder_mut<'a>(root: &'a mut FolderNode, path: &str) -> Option<&'a mut FolderNode> {
-    if path == "/" || path.is_empty() {
+fn stream_tree_path(folder: &[String], name: &str) -> String {
+    if folder.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", folder.join("/"), name)
+    }
+}
+
+/// Folder reached by `getZipFileContents`' walk (`ZipPackage.cxx` 654–678).
+fn walk_containing_folder(name: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut n_old = 0;
+    while let Some(rel) = name[n_old..].find('/') {
+        if rel == 0 {
+            break;
+        }
+        parts.push(name[n_old..n_old + rel].to_string());
+        n_old += rel + 1;
+    }
+    parts
+}
+
+fn node_at<'a>(root: &'a FolderNode, parts: &[String]) -> Option<&'a FolderNode> {
+    let mut node = root;
+    for part in parts {
+        match node.children.get(part) {
+            Some(TreeNode::Folder(f)) => node = f,
+            _ => return None,
+        }
+    }
+    Some(node)
+}
+
+fn child_kind(root: &FolderNode, folder: &[String], name: &str) -> Option<ResolvedKind> {
+    let node = node_at(root, folder)?;
+    match node.children.get(name) {
+        Some(TreeNode::Folder(_)) => Some(ResolvedKind::Folder),
+        Some(TreeNode::Stream { .. }) => Some(ResolvedKind::Stream),
+        None => None,
+    }
+}
+
+#[cfg(test)]
+fn folder_at<'a>(root: &'a FolderNode, tree_path: &str) -> Option<&'a FolderNode> {
+    if tree_path == "/" || tree_path.is_empty() {
         return Some(root);
     }
     let mut node = root;
-    let mut rest = path;
-    loop {
-        if rest.is_empty() {
-            return Some(node);
+    for part in tree_path.split('/') {
+        if part.is_empty() {
+            continue;
         }
-        match rest.find('/') {
-            None => {
-                return match node.children.get_mut(rest) {
-                    Some(TreeNode::Folder(f)) => Some(f),
-                    _ => None,
-                };
-            }
-            Some(0) => return Some(node),
-            Some(i) => {
-                let part = &rest[..i];
-                match node.children.get_mut(part) {
-                    Some(TreeNode::Folder(f)) => {
-                        node = f;
-                        rest = &rest[i + 1..];
-                    }
-                    _ => return None,
-                }
-            }
+        match node.children.get(part) {
+            Some(TreeNode::Folder(f)) => node = f,
+            _ => return None,
         }
     }
+    Some(node)
 }
 
-fn stream_mut<'a>(
+fn folder_at_mut<'a>(root: &'a mut FolderNode, tree_path: &str) -> Option<&'a mut FolderNode> {
+    if tree_path == "/" || tree_path.is_empty() {
+        return Some(root);
+    }
+    let mut node = root;
+    for part in tree_path.split('/') {
+        if part.is_empty() {
+            continue;
+        }
+        match node.children.get_mut(part) {
+            Some(TreeNode::Folder(f)) => node = f,
+            _ => return None,
+        }
+    }
+    Some(node)
+}
+
+fn stream_at_mut<'a>(
     root: &'a mut FolderNode,
-    path: &str,
+    tree_path: &str,
 ) -> Option<(&'a mut bool, &'a mut Option<String>)> {
-    if path.is_empty() || path == "/" {
+    if tree_path.is_empty() || tree_path == "/" {
         return None;
     }
-    let stream_name = path.rsplit('/').next().filter(|s| !s.is_empty())?;
+    let mut parts: Vec<&str> = tree_path.split('/').filter(|s| !s.is_empty()).collect();
+    let name = parts.pop()?;
     let mut node = root;
-    let mut rest = path;
-    loop {
-        match rest.find('/') {
-            None => {
-                return match node.children.get_mut(rest) {
-                    Some(TreeNode::Stream {
-                        from_manifest,
-                        media_type,
-                    }) => Some((from_manifest, media_type)),
-                    _ => None,
-                };
-            }
-            Some(0) => {
-                return match node.children.get_mut(stream_name) {
-                    Some(TreeNode::Stream {
-                        from_manifest,
-                        media_type,
-                    }) => Some((from_manifest, media_type)),
-                    _ => None,
-                };
-            }
-            Some(i) => {
-                let part = &rest[..i];
-                match node.children.get_mut(part) {
-                    Some(TreeNode::Folder(f)) => {
-                        node = f;
-                        rest = &rest[i + 1..];
-                    }
-                    _ => return None,
-                }
-            }
+    for part in parts {
+        match node.children.get_mut(part) {
+            Some(TreeNode::Folder(f)) => node = f,
+            _ => return None,
         }
+    }
+    match node.children.get_mut(name) {
+        Some(TreeNode::Stream {
+            from_manifest,
+            media_type,
+        }) => Some((from_manifest, media_type)),
+        _ => None,
     }
 }
 
@@ -321,49 +463,45 @@ fn insert_path(root: &mut FolderNode, name: &str) -> Result<(), StreamAsFolder> 
 mod tests {
     use super::*;
 
+    fn kind_of(tree: &mut FolderTree, path: &str) -> Option<ResolvedKind> {
+        tree.resolve(path).unwrap().map(|r| r.kind)
+    }
+
     #[test]
     fn slash_always_resolves() {
-        let tree = FolderTree::from_zip_names(["content.xml"]).unwrap();
-        assert_eq!(tree.resolve("/").unwrap(), Some(ResolvedKind::Folder));
+        let mut tree = FolderTree::from_zip_names(["content.xml"]).unwrap();
+        assert_eq!(kind_of(&mut tree, "/"), Some(ResolvedKind::Folder));
     }
 
     #[test]
     fn implicit_folder_from_member_path() {
-        let tree = FolderTree::from_zip_names(["Pictures/photo.png"]).unwrap();
+        let mut tree = FolderTree::from_zip_names(["Pictures/photo.png"]).unwrap();
+        assert_eq!(kind_of(&mut tree, "Pictures/"), Some(ResolvedKind::Folder));
+        assert_eq!(kind_of(&mut tree, "Pictures"), Some(ResolvedKind::Folder));
         assert_eq!(
-            tree.resolve("Pictures/").unwrap(),
-            Some(ResolvedKind::Folder)
-        );
-        assert_eq!(
-            tree.resolve("Pictures").unwrap(),
-            Some(ResolvedKind::Folder)
-        );
-        assert_eq!(
-            tree.resolve("Pictures/photo.png").unwrap(),
+            kind_of(&mut tree, "Pictures/photo.png"),
             Some(ResolvedKind::Stream)
         );
-        assert_eq!(tree.resolve("Pictures/missing.png").unwrap(), None);
+        assert_eq!(kind_of(&mut tree, "Pictures/missing.png"), None);
     }
 
     #[test]
     fn namelist_does_not_see_implicit_folder() {
         let names = ["Pictures/photo.png", "content.xml"];
         assert!(!names.iter().any(|n| *n == "Pictures/" || *n == "Pictures"));
-        let tree = FolderTree::from_zip_names(names).unwrap();
-        assert_eq!(
-            tree.resolve("Pictures/").unwrap(),
-            Some(ResolvedKind::Folder)
-        );
+        let mut tree = FolderTree::from_zip_names(names).unwrap();
+        assert_eq!(kind_of(&mut tree, "Pictures/"), Some(ResolvedKind::Folder));
     }
 
     #[test]
     fn root_encrypted_package_is_a_root_stream() {
-        let tree = FolderTree::from_zip_names(["encrypted-package", "META-INF/manifest.xml"]).unwrap();
+        let mut tree =
+            FolderTree::from_zip_names(["encrypted-package", "META-INF/manifest.xml"]).unwrap();
         assert!(tree.root_has_stream("encrypted-package"));
         assert!(tree.root_has_entry("encrypted-package"));
         assert!(!tree.root_has_stream("META-INF/manifest.xml"));
         assert_eq!(
-            tree.resolve("META-INF/manifest.xml").unwrap(),
+            kind_of(&mut tree, "META-INF/manifest.xml"),
             Some(ResolvedKind::Stream)
         );
     }
@@ -377,13 +515,13 @@ mod tests {
 
     #[test]
     fn empty_segment_inserts_stream_after_last_slash() {
-        let tree = FolderTree::from_zip_names(["a//content.xml"]).unwrap();
+        let mut tree = FolderTree::from_zip_names(["a//content.xml"]).unwrap();
         assert_eq!(
-            tree.resolve("a/content.xml").unwrap(),
+            kind_of(&mut tree, "a/content.xml"),
             Some(ResolvedKind::Stream)
         );
         assert_eq!(
-            tree.resolve("a//content.xml").unwrap(),
+            kind_of(&mut tree, "a//content.xml"),
             Some(ResolvedKind::Stream)
         );
     }
@@ -391,12 +529,11 @@ mod tests {
     #[test]
     fn leading_slash_folder_row_lands_on_root() {
         let mut tree = FolderTree::from_zip_names(["content.xml"]).unwrap();
-        assert_eq!(
-            tree.resolve("/Pictures/").unwrap(),
-            Some(ResolvedKind::Folder)
-        );
+        let resolved = tree.resolve("/Pictures/").unwrap().unwrap();
+        assert_eq!(resolved.kind, ResolvedKind::Folder);
+        assert_eq!(resolved.tree_path, "/");
         tree.set_folder_meta(
-            "/Pictures/",
+            &resolved.tree_path,
             Some("application/vnd.oasis.opendocument.text".into()),
             Some("1.2".into()),
         );
@@ -432,5 +569,78 @@ mod tests {
     fn stream_as_folder_is_rejected() {
         let err = FolderTree::from_zip_names(["content.xml", "content.xml/extra"]);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn leading_slash_stream_row_does_not_resolve() {
+        // LO's walk breaks at the empty first segment and then looks up
+        // "/content.xml" as one child name, which never matches; the dirname is
+        // empty so `m_aRecent` has no key for it either. Not found.
+        let mut tree =
+            FolderTree::from_zip_names(["content.xml", "META-INF/manifest.xml"]).unwrap();
+        assert_eq!(kind_of(&mut tree, "/content.xml"), None);
+        // The folder form still lands on the root (`getByHierarchicalName`
+        // returns `pCurrent` after the break).
+        let folder = tree.resolve("/Pictures/").unwrap().unwrap();
+        assert_eq!(folder.kind, ResolvedKind::Folder);
+        assert_eq!(folder.tree_path, "/");
+    }
+
+    #[test]
+    fn double_slash_stream_needs_the_member_dirname_key() {
+        // `a//content.xml` resolves only because `getZipFileContents` wrote
+        // `m_aRecent["a/"]` for that member spelling.
+        let mut with_member = FolderTree::from_zip_names(["a//content.xml"]).unwrap();
+        assert_eq!(
+            kind_of(&mut with_member, "a//content.xml"),
+            Some(ResolvedKind::Stream)
+        );
+        // Same tree shape, but the member was spelled `a/content.xml`, so the
+        // key is "a" and the doubled-slash row finds no cache entry.
+        let mut single = FolderTree::from_zip_names(["a/content.xml"]).unwrap();
+        assert_eq!(kind_of(&mut single, "a//content.xml"), None);
+        assert_eq!(
+            kind_of(&mut single, "a/content.xml"),
+            Some(ResolvedKind::Stream)
+        );
+    }
+
+    #[test]
+    fn folder_row_poisons_recent_one_level_too_shallow() {
+        // Nested member seeds `"Pictures/album"`, not `"Pictures"`. A later
+        // `Pictures/` miss caches `pPrevious` (root). `Pictures/content.xml`
+        // then hits that entry and resolves as root `content.xml`.
+        let mut tree =
+            FolderTree::from_zip_names(["content.xml", "Pictures/album/photo.png"]).unwrap();
+        let folder = tree.resolve("Pictures/").unwrap().unwrap();
+        assert_eq!(folder.kind, ResolvedKind::Folder);
+        assert_eq!(folder.tree_path, "Pictures/");
+        tree.set_folder_meta(&folder.tree_path, Some("image/".into()), Some("1.2".into()));
+        assert!(tree.root_meta().media_type.is_none());
+        assert!(tree.root_meta().version.is_none());
+        let pictures = tree.folder_meta("Pictures/").expect("Pictures folder");
+        assert_eq!(pictures.media_type.as_deref(), Some("image/"));
+        assert_eq!(pictures.version.as_deref(), Some("1.2"));
+
+        let stream = tree.resolve("Pictures/content.xml").unwrap().unwrap();
+        assert_eq!(stream.kind, ResolvedKind::Stream);
+        assert_eq!(stream.tree_path, "content.xml");
+    }
+
+    #[test]
+    fn pictures_photo_insert_does_not_poison_folder_lookup() {
+        // `Pictures/photo.png` seeds `["Pictures"]` correctly. `Pictures/` is a
+        // cache hit (`getName() == "Pictures"`) and must not overwrite.
+        let mut tree = FolderTree::from_zip_names(["content.xml", "Pictures/photo.png"]).unwrap();
+        let folder = tree.resolve("Pictures/").unwrap().unwrap();
+        assert_eq!(folder.kind, ResolvedKind::Folder);
+        assert_eq!(folder.tree_path, "Pictures/");
+        assert_eq!(kind_of(&mut tree, "Pictures/content.xml"), None);
+        assert_eq!(
+            kind_of(&mut tree, "Pictures/photo.png"),
+            Some(ResolvedKind::Stream)
+        );
+        let photo = tree.resolve("Pictures/photo.png").unwrap().unwrap();
+        assert_eq!(photo.tree_path, "Pictures/photo.png");
     }
 }

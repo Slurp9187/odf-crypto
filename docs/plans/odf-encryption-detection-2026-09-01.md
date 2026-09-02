@@ -75,6 +75,8 @@ Three zip-shape outcomes. PGP is a `Kdf`, not a mode.
 
 **Path existence is a folder-tree lookup, not a namelist.** `ZipPackage::hasByHierarchicalName` returns `true` unconditionally for `"/"` (`ZipPackage.cxx` 1012–1016). Every other lookup resolves against the folder tree `getZipFileContents` builds, and that tree **synthesizes implicit folders** from member paths (`if (!pCurrent->hasByName(sTemp))` → create). So `Pictures/` resolves even when the zip carries no explicit directory entry. The root row is how non-wholesome files get folder version and media-type; other folder rows carry theirs the same way. Build the tree first, then resolve. Do **not** implement “path exists in the zip” as `zip.namelist().contains(path)`.
 
+**`m_aRecent` is load-bearing and buggy on folder misses (A10).** Hierarchical lookups cache the folder before the last `/`. Insert and stream hits store the containing folder. A folder-shaped miss stores `pPrevious` (parent). `parseManifest` calls `has` then `get`: folder meta still applies to `pCurrent`, but the next stream row can hit the poisoned parent. A nested zip member (`Pictures/album/photo.png`) does not seed `"Pictures"`, so `Pictures/` then `Pictures/content.xml` applies the encryption bag to **root** `content.xml`. Latch and `EntryEncryption.path` use the resolved node's tree path (`getName()`), not `bag.full_path`. A `Pictures/photo.png` insert then `Pictures/` is a cache hit and does not poison.
+
 **Package-level “this file is encrypted”** (`m_bHasEncryptedEntries`, `ZipPackage.cxx` 349–353 and 434–438):
 
 ```
@@ -234,6 +236,35 @@ Keep URI tables in one module that matches `ManifestDefines.hxx`. No `OpenOffice
 
 LO is not a pure function of rows. Implement the same two machines.
 
+### Stage 0 — zip acceptance (settled 2026-09-01)
+
+**Decision: we reproduce LO's whole-package refusals.** `classify` answers for the
+same archives LibreOffice will open, and refuses — with `DetectError` — the ones it
+refuses. The alternative (classify anything zip-shaped) was rejected: a confident
+`Mode` plus a full algorithm tuple for a file LO calls a bad zip is a wrong answer
+to this crate's one question, and it lets a crafted archive pick its own verdict.
+
+Reproduced from `ZipFile::readCEN` and `ZipPackage`, before any manifest work:
+
+| Check | LO |
+|---|---|
+| Entry name validity | `ZipFile.cxx` 1407–1408 → `IsValidZipEntryFileName(name, true)` (`storagehelper.cxx` 567–600). Rejects `\ ? < > " \| :`, a leading `/`, `.`/`..` segments, control chars. `//` **is** allowed. |
+| Duplicate names | `ZipFile.cxx` 1496–1500; for ODF also case-insensitive (`m_nFormat == PACKAGE` → `Checks::TryCheckInsensitive`, `:1502-1517`) |
+| FAT directory entries | `ZipFile.cxx` 1488–1494 — size 0, MS-DOS made-by, `FILE_ATTRIBUTE_DIRECTORY` → skipped, not a tree node |
+| Stream shadowed by a folder | `ZipPackage.cxx` 670–677 — `ZipIOException("Bad Zip File, stream as folder")` at tree-build time |
+| Entry names are UTF-8 | `ZipFile.cxx` 1403–1405 — always UTF-8, never the CP437 fallback the general-purpose flag would select |
+| STORED + data descriptor | `ZipPackage::checkZipEntriesWithDD` (`:180-207`, called at `:456`) — such an entry must resolve to a stream the manifest accepted as encrypted. Every encrypted member of a real LO/AOO ODF is this shape. |
+
+Two deliberate departures, both bounding work rather than changing verdicts: the
+manifest stream is read under a size cap, and element nesting past `MAX_DEPTH` is
+counted rather than stacked (LO invalidates everything past level 6 anyway, so
+nothing below it can reach a bag — but the counter must keep start/end balanced,
+or the document reads as malformed and every row is lost).
+
+**Not** reproduced, and still open: `m_bForceRecovery` (LO suppresses roughly a
+dozen of these under Repair), and the rest of `readCEN`'s structural checks —
+overlapping entries, STORED size mismatch, data-descriptor holes, name length.
+
 ### Stage A — streaming manifest reader (`ManifestImport`)
 
 Carry across elements inside one `file-entry`: `derived_key_size`, `ignore_encrypt_data`, `pgp_seen` / collected keys, first-entry flag, package version.
@@ -254,10 +285,10 @@ Output of Stage A: an ordered list of property bags.
 
 Carry across rows: sticky `key_info` (starts null; set when a bag has `KeyInfo`; **never cleared**), `o_first_version`, first-wins latch.
 
-10. For each bag with nonempty `full-path` that resolves in the folder tree (§1 — `"/"` always true, implicit folders included):
-    - If the target is a folder (including `/`): set that folder’s media-type and version. Do not run encryption predicates on folders.
-    - If the target is a stream: apply §2 to the bag **plus** sticky `key_info`. Complete → `EntryEncryption`, maybe latch. Incomplete → not encrypted.
-11. Latch: if `!package_encrypted` and short name is `content.xml` or `encrypted-package`, set `package_encrypted` and `common =` this entry. First wins.
+10. For each bag with nonempty `full-path` that resolves in the folder tree (§1 — `"/"` always true, implicit folders included; resolution is `m_aRecent` + walk, so a folder miss can make a later stream row land on a different node than `full-path`):
+    - If the target is a folder (including `/`): set that folder’s media-type and version (`pCurrent`, not the poisoned cache parent). Do not run encryption predicates on folders.
+    - If the target is a stream: apply §2 to the bag **plus** sticky `key_info`. Complete → `EntryEncryption` whose `path` is the **resolved** tree path, maybe latch. Incomplete → not encrypted.
+11. Latch: if `!package_encrypted` and the resolved stream’s short name is `content.xml` or `encrypted-package`, set `package_encrypted` and `common =` this entry. First wins.
 12. Mode: `Wholesome` if `zip_has_encrypted_package` **and** that member’s bag was complete; else `PerEntry` if any complete ordinary member exists; else `Plain`. PGP does not change the mode.
 13. Root version: `/` folder version if a `/` row ran; else, if a `mimetype` stream exists and starts with `application/vnd.` and root media-type was empty, copy `o_first_version` onto the root (and the mimetype onto media-type).
 14. Always run the unexpected-member scan (§3) with `isWholesomeEncryption = zip_has_encrypted_package` — the bare zip check, **not** `mode == Wholesome`. A present `encrypted-package` member whose row was *incomplete* is `PerEntry` / `Plain` yet is still scanned under the wholesome allow-list. `has_unexpected_streams =` that result. `odf12_fatal = has_unexpected_streams && root_version >= "1.2"`.
@@ -315,7 +346,7 @@ Close these in the plan (amend in place) when evidence lands. Do not guess.
 1. **Import order is load-bearing (F2 + old Q1).** `nDerivedKeySize` is a `ManifestImport` member, reset per `encryption-data`, written by `doAlgorithm`, read by `doKeyDerivation`. The same flag/`ignore` early-return makes unknown start-key URI order-dependent. LO-written files emit algorithm then start-key then KDF (`ManifestExport.cxx`), so produced files match the “cipher default applies” story. Constructed files can disagree. **S2 must fixture the reversal** (`aes256-cbc`, no `key-size`, KDF first → `derived_key_len == 16`). Whether we *document* that as “LO quirk, we match it” is already decided: we match it. **Producer half (2026-09-01):** all three S6 goldens write `<algorithm>` then optional `<start-key-generation>` then `<key-derivation>`. No producer in the corpus emits the reversed order; the reversal fixture stays synthetic.
 2. **Nested `content.xml` latch.** Specified as short name. Confirm whether any real producer writes `…/content.xml` encrypted without a root `content.xml`. Tracked as [#8](https://github.com/Slurp9187/odf-decrypt-rs/issues/8), gated on the same corpus as question 4.
 3. **PGP + SHA512-1K.** `ZipPackage::setPropertyValue` defaults PGP checksum to `SHA512_1K` (`ZipPackage.cxx` 1920–1923) but `ManifestExport` only writes SHA1-1K / SHA256-1K. Unknown checksum-type ⇒ no digest-alg ⇒ non-GCM PGP fails the accept predicate. Likely the save path overrides to GCM before export; not fully traced.
-4. **Sample corpus.** Closed 2026-09-01: `tests/goldens/` holds the three issue-#7 files plus (when generated) a real unencrypted ODT. Constructed fixtures remain the authority for order-dependent / malformed cases.
+4. **Sample corpus.** Closed 2026-09-01: `tests/goldens/` holds the three issue-#7 files plus `lo-unencrypted.odt`, the S1 real unencrypted ODT. Constructed fixtures remain the authority for order-dependent / malformed cases. `make_goldens.py` takes golden names (default: all four); regenerating an encrypted golden changes its salts, IVs and `manifest:size`, so re-check the `size` assertions and `URIS.md` when you do.
 
 Settled 2026-09-01: `Mode` is zip shape only (`Plain` / `PerEntry` / `Wholesome`). PGP lives on `Kdf`.
 

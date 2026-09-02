@@ -28,9 +28,8 @@ struct ZipMember {
 pub fn classify(bytes: &[u8]) -> Result<Classification, DetectError> {
     let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| DetectError::NotZip)?;
     let members = collect_members(&mut archive)?;
-    let mut tree = FolderTree::from_zip_names(members.iter().map(|m| m.name.as_str())).map_err(
-        |_| DetectError::Zip("Bad Zip File, stream as folder".into()),
-    )?;
+    let mut tree = FolderTree::from_zip_names(members.iter().map(|m| m.name.as_str()))
+        .map_err(|_| DetectError::Zip("Bad Zip File, stream as folder".into()))?;
     let zip_has_encrypted_package = tree.root_has_entry("encrypted-package");
 
     let manifest_xml = read_named_member(&mut archive, &members, "META-INF/manifest.xml")?
@@ -42,9 +41,7 @@ pub fn classify(bytes: &[u8]) -> Result<Classification, DetectError> {
     Ok(class)
 }
 
-fn collect_members(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
-) -> Result<Vec<ZipMember>, DetectError> {
+fn collect_members(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<ZipMember>, DetectError> {
     let mut members = Vec::new();
     let mut seen = HashSet::new();
     let mut seen_lower = HashSet::new();
@@ -224,22 +221,29 @@ fn stage_b(
                 ));
             }
         };
-        let Some(kind) = resolved else {
+        let Some(resolved) = resolved else {
             continue;
         };
 
-        match kind {
+        match resolved.kind {
             ResolvedKind::Folder => {
-                tree.set_folder_meta(&bag.full_path, bag.media_type.clone(), bag.version.clone());
+                tree.set_folder_meta(
+                    &resolved.tree_path,
+                    bag.media_type.clone(),
+                    bag.version.clone(),
+                );
             }
             ResolvedKind::Stream => {
-                tree.mark_from_manifest(&bag.full_path, bag.media_type.clone());
-                if let Some(entry) = accept_row(&bag, key_info) {
-                    if bag.full_path == "encrypted-package" {
+                tree.mark_from_manifest(&resolved.tree_path, bag.media_type.clone());
+                if let Some(entry) = accept_row(&bag, key_info, resolved.tree_path.clone()) {
+                    // Wholesome complete-check is the resolved root member,
+                    // not the bag's `full-path`.
+                    if resolved.tree_path == "encrypted-package" {
                         encrypted_package_complete = true;
                     }
                     let short = short_name(&entry.path);
-                    if !package_encrypted && (short == "content.xml" || short == "encrypted-package")
+                    if !package_encrypted
+                        && (short == "content.xml" || short == "encrypted-package")
                     {
                         package_encrypted = true;
                         common = Some(entry.clone());
@@ -331,12 +335,12 @@ fn short_name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn accept_row(bag: &PropertyBag, key_info: bool) -> Option<EntryEncryption> {
+fn accept_row(bag: &PropertyBag, key_info: bool, path: String) -> Option<EntryEncryption> {
     if key_info && pgp_complete(bag) {
-        return Some(pgp_entry(bag));
+        return Some(pgp_entry(bag, path));
     }
     if password_complete(bag) {
-        return Some(password_entry(bag));
+        return Some(password_entry(bag, path));
     }
     None
 }
@@ -364,10 +368,10 @@ fn password_complete(bag: &PropertyBag) -> bool {
             || (bag.digest.is_some() && bag.digest_alg.is_some()))
 }
 
-fn pgp_entry(bag: &PropertyBag) -> EntryEncryption {
+fn pgp_entry(bag: &PropertyBag, path: String) -> EntryEncryption {
     let cipher = bag.enc_alg.expect("pgp_complete");
     EntryEncryption {
-        path: bag.full_path.clone(),
+        path,
         cipher,
         kdf: Kdf::PgpRsaOaepMgf1p,
         start_key: StartKeyAlg::Sha256,
@@ -378,7 +382,7 @@ fn pgp_entry(bag: &PropertyBag) -> EntryEncryption {
     }
 }
 
-fn password_entry(bag: &PropertyBag) -> EntryEncryption {
+fn password_entry(bag: &PropertyBag, path: String) -> EntryEncryption {
     let cipher = bag.enc_alg.expect("password_complete");
     let salt = bag.salt.clone().unwrap_or_default();
     let kdf = match bag.kdf {
@@ -393,7 +397,7 @@ fn password_entry(bag: &PropertyBag) -> EntryEncryption {
         _ => unreachable!("password_complete"),
     };
     EntryEncryption {
-        path: bag.full_path.clone(),
+        path,
         cipher,
         kdf,
         start_key: bag.start_key_alg.unwrap_or(StartKeyAlg::Sha1),

@@ -15,8 +15,16 @@ struct StackFrame {
     valid: bool,
 }
 
+/// Deeper than any manifest shape LO acts on: `startElement` dispatches levels
+/// 1–6 and invalidates the rest, so nothing below this can affect a bag. It
+/// bounds `convert_name`'s stack scan, keeping parsing linear in element count.
+const MAX_DEPTH: usize = 16;
+
 struct Import {
     stack: Vec<StackFrame>,
+    /// Elements entered past `MAX_DEPTH`, counted rather than pushed so that
+    /// `end_element` stays balanced without growing the stack.
+    beyond_cap: usize,
     bags: Vec<PropertyBag>,
     bag: PropertyBag,
     ignore_encrypt_data: bool,
@@ -33,6 +41,7 @@ impl Import {
     fn new() -> Self {
         Self {
             stack: Vec::new(),
+            beyond_cap: 0,
             bags: Vec::new(),
             bag: PropertyBag::default(),
             ignore_encrypt_data: false,
@@ -57,7 +66,7 @@ impl Import {
     }
 
     fn convert_name(&self, name: &str) -> String {
-        for frame in self.stack.iter().rev().take(8) {
+        for frame in self.stack.iter().rev() {
             if !frame.namespaces.is_empty() {
                 if let Some(converted) = Self::convert_name_with_ns(name, &frame.namespaces) {
                     return converted;
@@ -72,14 +81,6 @@ impl Import {
         raw_name: &str,
         raw_attrs: Vec<(String, String)>,
     ) -> (String, HashMap<String, String>) {
-        if self.stack.len() >= 8 {
-            self.stack.push(StackFrame {
-                converted_name: raw_name.to_string(),
-                namespaces: HashMap::new(),
-                valid: false,
-            });
-            return (raw_name.to_string(), HashMap::new());
-        }
         let mut namespaces = HashMap::new();
         let mut other = Vec::new();
         for (key, value) in raw_attrs {
@@ -123,6 +124,10 @@ impl Import {
     }
 
     fn start_element(&mut self, raw_name: &str, raw_attrs: Vec<(String, String)>) {
+        if self.beyond_cap > 0 || self.stack.len() >= MAX_DEPTH {
+            self.beyond_cap += 1;
+            return;
+        }
         let (converted, attrs) = self.push_name_and_namespaces(raw_name, raw_attrs);
         let level = self.stack.len();
 
@@ -213,6 +218,10 @@ impl Import {
     }
 
     fn end_element(&mut self, raw_name: &str) {
+        if self.beyond_cap > 0 {
+            self.beyond_cap -= 1;
+            return;
+        }
         if self.stack.is_empty() {
             return;
         }
@@ -242,8 +251,7 @@ impl Import {
             if !self.ignore_encrypt_data {
                 // A nested `encrypted-key` leaves the outer slot empty; LO still
                 // pushes that zero-length key (`ManifestImport.cxx` 483–487).
-                self.keys
-                    .push(self.current_key.take().unwrap_or_default());
+                self.keys.push(self.current_key.take().unwrap_or_default());
                 self.pgp_encryption = true;
             }
             self.current_key = None;
@@ -583,7 +591,10 @@ fn expand_ref(name: &str) -> String {
         } else {
             rest.parse().ok()
         };
-        return code.and_then(char::from_u32).map(|c| c.to_string()).unwrap_or_default();
+        return code
+            .and_then(char::from_u32)
+            .map(|c| c.to_string())
+            .unwrap_or_default();
     }
     match name {
         "amp" => "&".into(),

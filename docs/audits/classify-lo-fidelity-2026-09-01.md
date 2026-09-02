@@ -1,4 +1,4 @@
-Status: Audit — findings unfiled · Audited 2026-09-01 against `07047a02f94d` · A1–A10, B1–B7, C1–C7, D1–D7 open
+Status: Audit — applied and verified 2026-09-01 against `07047a02f94d` · A1–A10, B1–B7, C1–C7, D1–D7 landed · see §Verification pass
 
 # Audit — `classify` vs LibreOffice `package/`
 
@@ -237,19 +237,43 @@ member META-INF//manifest.xml
 insert the stream named after the final `/` into the folder reached. Keep `resolve`
 on the same truncated walk.
 
-### A10 — LO's `m_aRecent` lookup cache is off by one level for folder paths — **unrefuted**
+### A10 — LO's `m_aRecent` lookup cache is off by one level for folder paths — **implemented 2026-09-01**
 
-`ZipPackage.cxx:996`, `:1079`
+`ZipPackage.cxx:996`, `:1079`, `:623-680`, `:1012-1090`
 
-LO caches hierarchical-name lookups in a member map keyed on everything before the
-last `/`, never cleared across rows. For a *stream* path the cached value is the
-containing folder (correct); for a *folder*-shaped path it stores the parent, one
-level too shallow. The claim is that a `Pictures/` row followed by a
-`Pictures/content.xml` row makes LO resolve the second row to the **root**
-`content.xml` and latch on it. `FolderTree::resolve` is a pure, cache-free walk and
-cannot express this in either direction.
+LO caches hierarchical-name lookups in `m_aRecent`, keyed on everything before the
+last `/`, never cleared across rows. Stream lookups cache the containing folder
+(correct). Folder-shaped paths on the **miss/walk** path store `pPrevious` (the
+parent), one level too shallow. `getByHierarchicalName` still returns `pCurrent`
+(the real folder), so folder meta applies correctly; the poison is the next cache
+hit.
 
-Surfaced by the completeness pass, so it has no repro. Verify before acting.
+The naive `Pictures/` + `Pictures/photo.png` pair does **not** flip: insert already
+seeded `["Pictures"]` correctly, and a later `Pictures/` is a hit (`getName()`
+matches) that does not overwrite. The realistic flip is a nested member that
+never seeds `"Pictures"`:
+
+```
+zip: content.xml + Pictures/album/photo.png
+manifest: Pictures/ folder row, then Pictures/content.xml with a complete encryption bag
+
+  LO    → Pictures/ miss caches ROOT; Pictures/content.xml hits ROOT.content.xml
+          → package_encrypted, latch getName()=="content.xml"
+  crate (before) → Pictures/content.xml does not resolve → Plain
+```
+
+`FolderTree` now carries a mutable `recent: HashMap<String, Vec<String>>` seeded
+like `getZipFileContents` (containing folder on cache miss). `resolve` is
+`hasByHierarchicalName` cache + walk: folder miss caches `pPrevious` (skipped when
+previous is None), returns walked `pCurrent`. Stream cache hit is a child of the
+cached folder. `set_folder_meta` / `mark_from_manifest` / `EntryEncryption.path`
+use the **resolved tree path**, not `bag.full_path`. V2 empty-segment keys stay
+insert-seeded (`a//content.xml` → `"a/"`); `/content.xml` still misses.
+
+Regression tests: `folder_row_poisons_recent_one_level_too_shallow`,
+`pictures_photo_insert_does_not_poison_folder_lookup`,
+`pictures_folder_row_poisons_nested_content_xml_onto_root`,
+`pictures_photo_insert_then_folder_row_does_not_poison`.
 
 ## B. LO refuses the archive; `classify` answers
 
@@ -632,6 +656,133 @@ closed" and all six are open. #6 and #7 are closeable today; #2 is blocked on D5
 #3, #4 and #5 each need one added assertion (D1, D2/A4, D6) before their close
 conditions are honestly rather than nominally met. OQ3 (PGP + SHA512-1K) still has no
 tracking issue and will vanish when #1 closes.
+
+## Verification pass
+
+The findings were implemented and then re-checked against LO source. Baseline
+after the fixes below: `cargo test --offline` → **63 passed, 0 failed**; clippy
+clean.
+
+**Two regressions the implementation introduced, both found by probe and fixed.**
+
+### V1 — the depth cap unbalanced the element stack
+
+`src/manifest.rs`. B7's fix capped depth by pushing a frame that stored the *raw*
+element name while `end_element` still compared against the *converted* name, and
+`convert_name` searched only the top 8 frames. For an element deeper than 8 whose
+prefix was bound above that window, the two disagreed, so the frame never popped —
+and with A3's new contract (`Eof` with a non-empty stack → zero rows) the entire
+manifest was discarded.
+
+```
+a file-entry containing a 40-deep subtree under an aliased manifest namespace,
+followed by a normal encrypted content.xml row
+  before → Plain, package_encrypted false, encrypted_entries 0, odf_version None
+  LO      → PerEntry, encrypted (levels past 6 are invalid, parsing continues)
+```
+
+Fixed by counting depth past `MAX_DEPTH` instead of pushing frames, so start/end
+stay balanced with no name comparison at all, and dropping the `take(8)` window.
+Levels past 6 are invalid in LO regardless, so counting them is faithful. B7's
+win is kept: the 60,000-deep 854-byte input now classifies in **22.7 ms** (release),
+against 12–25 s before B7 and a hang-length regression risk if the cap is removed.
+Regression test: `deep_subtree_does_not_drop_later_entries`.
+
+### V2 — a leading-slash stream row resolved where LO returns false
+
+`src/zip_tree.rs`. A8/A9's fix made the walk, on breaking at an empty segment, look
+up the name after the final `/` in the folder reached. That is right for
+`a//content.xml` but wrong for `/content.xml`, which LO does **not** resolve.
+
+LO's walk cannot resolve either: on the break it looks up `aName[nOldIndex..]` —
+still carrying the empty segment — as one child name (`ZipPackage.cxx` 1083–1090).
+`a//content.xml` resolves only through the `m_aRecent` cache, keyed on
+`name[..name.rfind('/')]` exactly as `getZipFileContents` spelled it (`:678-680`,
+read at `:1026-1044`). `/content.xml` has an empty dirname, which is never a key.
+
+```
+manifest row full-path="/content.xml", complete tuple, root content.xml member
+  before → PerEntry, package_encrypted true
+  LO      → row not applied → Plain
+```
+
+Fixed by recording the member dirname keys on `FolderTree` and requiring a hit
+before the break path resolves a stream. Regression tests:
+`leading_slash_stream_row_is_not_applied`, `leading_slash_stream_row_does_not_resolve`,
+`double_slash_stream_needs_the_member_dirname_key`. Both fixes were mutation-checked:
+reverting either makes the new tests fail at both the unit and `classify` layers.
+V3 replaced the immutable `dir_keys` set with insert-time `recent` seeds; those
+three tests still pass.
+
+### V3 — `m_aRecent` folder miss stores `pPrevious` (A10)
+
+`src/zip_tree.rs`, `src/classify.rs`. A10's cache is load-bearing in the same way
+V2 was: `a//content.xml` only resolves because insert wrote `recent["a/"]`. The
+folder-shaped miss path was the remaining hole.
+
+`resolve` is now `&mut self` and matches `hasByHierarchicalName` then returns
+`getByHierarchicalName`'s node. Insert seeds the containing folder. A `Pictures/`
+walk caches `[]` (root). Folder meta still uses `pCurrent` (`Pictures/`). The
+next `Pictures/content.xml` hit looks up `content.xml` on the cached folder —
+root — and Stage B applies the row to that stream (`EntryEncryption.path` is the
+resolved tree path, so latch sees `getName()=="content.xml"`). `pPrevious ==
+nullptr` does not insert a cache entry.
+
+The naive `Pictures/photo.png` then `Pictures/` pair is a cache hit and does not
+overwrite. Tests cover both directions at zip_tree and classify layers.
+
+### Confirmed correct on re-read
+
+- **A1** — `HandleSignChar` (`strtmpl.hxx` 638–651) read in source; the port handles
+  sign, overflow-to-zero, and LO's whitespace set (not `str::trim`).
+- **A2** — `ManifestImport.cxx` 335–345 read in source: `case 2:` has no parent check,
+  `case 3:` is the first that does. The guard is now `level >= 3`.
+- **A9** — `IsValidZipEntryFileName` allows `//` (only `.`/`..` and a leading `/` are
+  rejected), so the doubled-slash member really does reach the tree.
+- **C1** — `decode_b64` is a faithful port of `decodeSomeChars`, including `'='`
+  decrementing the output width only at positions 3 and 4.
+- **C4** — `normalize_attr_value` expands references *before* normalizing, so
+  `&#x0A;` survives as a newline and a literal newline becomes a space. Correct per
+  XML §3.3.3; the audit's own note said character references are protected.
+- **A5 / mimetype fallback** — `ZipPackage.cxx` 496–507 read in source: the version
+  copy is guarded by `GetVersion().isEmpty()`, which the adapted call preserves now
+  that `set_folder_meta` assigns unconditionally.
+- Plan amendments 1–4 landed; amendment 5 was missing and is now §6 Stage 0.
+
+### Known, accepted, still open
+
+- **A10 — closed 2026-09-01.** `m_aRecent` is now a mutable folder-path cache on
+  `FolderTree`. Insert seeds the containing folder (`getZipFileContents` `:678-680`).
+  A folder miss caches `pPrevious` (`:1079`); `Pictures/` after
+  `Pictures/album/photo.png` poisons `["Pictures"]=ROOT`, so `Pictures/content.xml`
+  latches root `content.xml`. Folder meta still applies to `pCurrent`. A
+  `Pictures/photo.png` insert then `Pictures/` is a cache hit and does not poison.
+  See V3.
+- **D5 — closed 2026-09-01.** `tests/goldens/lo-unencrypted.odt` was generated with
+  `make_goldens.py lo-unencrypted` (LibreOffice 26.2.1.2, `DefaultVersion=3`, no
+  `Password`). `classify_real_unencrypted_odt_is_plain` now loads it through
+  `load_golden`, so a missing file fails the suite instead of silently skipping,
+  and asserts the full set the finding asked for: `Plain`, `!package_encrypted`,
+  no `common`, no entries, `odf_version == Some("1.4")`, the root media-type, and
+  `!has_unexpected_streams` / `!odf12_fatal`.
+
+  The file is the only fixture whose member set a producer actually wrote, so it
+  is the first real exercise of the non-wholesome scan: `mimetype` stored first,
+  an explicit `Configurations2/` directory entry, an implicit `Thumbnails/` folder
+  with no directory entry of its own, and every stream listed in the manifest.
+  Recorded in `tests/goldens/URIS.md`.
+
+  `make_goldens.py` now takes golden names, defaulting to all four. Each save
+  produces fresh salts, IVs and sizes, so regenerating an S6 golden means
+  re-checking the `size` assertions and `URIS.md`; naming one avoids churning the
+  three already validated against LO. The three encrypted goldens were not
+  regenerated.
+- **Ordering nuance:** LO runs `checkZipEntriesWithDD` at `ZipPackage.cxx:456`,
+  before the mimetype block; `classify` runs it after `stage_b`. A package that trips
+  both reports the mimetype conflict where LO reports the data-descriptor error.
+  Both are `Err`, so no Ok/Err flip — not worth restructuring `stage_b` for.
+- **Unknown entities:** `expand_ref` drops an undefined general entity silently;
+  expat treats it as a parse error, which under A3 would mean zero rows.
 
 ## Method
 
