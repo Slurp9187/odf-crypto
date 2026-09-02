@@ -589,6 +589,14 @@ fn s2_accept_predicate_fixtures() {
     }
 }
 
+/// Issue #3 row 10 / plan F11. The resolution itself is pinned directly by
+/// `zip_tree::tests::implicit_folder_from_member_path` (a `Pictures/` lookup
+/// returns `Folder` with no directory entry in the zip) and, at this layer, by
+/// `pictures_folder_row_poisons_nested_content_xml_onto_root`, where the row has
+/// to resolve for the A10 cache write to happen at all. What this fixture adds
+/// is the surrounding package: a folder synthesized purely from a member path
+/// does not disturb the scan, and the unlisted `Pictures/photo.png` under it is
+/// still reported.
 #[test]
 fn s2_pictures_folder_resolves_without_zip_dir_entry() {
     let body = format!(
