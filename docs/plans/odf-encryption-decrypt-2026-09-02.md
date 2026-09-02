@@ -114,6 +114,8 @@ Wrong IV length for the cipher → `BadParameters`.
 
 Real LO encrypted members are zip **STORED** with a data descriptor (detection Stage 0). The member payload **is** the ciphertext (plus GCM framing). Do not inflate the zip method; inflate **after** decrypt.
 
+LO also runs the zip **CRC over the ciphertext**, not the plaintext: `maCRC.update(maCompBuffer)` before the cipher (`XUnbufferedStream.cxx` 270), checked at `:303-306`. Reading each member through the `zip` crate reproduces that for free. Do not “optimise” into slicing member bytes straight out of the input buffer — that silently drops a check LO makes.
+
 ### Verify, then inflate
 
 The cipher chooses the path, not `Checksum::None`.
@@ -122,11 +124,18 @@ The cipher chooses the path, not `Checksum::None`.
 
 **GCM** (`checkValidPassword`, `:542-558`): decrypt the whole member (tag check). Failure → `WrongPassword`. Ignore `Checksum` even if present.
 
-Then raw DEFLATE (`InflateZlib(true)`). `manifest:size` is uncompressed size. After inflate it is a sanity check, not a password oracle — and **do not preallocate from it** (`i64`, attacker-controlled). Stream inflate with a named ceiling (1 GiB) so a forged size cannot OOM.
+Then raw DEFLATE (`InflateZlib(true)`). **Do not preallocate from `manifest:size`** (`i64`, attacker-controlled); stream inflate with a named ceiling (1 GiB) so a forged size cannot OOM.
+
+Two **post-conditions**, both enforced, neither a password oracle — they run only after the checksum or tag has already passed:
+
+1. The deflate stream must reach its **end marker**. `flate2`, like zlib, returns the partial output it managed on a truncated stream and reports no error.
+2. The inflated length must **equal `manifest:size`**.
+
+Measured, not theorised: `tests/goldens/ref_decrypt.py` accepted a Blowfish member truncated *past* the 1 KiB digest window — the checksum still matched — and returned silently short plaintext until both were added. `manifest:size` is a checked post-condition, not a note.
 
 ## 3. Zip shape out
 
-**Wholesome** (`Mode::Wholesome`): decrypt **and inflate** the row whose **`path == "encrypted-package"`** — the same condition that set `encrypted_package_complete` (`classify.rs` 241–242). **Not** `common`: with an embedded object, first-wins can latch a nested `content.xml` as `common` while the blob to unwrap is still `encrypted-package`. The member is deflated-then-encrypted (golden: 6530 bytes = 12 IV + 6502 ct + 16 tag; `manifest:size` 6977). The inflated result **is** the inner ODF package. Do not wrap it. Do not rewrite the outer zip.
+**Wholesome** (`Mode::Wholesome`): decrypt **and inflate** the row whose **`path == "encrypted-package"`** — the same condition that set `encrypted_package_complete` (`classify.rs` 241–242). **Not** `common`: with an embedded object, first-wins can latch a nested `content.xml` as `common` while the blob to unwrap is still `encrypted-package`. The member is deflated-then-encrypted (golden: 6530 bytes = 12 IV + 6502 ct + 16 tag; `manifest:size` 6977). The inflated result **is** the inner ODF package. Do not wrap it. Do not rewrite the outer zip. Any other complete row in `encrypted_entries` is **ignored** on this path — LO opens the inner package and never looks at them.
 
 **Per-entry**: rebuild a zip from the **raw zip namelist**, not `collect_members` (that filter drops FAT directory entries such as `Configurations2/`):
 
@@ -168,6 +177,8 @@ enum DecryptError {
 
 `#[non_exhaustive]` so the PGP arc can add variants without a semver break. Complete-but-malformed crypto parameters are **`BadParameters`**, not `WrongPassword`.
 
+**That split is a deliberate divergence in error *granularity*, not in accept/reject.** LO reports wrong-password for all of them: `StaticHasValidPassword` wraps convert+finalize in a try/catch, so “The data should contain complete blocks only” (`ciphercontext.cxx:311`) is swallowed and the digest is what fails; `checkValidPassword` catches every exception on the GCM path, so “incorrect size of input” (`:296`) becomes `WrongPasswordException` too. Both fail closed either way. We tell the caller more than LO does. Do not “fix” this toward LO.
+
 **`pgp_keys` on `Classification` (S1):** refusal only needs `Kdf::PgpRsaOaepMgf1p`, already on the row. Promoting `EncryptedKey` and storing `pgp_keys` (from first-entry KeyInfo; empty otherwise) is **deliberate pre-landing for the PGP arc**, not required to refuse. Keep it; it is cheap (`Classification` is built in one place).
 
 Do **not** add `cipher_uri_key_len`, `m_bMediaTypeFallbackUsed`, or `m_bHasNonEncryptedEntries`. Known limitation: `media_type` has no provenance.
@@ -192,6 +203,8 @@ Both per-entry goldens encrypt **five** members, not only `content.xml`. S2/S3 a
 
 Do not regenerate encrypted goldens (salts/IVs/`size` churn). Wrong-password tests use these files with a different password.
 
+**Cross-check oracle.** `tests/goldens/ref_decrypt.py` is an independent Python implementation of this plan (`pip install cryptography argon2-cffi`; not crate deps). Run bare, it sweeps every golden and the §7 S5 negatives. Use it two ways: before writing a slice, to confirm the close-when is reachable; and when a slice disagrees with a golden, to bisect — its steps cite plan sections, so a disagreement points at a paragraph. It is not a port target, and the Rust must not be written by transcribing it.
+
 No golden has an embedded object. Decrypt still walks **all** `encrypted_entries`, not only `common`. Wholesome still selects `path == "encrypted-package"`.
 
 ## 6. `decrypt` — steps
@@ -209,10 +222,10 @@ No golden has an embedded object. Decrypt still walks **all** `encrypted_entries
 | Slice | Work | Done when |
 |---|---|---|
 | **S1** | `decrypt` feature (default on), `DecryptError` (`#[non_exhaustive]`, `BadParameters`), public `EncryptedKey`, `pgp_keys` on `Classification`. Crate docs. `decrypt` calls `classify`. Plain → `NotEncrypted`. Constructed PGP zip → `UnsupportedPgp`. Empty password → `EmptyPassword`. No ciphers yet: do not call `decrypt` on the encrypted goldens. | `lo-unencrypted.odt` → `NotEncrypted`. Detection S5 PGP zip → `UnsupportedPgp` and nonempty `pgp_keys`. Four goldens have empty `pgp_keys`. `cargo test --offline --no-default-features` green. |
-| **S2** | SHA-1 UTF-8 + PBKDF2-HMAC-SHA1 + Blowfish **64-bit CFB** + SHA1-1K + raw inflate + per-entry rebuild (strip `encryption-data` and `manifest:size`; raw namelist copy-through). | `decrypt(aoo-blowfish-pbkdf2.odt, "password")` → zip whose `classify` is `Plain`; all five encrypted members are well-formed XML/RDF. `"wrong"` → `WrongPassword`. `--no-default-features` still green. |
-| **S3** | SHA-256 + PBKDF2 + AES-CBC W3C pad + SHA256-1K. Same rebuild. | `lo-legacy-aes-cbc.odt` same close-when as S2 (all five members). |
-| **S4** | Argon2id v13 + AES-GCM (IV prepended, 16-byte tag; ignore any checksum). Wholesome: decrypt **and inflate** the `encrypted-package` row; return that inner zip. | `lo-wholesome-gcm-argon2.odt` → inner package `classify` `Plain` with a `content.xml`. `"wrong"` → `WrongPassword`. |
-| **S5** | Constructed negatives: truncated ciphertext, bad padding last-byte, checksum bytes flipped, GCM tag flipped, GCM member shorter than IV+tag (`ciphercontext.cxx:296`), CBC ciphertext not a block multiple (`:311`). | Table-driven; `WrongPassword`, `BadParameters`, `Inflate`, or `Zip` as LO would fail closed — do not succeed. |
+| **S2** | SHA-1 UTF-8 + PBKDF2-HMAC-SHA1 + Blowfish **64-bit CFB** + SHA1-1K + raw inflate + per-entry rebuild (strip `encryption-data` and `manifest:size`; raw namelist copy-through). | `decrypt(aoo-blowfish-pbkdf2.odt, "password")` → zip that re-`classify`s **`Plain` with 0 rows, and `odf_version` / `media_type` / member set unchanged from the input’s own `Classification`** (compare against it, never a literal — this golden legitimately has `odf_version == None` before and after). All five encrypted members are well-formed XML/RDF at `manifest:size` bytes. `"wrong"` → `WrongPassword`. `--no-default-features` still green. |
+| **S3** | SHA-256 + PBKDF2 + AES-CBC W3C pad + SHA256-1K. Same rebuild. | `lo-legacy-aes-cbc.odt` same close-when as S2 (all five members, same unchanged-metadata comparison). |
+| **S4** | Argon2id v13 + AES-GCM (IV prepended, 16-byte tag; ignore any checksum). Wholesome: decrypt **and inflate** the `encrypted-package` row; return that inner zip. | `lo-wholesome-gcm-argon2.odt` → inner package re-`classify`s `Plain` with 0 rows and a `content.xml`; inflated length == `manifest:size` 6977. `"wrong"` → `WrongPassword`. |
+| **S5** | Constructed negatives: **ciphertext truncated *past* the 1 KiB digest window** (the checksum still matches — only the two §2 post-conditions catch it; a truncation *inside* the window is caught by the checksum for free and proves nothing), bad padding last-byte, checksum bytes flipped, GCM tag flipped, GCM member shorter than IV+tag (`ciphercontext.cxx:296`), GCM IV prefix mangled (`:277`), CBC ciphertext not a block multiple (`:311`). | Table-driven; `WrongPassword`, `BadParameters`, `Inflate`, or `Zip` as LO would fail closed — do not succeed. |
 
 S3 and S4 block on S1, not on each other. S2 blocks on S1. S5 blocks on S2–S4.
 
