@@ -731,6 +731,36 @@ nullptr` does not insert a cache entry.
 The naive `Pictures/photo.png` then `Pictures/` pair is a cache hit and does not
 overwrite. Tests cover both directions at zip_tree and classify layers.
 
+**A10's LO claim is no longer unrefuted.** It was the one finding filed without a
+repro, so it was verified in source before the port was judged:
+`hasByHierarchicalName` really does end its folder branch with
+`m_aRecent[sDirName] = pPrevious; return true;` (`:1077-1081`), the matching
+`getByHierarchicalName` branch writes the same shallow pointer (`:994-998`), and
+`parseManifest` applies the bag to whatever object comes back — `dynamic_cast`
+picks folder vs stream (`:282-296`). The root folder is constructed at `:167`
+without `setName`, so `getName()` is `""`, which is what makes the `Pictures/`
+cache hit *fail* its name check and fall through to the poisoning walk. All three
+scenarios were then reproduced through the public `classify()` and match.
+
+Two repairs on review:
+
+- **The control was missing.** `Pictures/album/photo.png` + a `Pictures/` row +
+  `Pictures/content.xml` proves the poison fires, and the `Pictures/photo.png`
+  variant proves a correct cache hit does not — but neither pins that the *folder
+  row* is what writes the shallow entry. Seeding every ancestor prefix at insert
+  time is a plausible bug that leaves both green. Added
+  `nested_row_without_a_folder_row_does_not_latch` and
+  `nested_member_alone_does_not_poison`: same zip, no folder row, must stay
+  `Plain`. Mutation-checked — that seeding bug fails exactly these two and nothing
+  else.
+- **The null-`pPrevious` case is now documented rather than silent.** `previous`
+  is None only when the walk broke on a leading empty segment (`/foo/`). LO stores
+  a null pointer there and a later stream row on that key dereferences it —
+  `hasByHierarchicalName` has no null guard where `getByHierarchicalName` does
+  (`:958`). Storing nothing is the deliberate choice: we do not model a null
+  deref, and the next lookup falls to the walk, which finds nothing.
+  `leading_slash_folder_row_does_not_cache_a_null_parent` pins it.
+
 ### Confirmed correct on re-read
 
 - **A1** — `HandleSignChar` (`strtmpl.hxx` 638–651) read in source; the port handles

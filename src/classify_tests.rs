@@ -1547,6 +1547,31 @@ fn pictures_folder_row_poisons_nested_content_xml_onto_root() {
     assert!(class.media_type.is_none());
 }
 
+/// A10 control: the same zip as the poison case, minus the `Pictures/` folder
+/// row. Seeding `m_aRecent["Pictures/album"]` at insert is not itself enough —
+/// the folder row is what writes the shallow entry — so the nested row does not
+/// resolve and nothing latches.
+#[test]
+fn nested_row_without_a_folder_row_does_not_latch() {
+    let class = classify_pkg(
+        &manifest_wrap(
+            None,
+            &file_entry(PwOpts {
+                path: "Pictures/content.xml",
+                ..PwOpts::default()
+            }),
+        ),
+        &[
+            ("content.xml", b"plain-root"),
+            ("Pictures/album/photo.png", b"png"),
+        ],
+    );
+    assert_eq!(class.mode, Mode::Plain);
+    assert!(!class.package_encrypted);
+    assert!(class.common.is_none());
+    assert!(class.encrypted_entries.is_empty());
+}
+
 /// A10 negative: `Pictures/photo.png` insert already cached `"Pictures"`
 /// correctly, so a later `Pictures/` is a hit and does not poison.
 #[test]

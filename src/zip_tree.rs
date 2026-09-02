@@ -207,8 +207,17 @@ impl FolderTree {
         }
 
         if b_folder {
-            // Folder miss: cache `pPrevious`. Do not invent ROOT when previous
-            // is None (`ZipPackage.cxx` 1079 / 996). Still return `pCurrent`.
+            // Folder miss: cache `pPrevious` — one level too shallow, which is
+            // the A10 poison (`ZipPackage.cxx` 1079 / 996). Still return
+            // `pCurrent`, so folder meta lands on the walked folder.
+            //
+            // `previous` is None only when the walk broke on a leading empty
+            // segment (`/foo/`). LO stores a null `pPrevious` there, and a later
+            // stream row on the same key dereferences it
+            // (`hasByHierarchicalName` has no null guard where
+            // `getByHierarchicalName` does). We decline to model a null deref:
+            // storing nothing leaves the next lookup to the walk, which finds
+            // nothing — the same answer LO would give if it survived the read.
             if let Some(n_stream_index) = n_stream_index {
                 if let Some(prev) = previous {
                     self.recent.insert(path[..n_stream_index].to_string(), prev);
@@ -642,5 +651,29 @@ mod tests {
         );
         let photo = tree.resolve("Pictures/photo.png").unwrap().unwrap();
         assert_eq!(photo.tree_path, "Pictures/photo.png");
+    }
+
+    #[test]
+    fn nested_member_alone_does_not_poison() {
+        // The control for `folder_row_poisons_recent_one_level_too_shallow`:
+        // seeding `"Pictures/album"` is not itself enough. Without the
+        // `Pictures/` folder row there is no entry under `"Pictures"`, so the
+        // walk runs and finds no `content.xml` inside the Pictures folder.
+        let mut tree =
+            FolderTree::from_zip_names(["content.xml", "Pictures/album/photo.png"]).unwrap();
+        assert_eq!(kind_of(&mut tree, "Pictures/content.xml"), None);
+    }
+
+    #[test]
+    fn leading_slash_folder_row_does_not_cache_a_null_parent() {
+        // The walk breaks before descending, so LO caches a null `pPrevious`.
+        // We store nothing rather than model the deref that follows; either way
+        // the row itself still lands on the root, and a later stream row on the
+        // same key does not resolve.
+        let mut tree = FolderTree::from_zip_names(["content.xml"]).unwrap();
+        let folder = tree.resolve("/Pictures/").unwrap().unwrap();
+        assert_eq!(folder.kind, ResolvedKind::Folder);
+        assert_eq!(folder.tree_path, "/");
+        assert_eq!(kind_of(&mut tree, "/Pictures/content.xml"), None);
     }
 }
