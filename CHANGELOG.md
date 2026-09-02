@@ -13,7 +13,8 @@ LibreOffice citation and a reproduction for each.
 
 ## 2026-09-02
 
-Documentation only — no code changed, and the suite stayed at 66 passing.
+No `src/` change and the suite stayed at 66 passing. `tests/goldens/` gained one
+probe file, and the decrypt arc was planned — both at the end of this entry.
 
 **All four plan open questions are now closed, and with them arc
 [#1](https://github.com/Slurp9187/odf-crypto/issues/1).** The last two were settled from
@@ -46,6 +47,42 @@ whoever builds the decrypt arc on top of this:
   entries, STORED size mismatch, data-descriptor holes, `Count != Total`, name length)
   is recorded as *unquantified* risk rather than low risk. Two members of that family
   turned out to be major bugs; the rest simply were not looked at.
+
+### The decrypt arc, and its first open question closed the same day
+
+[The decrypt plan](docs/plans/odf-encryption-decrypt-2026-09-02.md) is written: password
+decrypt only, consuming `classify` rather than re-parsing the manifest, in five slices.
+Review against the LibreOffice pin caught two errors that would each have sunk a slice.
+
+**Blowfish is 64-bit-segment CFB on the wire, not CFB-8.** `BlowfishCFB8CipherContext` is
+a misleading name — it asks sal for `rtl_Cipher_ModeStream`, and both sal backends
+implement that as CFB-64: the in-tree `BF_updateCFB` re-encrypts its register every 8
+bytes, and the OpenSSL backend calls `EVP_bf_cfb()`, which is `bf_cfb64`. Decrypting the
+Blowfish golden confirms it — CFB-64 reproduces the stored SHA1-1K checksum, CFB-8 does
+not. Horsmann's odfdecrypt has this backwards too, and only works on LibreOffice files
+because its origin detector misroutes them to its Apache decryptor, which uses CFB-64.
+There is one Blowfish wire format; the planned “AOO CFB-64” arc was deleted as vacuous.
+
+**A wholesome `encrypted-package` is deflated before it is encrypted.** The plan had said
+the decrypted blob *is* the inner package; it is the inner package **compressed**. The
+golden's member is 6530 bytes — 12 IV + 6502 ciphertext + 16 tag — against a
+`manifest:size` of 6977.
+
+**OQ1 is closed with a measurement, not an argument** —
+`tests/goldens/lo-odf11-nonascii-password.odt`. LibreOffice keeps a four-rung fallback
+ladder for SHA-1 start keys, and its own comment says the ladder applies to “ODF
+1.1/OOoXML files written by any version”, which is precisely the shape of our Blowfish
+golden — so it could not be waved away as legacy-only. The new golden's password is
+built so all four candidates are distinguishable: one non-ASCII character separates UTF-8
+from MS-1252, and its length (53 and 52 bytes in those two encodings) lands both inside
+the window where `rtl_digest_SHA1` diverges from real SHA-1 (tdf#114939 — a comparison
+LibreOffice documents as wrong and keeps for compatibility). Only the **correct UTF-8
+SHA-1** start key decrypts the file. Current LibreOffice writes the correct digest even
+where it still tolerates the buggy one on read, so the decrypt arc implements one start
+key per algorithm and treats the ladder as read-compat it does not provide.
+
+`make_goldens.py` also gained a longer bootstrap wait: a cold UNO profile took 37s here
+against a 30s limit, which fails as “could not connect”.
 
 ## 2026-09-01
 
