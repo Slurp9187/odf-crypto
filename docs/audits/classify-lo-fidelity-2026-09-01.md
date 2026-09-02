@@ -833,16 +833,21 @@ Baseline at audit time: `cargo test --offline` → 33 passed, 0 failed.
 
 ## Not covered
 
-- **`m_bForceRecovery` is modelled nowhere,** and the plan does not say so. Every LO
-  throw the crate reproduces is unconditional, whereas roughly a dozen are suppressed
-  under Repair (`ZipPackage.cxx:461-465`, `:469`, `:512`, `:540`; the `\`→`/` rewrite at
-  `:636-640`). Every Group B finding implicitly assumes normal loading.
+Settled in plan §6 Stage 0 (2026-09-02): these stay out of detection, they are not a
+second classify arc.
+
+- **`m_bForceRecovery` is modelled nowhere** — now specified as **normal load only**.
+  Every LO throw the crate reproduces is unconditional, whereas roughly a dozen are
+  suppressed under Repair (`ZipPackage.cxx:461-465`, `:469`, `:512`, `:540`; the
+  `\`→`/` rewrite at `:636-640`). Every Group B finding assumes `m_bForceRecovery ==
+  false`. Repair is a different product.
 - **`m_bMediaTypeFallbackUsed`** (`ZipPackage.cxx:503-507`) and
-  **`m_bHasNonEncryptedEntries`** (`:441`) are computed by LO in `parseManifest` and have
-  no representation in `Classification`. Whether they should is undecided.
+  **`m_bHasNonEncryptedEntries`** (`:441`) are computed by LO in `parseManifest` and
+  stay off `Classification`. `encrypted_entries` is the complete tuples.
 - **The remaining `readCEN` structural checks** — overlapping entries (`ZipFile.cxx:1436-1481`),
   STORED with inconsistent size (`:1427-1430`), data-descriptor holes (`:1521+`),
-  `Count != Total`, name length. Same family as Group B; noted, never audited.
+  `Count != Total`, name length. Same family as Group B; noted, never audited; not a
+  decrypt-arc blocker.
 - **LO's out-of-bounds `aSequence[PKG_MNFST_*]` writes** when a crypto element appears
   with no enclosing file-entry (e.g. `loext:keyinfo` > `manifest:encryption-data`). That
   shape has no defined LO semantics to match, so the crate's safe behaviour there cannot
