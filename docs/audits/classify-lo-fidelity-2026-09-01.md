@@ -848,8 +848,10 @@ second classify arc.
   sniffed off the `mimetype` stream. `Classification.media_type` has no provenance.
 - **The remaining `readCEN` structural checks** — overlapping entries (`ZipFile.cxx:1436-1481`),
   STORED with inconsistent size (`:1427-1430`), data-descriptor holes (`:1521+`),
-  `Count != Total`, name length. Same family as Group B; noted, never audited.
-  Unaudited; same family as the checks above. Risk is unquantified, not known-low.
+  `Count != Total`, name length. Same family as Group B — invalid names and duplicate
+  CEN were rated major and implemented because answering for archives LO refuses lets
+  a crafted file pick its verdict. Never audited, so the risk is unquantified, not
+  known-low.
 - **LO's out-of-bounds `aSequence[PKG_MNFST_*]` writes** when a crypto element appears
   with no enclosing file-entry (e.g. `loext:keyinfo` > `manifest:encryption-data`). That
   shape has no defined LO semantics to match, so the crate's safe behaviour there cannot
