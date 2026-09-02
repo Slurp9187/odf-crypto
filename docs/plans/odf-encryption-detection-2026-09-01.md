@@ -313,7 +313,7 @@ Needed later so checksum / IV / start-key fields are not misread.
 Close these in the plan (amend in place) when evidence lands. Do not guess.
 
 1. **Import order is load-bearing (F2 + old Q1).** `nDerivedKeySize` is a `ManifestImport` member, reset per `encryption-data`, written by `doAlgorithm`, read by `doKeyDerivation`. The same flag/`ignore` early-return makes unknown start-key URI order-dependent. LO-written files emit algorithm then start-key then KDF (`ManifestExport.cxx`), so produced files match the “cipher default applies” story. Constructed files can disagree. **S2 must fixture the reversal** (`aes256-cbc`, no `key-size`, KDF first → `derived_key_len == 16`). Whether we *document* that as “LO quirk, we match it” is already decided: we match it. This question is only whether any **producer** emits reversed children; if none do, the fixture stays synthetic.
-2. **Nested `content.xml` latch.** Specified as short name. Confirm whether any real producer writes `…/content.xml` encrypted without a root `content.xml`.
+2. **Nested `content.xml` latch.** Specified as short name. Confirm whether any real producer writes `…/content.xml` encrypted without a root `content.xml`. Tracked as [#8](https://github.com/Slurp9187/odf-decrypt-rs/issues/8), gated on the same corpus as question 4.
 3. **PGP + SHA512-1K.** `ZipPackage::setPropertyValue` defaults PGP checksum to `SHA512_1K` (`ZipPackage.cxx` 1920–1923) but `ManifestExport` only writes SHA1-1K / SHA256-1K. Unknown checksum-type ⇒ no digest-alg ⇒ non-GCM PGP fails the accept predicate. Likely the save path overrides to GCM before export; not fully traced.
 4. **Sample corpus.** Restore or collect real LO/AOO files before S6. Until then, constructed fixtures are the authority.
 
