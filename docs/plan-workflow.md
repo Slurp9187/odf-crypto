@@ -205,5 +205,9 @@ and `~/.codex/skills/`"* ([docs](https://cursor.com/docs/context/skills)). So a
 `.cursor/` copy buys nothing and costs a byte-identical duplicate that drifts the
 first time someone edits one side.
 
-If a client turns up that reads neither, prefer moving the launcher to the
-vendor-neutral `.agents/skills/` over re-introducing per-vendor copies.
+`.claude/skills/` is the one path both read today: Claude Code scans only
+`~/.claude/skills/` and `.claude/skills/` (plus parents to the repo root, plugin
+and enterprise locations) — **not** the vendor-neutral `.agents/skills/`, which
+Cursor does read. Moving there would silently drop the skill for Claude Code. If
+that changes, `.agents/skills/` becomes the better home; re-introducing per-vendor
+copies is the wrong answer either way.
