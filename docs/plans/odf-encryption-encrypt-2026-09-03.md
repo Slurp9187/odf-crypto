@@ -1,4 +1,4 @@
-Status: **Planned (2026-09-03)** — modern-only password encryption; per-entry write (Blowfish/AES-CBC) is a later arc · Authored 2026-09-03 against `07047a02f94d` · Review round 2026-09-03: every LO citation re-grepped against source (several line ranges in round 1 had drifted, two by more than 20 lines), emit table added, S5 gating fixed, mimetype question settled
+Status: **Shipped (2026-09-03)** — modern-only password encryption; per-entry write (Blowfish/AES-CBC) is a later arc · Landed in [#24](https://github.com/Slurp9187/odf-crypto/pull/24) (`7bd6a89` implementation, `9686ff5` + `%%FIXSHA%%` review fixes), closing arc [#18](https://github.com/Slurp9187/odf-crypto/issues/18) and slices [#19](https://github.com/Slurp9187/odf-crypto/issues/19)–[#23](https://github.com/Slurp9187/odf-crypto/issues/23) · Authored 2026-09-03 against `07047a02f94d` · Review round 2026-09-03: every LO citation re-grepped against source (several line ranges in round 1 had drifted, two by more than 20 lines), emit table added, S5 gating fixed, mimetype question settled
 
 Consumes [docs/plans/odf-encryption-detection-2026-09-01.md](odf-encryption-detection-2026-09-01.md) (Shipped) and [docs/plans/odf-encryption-decrypt-2026-09-02.md](odf-encryption-decrypt-2026-09-02.md) (Shipped, arc [#10](https://github.com/Slurp9187/odf-crypto/issues/10)). Do not re-derive `classify`'s accept predicates, and do not reimplement `decrypt`'s cipher/KDF primitives — `encrypt` shares them.
 
@@ -132,19 +132,21 @@ Extends the same crate. `decrypt`'s internal cipher/KDF helpers move to an inter
 - The AES-GCM **decrypt** call already exists in `decrypt.rs` (dispatching `Aes128Gcm`/`Aes192Gcm`/`Aes256Gcm` by key length). `encrypt` needs a **new** sibling `aes_gcm_seal`-shaped helper calling `.encrypt(nonce, plaintext)` on the same key-length-dispatched cipher type — this is new code, not a relocation, and it is the one place a copy-paste of the Argon2 parameter order `(m, t, p)` (RustCrypto's `Params::new`, already gotten right once in decrypt) could quietly diverge if reimplemented independently instead of calling the shared function.
 - A new `raw_deflate` helper (mirroring `raw_inflate`'s existing shape) is also new code — nothing to relocate, since decrypt only ever inflates.
 
-A new **`encrypt` feature**, default-on, that *enables* `decrypt` (shared primitives) plus one new dependency: a CSPRNG for salt/IV generation. `getrandom` is the natural choice — small, no-std-friendly, does exactly one job (§9 leaves the door open to an already-vendored alternative if S1 finds one reachable without a new dependency). Name it explicitly in `Cargo.toml` the same way the decrypt-arc audit insisted `flate2` be named or removed: it must appear only under `encrypt`, never leak into the `--no-default-features` graph. Concretely:
+A new **`encrypt` feature**, default-on, that *enables* `decrypt` (shared primitives). It needs a CSPRNG for salt/IV generation, and **as shipped that costs no new dependency** — §9's OQ2, settled during S1: `aes-gcm`'s own default `getrandom` feature already supplies `aes_gcm::aead::OsRng`. Name that reliance explicitly the same way the decrypt-arc audit insisted `flate2` be named or removed. As shipped:
 
 ```toml
 [features]
 default = ["encrypt"]
 decrypt = [ ...unchanged... ]
-encrypt = ["decrypt", "dep:getrandom"]
+encrypt = ["decrypt"]
 
 [dependencies]
-getrandom = { version = "0.2", optional = true }
+aes-gcm = { version = "0.10", optional = true, features = ["getrandom", "zeroize"] }
 ```
 
 `default = ["encrypt"]` alone is sufficient (it pulls in `decrypt` transitively) — do not also list `"decrypt"` in `default`, that would just be redundant. `--no-default-features` still builds detection-only with neither feature enabled.
+
+Note the consequence OQ2's original wording did not anticipate: because `aes-gcm` is a **`decrypt`**-feature dependency, its CSPRNG is in the `decrypt`-only graph too, not "only under `encrypt`". Nothing in `decrypt` uses it; the guarantee that holds — and that the standing check enforces — is the `--no-default-features` one, where no crypto crate appears at all.
 
 ```rust
 fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError>;
@@ -194,10 +196,10 @@ Two layers, mirroring how decrypt was closed (self-consistency first, then real 
 
 | Slice | Work | Done when |
 |---|---|---|
-| **S1** | `encrypt` feature (default on per §4's Cargo shape, enables `decrypt` + `dep:getrandom`). Factor `start_key` and `derive_key`'s Argon2id branch into shared `pub(crate)` helpers reused as-is by both modules (§4). `EncryptError` (`#[non_exhaustive]`). `encrypt` calls `classify`; refuses `Mode::Plain`-violating input and empty passwords. No cipher output yet. | `encrypt` on `lo-wholesome-gcm-argon2.odt` (already `Mode::Wholesome`) → `AlreadyEncrypted`. Empty password → `EmptyPassword`. `cargo test --offline --no-default-features` still green. |
+| **S1** | `encrypt` feature (default on per §4's Cargo shape, enables `decrypt`; the CSPRNG needs no new dependency — OQ2). Factor `start_key` and `derive_key`'s Argon2id branch into shared `pub(crate)` helpers reused as-is by both modules (§4). `EncryptError` (`#[non_exhaustive]`). `encrypt` calls `classify`; refuses `Mode::Plain`-violating input and empty passwords. No cipher output yet. | `encrypt` on `lo-wholesome-gcm-argon2.odt` (already `Mode::Wholesome`) → `AlreadyEncrypted`. Empty password → `EmptyPassword`. `cargo test --offline --no-default-features` still green. |
 | **S2** | Raw deflate, salt/IV generation, Argon2id, the new AES-256-GCM encrypt-direction helper (IV‖ct‖tag), manifest emit (§2's exact emit table), three-member outer zip, `mimetype` handling per §3. | `encrypt(lo-unencrypted.odt, "password")` produces a zip whose manifest matches §2's emit table exactly, and `classify` on it reports `Mode::Wholesome`, one row, `Cipher::AesGcmW3c`, `Kdf::Argon2id { t: 3, m: 65536, p: 4, .. }`, `StartKeyAlg::Sha256`, `Checksum::None`, `derived_key_len == 32`. |
 | **S3** | Wire S2's output into the round-trip. | `decrypt(encrypt(lo-unencrypted.odt bytes, "password")?, "password")?` is **byte-identical** to the original bytes. Repeat for at least one non-trivial plaintext constructed in-test (embedded content, non-ASCII text) — and assert that constructed fixture itself `classify`s as `Mode::Plain` before encrypting it, so the test is exercising this arc and not accidentally validating a fixture `classify` would have rejected. |
-| **S4** | Constructed negatives. | `"wrong"` against S3's output → `DecryptError::WrongPassword` from the GCM tag, before any inflate (same evidence shape decrypt's own S4/S5 already established). `encrypt` against **every** existing encrypted golden (currently four: `aoo-blowfish-pbkdf2.odt`, `lo-odf11-nonascii-password.odt`, `lo-legacy-aes-cbc.odt`, `lo-wholesome-gcm-argon2.odt` — iterate the directory rather than hardcode a count that will drift again) → `AlreadyEncrypted`. `cargo test --offline --no-default-features` still green (standing check, every slice). |
+| **S4** | Constructed negatives. | `"wrong"` against S3's output → `DecryptError::WrongPassword` from the GCM tag, before any inflate (same evidence shape decrypt's own S4/S5 already established). `encrypt` against **every** existing encrypted golden, discovered by iterating the goldens directory at run time rather than hardcoding a count that will drift again — as it did: the arc's own S5 evidence file (`lo-opens-our-encrypt-output.odt`) became a fifth before the arc even landed → `AlreadyEncrypted`. `cargo test --offline --no-default-features` still green (standing check, every slice). |
 | **S5** | Real LibreOffice opens our output (§5): a UNO-driven script that loads `encrypt`'s output with the password and checks the recovered text. | The script exists in the repo **and** its output from a successful local run is checked in as evidence — the encrypted file it validated (or a recorded transcript of the load succeeding), the same way detection's real goldens are the checked-in evidence for its S6. Do not close this slice on "it happened to work when I ran it" with nothing committed; do not gate it on CI having LibreOffice installed, since it never will. If S2-S4 are green and this fails, the bug is a framing detail self-consistency cannot see (e.g. an IV/tag byte order LO's NSS binding is stricter about than our own decrypt is). |
 
 S2 blocks on S1. S3 and S4 block on S2. S5 blocks on S3 (needs real output to feed LO).

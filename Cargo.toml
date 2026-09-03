@@ -2,7 +2,7 @@
 name = "odf-crypto"
 version = "0.1.0"
 edition = "2021"
-description = "LibreOffice-faithful ODF package encryption detection and decryption"
+description = "LibreOffice-faithful ODF package encryption detection, decryption and encryption"
 rust-version = "1.85"
 
 [features]
@@ -43,8 +43,10 @@ cbc = { version = "0.1", optional = true }
 # so the reliance is pinned against aes-gcm ever changing its own defaults.
 # It gates `aes_gcm::aead::OsRng` / `aes_gcm::aead::rand_core::RngCore`, which
 # encrypt's salt/IV generation uses; this is not a new crate dependency (plan
-# OQ2, settled 2026-09-03).
-aes-gcm = { version = "0.10", optional = true, features = ["getrandom"] }
+# OQ2, settled 2026-09-03). "zeroize" wipes the expanded AES key schedule when
+# the cipher is dropped -- the derived key itself is already `Zeroizing`, and
+# this covers the copy the cipher makes of it.
+aes-gcm = { version = "0.10", optional = true, features = ["getrandom", "zeroize"] }
 blowfish = { version = "0.9", optional = true }
 cfb-mode = { version = "0.8", optional = true }
 miniz_oxide = { version = "0.8", optional = true }

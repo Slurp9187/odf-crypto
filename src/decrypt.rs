@@ -32,6 +32,8 @@ use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode};
 use crate::DetectError;
 
 const INFLATE_CEILING: usize = 1 << 30;
+/// Largest `manifest:key-size` decrypt will allocate for (bytes). See `derive_key`.
+const DERIVED_KEY_CEILING: i32 = 1024;
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
 
 /// Failures from [`decrypt`].
@@ -159,15 +161,17 @@ fn member_for_archive(
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
     // Zeroizing wipes on drop, including the `?` paths below, where a manual
     // call is skipped exactly when an attacker-supplied file forces the error.
-    let sk = Zeroizing::new(crate::kdf::start_key(password, row.start_key));
+    let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
-    if n <= 0 {
+    // LO writes 16 or 32 (`ManifestExport.cxx:401-424` throws on anything else
+    // for AES; Blowfish takes at most 56). The ceiling is hygiene against a
+    // `manifest:key-size` chosen to make this allocation the attack.
+    if n <= 0 || n > DERIVED_KEY_CEILING {
         return Err(DecryptError::BadParameters(format!(
             "derived_key_len {n}"
         )));
     }
-    let n = n as usize;
-    let mut derived = Zeroizing::new(vec![0u8; n]);
+    let mut derived = Zeroizing::new(vec![0u8; n as usize]);
     match &row.kdf {
         Kdf::Pbkdf2 { iterations, salt } => {
             if *iterations <= 0 {
@@ -178,7 +182,7 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<Zeroizing<Vec<u8>
             pbkdf2_hmac::<Sha1>(&sk, salt, *iterations as u32, &mut derived);
         }
         Kdf::Argon2id { t, m, p, salt } => {
-            derived = crate::kdf::derive_argon2id(&sk, salt, *t, *m, *p, n)
+            crate::kdf::derive_argon2id(&sk, salt, *t, *m, *p, &mut derived)
                 .map_err(DecryptError::BadParameters)?;
         }
         Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),

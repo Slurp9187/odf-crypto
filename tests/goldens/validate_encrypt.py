@@ -12,10 +12,10 @@ Steps:
       `lo-unencrypted.odt` with THIS CRATE's own `encrypt()` (not LibreOffice's),
       writing the result to the fixed, checked-in-worthy path
       `lo-opens-our-encrypt-output.odt`.
-  (b) Bootstrap real LibreOffice over UNO (scaffolding copied from `make_goldens.py`'s
-      `_bootstrap`/`_prop`/`_file_url` -- this file runs standalone under LO's bundled
-      Python, which cannot import `make_goldens.py`'s module as a library because that
-      module has import-time side effects of its own).
+  (b) Bootstrap real LibreOffice over UNO, reusing `make_goldens.py`'s own
+      `_bootstrap`/`_prop`/`_file_url` by importing them -- that module defines only
+      constants and functions at import time, and Python puts this script's own
+      directory on `sys.path`, so there is nothing to copy.
   (c) `loadComponentFromURL` the file from (a) with a `Password` property, and assert
       both that the load raises no exception and that the recovered text is exactly
       `lo-unencrypted.odt`'s known content (`make_goldens.py`'s
@@ -32,17 +32,17 @@ Run with LibreOffice's bundled Python (the system one has no `uno`), from the re
 from __future__ import annotations
 
 import os
-import random
+import shutil
 import subprocess
-import sys
-import time
 from pathlib import Path
 
-import uno
-from com.sun.star.beans import PropertyValue
-from com.sun.star.connection import NoConnectException
+# `make_goldens.py` sits beside this file, and Python puts a script's own
+# directory on sys.path, so its UNO scaffolding is importable rather than
+# copy-pasted. It defines only constants and functions at import time (its
+# entry point is guarded by `if __name__ == "__main__"`), so importing it
+# starts no LibreOffice of its own.
+from make_goldens import _bootstrap, _file_url, _prop
 
-SOFFICE = Path(r"C:\Program Files\LibreOffice\program\soffice.exe")
 PASSWORD = "password"
 # make_goldens.py GOLDENS["lo-unencrypted"] -- the text lo-unencrypted.odt was saved with.
 EXPECTED_TEXT = "S1 real unencrypted ODT."
@@ -53,54 +53,6 @@ SOURCE_ODT = HERE / "lo-unencrypted.odt"
 # Fixed, checked-in-worthy path (plan S5 step 2d): this file becomes the checked-in
 # evidence that real LibreOffice accepted our encrypt() output.
 OUTPUT_ODT = HERE / "lo-opens-our-encrypt-output.odt"
-
-
-# --- copied from make_goldens.py (standalone script, cannot import across files) ------
-
-
-def _file_url(path: Path) -> str:
-    return path.resolve().as_uri()
-
-
-def _prop(name: str, value) -> PropertyValue:
-    p = PropertyValue()
-    p.Name = name
-    p.Value = value
-    return p
-
-
-def _bootstrap(profile: Path):
-    pipe = "odfvalidate" + str(random.random())[2:10]
-    connect = f"pipe,name={pipe};urp;"
-    cmd = [
-        str(SOFFICE),
-        "--headless",
-        "--nologo",
-        "--nodefault",
-        "--norestore",
-        "--nolockcheck",
-        "--nofirststartwizard",
-        f"--accept={connect}",
-        f"-env:UserInstallation={_file_url(profile)}",
-    ]
-    print("starting", " ".join(cmd), flush=True)
-    proc = subprocess.Popen(cmd)
-    local = uno.getComponentContext()
-    resolver = local.ServiceManager.createInstanceWithContext(
-        "com.sun.star.bridge.UnoUrlResolver", local
-    )
-    url = f"uno:{connect}StarOffice.ComponentContext"
-    last = None
-    for i in range(90):  # cold profile creation can take ~40s
-        try:
-            ctx = resolver.resolve(url)
-            print(f"connected after {i}s", flush=True)
-            return ctx, proc
-        except NoConnectException as err:
-            last = err
-            time.sleep(1)
-    proc.terminate()
-    raise RuntimeError(f"could not connect: {last}")
 
 
 # --- new for this script ---------------------------------------------------------------
@@ -164,6 +116,12 @@ def main() -> int:
     try:
         version = _lo_version(ctx)
         print(f"LibreOffice version (UNO): {version}", flush=True)
+        if version.startswith("<"):
+            # The version string is checked into URIS.md as evidence; a failed
+            # query must not be interpolated into a PASS line as though it were
+            # a product version.
+            print(f"FAIL: could not determine the LibreOffice version: {version}", flush=True)
+            return 1
 
         desktop = ctx.ServiceManager.createInstanceWithContext(
             "com.sun.star.frame.Desktop", ctx
@@ -179,6 +137,18 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             print(
                 f"FAIL: LibreOffice could not open our encrypt() output: {e}",
+                flush=True,
+            )
+            return 1
+
+        # UNO returns a NULL reference (None) rather than raising when LO
+        # type-detects the package but cannot decrypt or parse it -- exactly the
+        # failure this script exists to report. Without this check the next line
+        # dies with an AttributeError and the FAIL line never prints.
+        if doc is None:
+            print(
+                "FAIL: LibreOffice could not open our encrypt() output "
+                f"({OUTPUT_ODT.name}): loadComponentFromURL returned no document",
                 flush=True,
             )
             return 1
@@ -214,6 +184,10 @@ def main() -> int:
             proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait(timeout=15)
+        # make_goldens.py leaves its profile behind; each run here would
+        # otherwise add another ~10 MB tree under TEMP.
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 if __name__ == "__main__":

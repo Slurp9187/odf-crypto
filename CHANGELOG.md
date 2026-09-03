@@ -11,6 +11,60 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## 2026-09-03
+
+The crate writes as well as reads. `encrypt(&[u8], &str)` turns a `Mode::Plain` ODF
+package into what current LibreOffice writes for it under a password — wholesome
+Argon2id + AES-256-GCM, one `encrypted-package` member, no checksum,
+`manifest:version="1.4"` — closing arc
+[#18](https://github.com/Slurp9187/odf-crypto/issues/18) and its five slices
+([#19](https://github.com/Slurp9187/odf-crypto/issues/19)–[#23](https://github.com/Slurp9187/odf-crypto/issues/23)).
+Per-entry write (Blowfish CFB / AES-CBC) and PGP wrap stay later arcs, cited in the plan
+so neither has to re-derive its primitives. The suite went 78 → 97.
+
+### Evidence, in three independent directions
+
+- **Against ourselves.** `decrypt(encrypt(p, pw)?, pw)? == p`, byte-for-byte — for the
+  golden and for a constructed package with non-ASCII text and a binary member, each
+  asserted `Mode::Plain` first so the round trip cannot pass vacuously.
+- **Against LibreOffice.** Real LO 26.2.1.2, which has never seen a line of this crate,
+  opens `encrypt()`'s own output and recovers the exact text
+  (`tests/goldens/validate_encrypt.py`). The file it validated is checked in as
+  `tests/goldens/lo-opens-our-encrypt-output.odt`, and a test now decrypts that artifact
+  back to its source golden so it stays live between LibreOffice runs — CI will never
+  have LO, but it can still catch a framing change that `encrypt` and `decrypt` mirror.
+- **Against a third implementation.** The Python oracle from the decrypt arc
+  (`ref_decrypt.py`, which shares no code with either direction) decrypts that same file
+  byte-identically, and now sweeps it as a fifth entry.
+
+### What review changed
+
+Fifteen findings from a three-lens adversarial pass, all before merge. The two that were
+bugs rather than hardening:
+
+- **`cargo test --no-default-features` did not compile.** `cargo test` builds example
+  targets, and the new validation example calls `encrypt` unconditionally — so the
+  standing check every slice names as a done-when was broken by the slice that added the
+  example. `required-features` fixes it.
+- **Key derivation could panic or abort inside a public `decrypt()`.** `argon2`'s
+  `Params::new` tests `m_cost < p_cost * 8` *before* range-checking `p_cost`, so a
+  manifest claiming 2^29 lanes overflowed `u32`; and an `argon2-memory` of 2 GiB (KiB)
+  asked `vec!` for ~2 TiB, which aborts the process rather than returning an error. Both
+  pre-existed this arc — relocating derivation into the shared `src/kdf.rs` is what put
+  them in one place to fix. LibreOffice's own libargon2 returns
+  `ARGON2_MEMORY_ALLOCATION_ERROR` here, so a ceiling is what *matches* LO, not a
+  divergence from it; the decrypt plan's "no cap" note now carries that carve-out.
+
+Also: the input's `mimetype` member is bounded and checked for XML-1.0-legal characters
+before being copied verbatim (`classify` admits a package on its first 1024 bytes, so an
+unbounded copy was a side door around `DEFLATE_CEILING`, and a NUL would emit a manifest
+expat rejects — a package that classifies here and will not open there); the wholesome
+profile is one `const` consumed by both the KDF call and the manifest emit, so the two
+cannot drift; `derive_key` no longer allocates a key buffer it discards; the AES-GCM seal
+is one `Aes256Gcm` call rather than a duplicated three-way dispatch whose 128/192 arms
+were unreachable; the payload is encrypted in place instead of copied four times; and
+`src/test_support.rs` replaces three drifted copies of the test helpers.
+
 ## 2026-09-02
 
 No `src/` change and the suite stayed at 66 passing. `tests/goldens/` gained one

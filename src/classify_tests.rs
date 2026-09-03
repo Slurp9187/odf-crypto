@@ -2,33 +2,10 @@
 
 use super::*;
 use crate::manifest::parse_manifest_for_test;
+use crate::test_support::{load_golden, zip_with, B64, MIME_TEXT};
 use crate::uris;
-use std::io::{Cursor, Write};
-use std::path::PathBuf;
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
 
-const B64: &str = "AQIDBA==";
-const MIME_TEXT: &str = "application/vnd.oasis.opendocument.text";
 const MIME_WRONG: &str = "text/plain";
-
-fn zip_with(files: &[(&str, &[u8])]) -> Vec<u8> {
-    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-    for (name, data) in files {
-        let method = if *name == "mimetype" {
-            CompressionMethod::Stored
-        } else {
-            CompressionMethod::Deflated
-        };
-        zip.start_file(
-            *name,
-            SimpleFileOptions::default().compression_method(method),
-        )
-        .unwrap();
-        zip.write_all(data).unwrap();
-    }
-    zip.finish().unwrap().into_inner()
-}
 
 fn manifest_wrap(package_version: Option<&str>, body: &str) -> String {
     let ver = match package_version {
@@ -1080,23 +1057,6 @@ fn s5_pgp_derived_key_len_ignores_lying_key_size() {
 }
 
 // --- S6: real LO/AOO goldens ---
-
-fn golden_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("goldens")
-        .join(name)
-}
-
-fn load_golden(name: &str) -> Vec<u8> {
-    let path = golden_path(name);
-    std::fs::read(&path).unwrap_or_else(|err| {
-        panic!(
-            "S6 golden missing at {}: {err}. Generate with tests/goldens/make_goldens.py",
-            path.display()
-        )
-    })
-}
 
 #[test]
 fn s6_wholesome_gcm_argon2() {

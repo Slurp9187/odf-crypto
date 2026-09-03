@@ -1,57 +1,15 @@
 //! Encrypt arc tests (issues #19-#23).
 
-use std::io::{Cursor, Read, Write};
-use std::path::PathBuf;
-
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::CompressionMethod;
 
 use crate::classify::classify;
 use crate::decrypt::{decrypt, DecryptError};
 use crate::encrypt::{encrypt, EncryptError};
+use crate::test_support::{
+    goldens_dir, load_golden, read_member, strict_b64_decode, zip_method, zip_namelist, zip_with,
+    zip_with_methods, MIME_TEXT, PASSWORD,
+};
 use crate::{Checksum, Cipher, Kdf, Mode, StartKeyAlg};
-
-const PASSWORD: &str = "password";
-
-fn goldens_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("goldens")
-}
-
-fn golden_path(name: &str) -> PathBuf {
-    goldens_dir().join(name)
-}
-
-fn load_golden(name: &str) -> Vec<u8> {
-    std::fs::read(golden_path(name)).unwrap_or_else(|e| panic!("read {name}: {e}"))
-}
-
-fn zip_namelist(bytes: &[u8]) -> Vec<String> {
-    let mut z = ZipArchive::new(Cursor::new(bytes)).unwrap();
-    (0..z.len())
-        .map(|i| z.by_index(i).unwrap().name().to_string())
-        .collect()
-}
-
-fn zip_method(bytes: &[u8], name: &str) -> CompressionMethod {
-    let mut z = ZipArchive::new(Cursor::new(bytes)).unwrap();
-    let method = z.by_name(name).unwrap().compression();
-    method
-}
-
-fn read_member(zip_bytes: &[u8], path: &str) -> Vec<u8> {
-    let mut z = ZipArchive::new(Cursor::new(zip_bytes)).unwrap();
-    for i in 0..z.len() {
-        let mut f = z.by_index(i).unwrap();
-        if f.name() == path {
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).unwrap();
-            return buf;
-        }
-    }
-    panic!("member {path} not in zip");
-}
 
 // --- S1 ---
 
@@ -65,6 +23,40 @@ fn s1_already_encrypted_wholesome() {
 fn s1_empty_password() {
     let err = encrypt(&load_golden("lo-unencrypted.odt"), "").unwrap_err();
     assert!(matches!(err, EncryptError::EmptyPassword));
+}
+
+/// The `Classify` variant exists for input `classify` itself rejects, before
+/// any of encrypt's own predicates run. Nothing else covered it.
+#[test]
+fn s1_classify_failure_is_reported_as_classify() {
+    let err = encrypt(b"not a zip at all", PASSWORD).unwrap_err();
+    assert!(
+        matches!(err, EncryptError::Classify(crate::DetectError::NotZip)),
+        "expected Classify(NotZip), got {err:?}"
+    );
+
+    // A zip, but not an ODF package: no META-INF/manifest.xml.
+    let bare = zip_with(&[("content.xml", b"<x/>")]);
+    let err = encrypt(&bare, PASSWORD).unwrap_err();
+    assert!(
+        matches!(err, EncryptError::Classify(crate::DetectError::MissingManifest)),
+        "expected Classify(MissingManifest), got {err:?}"
+    );
+}
+
+/// A PGP package is `Mode::PerEntry`, so `AlreadyEncrypted` covers it -- the
+/// same refusal, reached without `encrypt` needing a PGP notion of its own
+/// (plan §4: `AlreadyEncrypted` "covers PerEntry, Wholesome, and PGP rows
+/// alike"). Nothing pinned that claim.
+#[test]
+fn s1_pgp_package_is_already_encrypted() {
+    let pgp = crate::test_support::pgp_two_row_zip();
+    assert_ne!(classify(&pgp).expect("pgp zip classifies").mode, Mode::Plain);
+    let err = encrypt(&pgp, PASSWORD).unwrap_err();
+    assert!(
+        matches!(err, EncryptError::AlreadyEncrypted),
+        "expected AlreadyEncrypted, got {err:?}"
+    );
 }
 
 // --- S2: exact emit table (plan §2) ---
@@ -227,7 +219,11 @@ fn s2_wholesome_emit_matches_table() {
         mf.algorithm_name.as_deref(),
         Some("http://www.w3.org/2009/xmlenc11#aes256-gcm")
     );
-    let iv = crate::manifest::decode_b64(mf.iv.as_deref().expect("iv present"));
+    // Decoded strictly, not with LO's deliberately lenient reader: a
+    // whitespace-wrapping or URL-safe-alphabet regression in `encode_b64`
+    // would be forgiven twice if the test used the same lenient decoder the
+    // manifest parser does.
+    let iv = strict_b64_decode(mf.iv.as_deref().expect("iv present")).expect("IV is strict base64");
     assert_eq!(iv.len(), 12, "IV must be 12 random bytes");
 
     assert_eq!(
@@ -244,7 +240,8 @@ fn s2_wholesome_emit_matches_table() {
     assert_eq!(mf.argon2_t.as_deref(), Some("3"));
     assert_eq!(mf.argon2_m.as_deref(), Some("65536"));
     assert_eq!(mf.argon2_p.as_deref(), Some("4"));
-    let salt = crate::manifest::decode_b64(mf.salt.as_deref().expect("salt present"));
+    let salt =
+        strict_b64_decode(mf.salt.as_deref().expect("salt present")).expect("salt is strict base64");
     assert_eq!(salt.len(), 16, "salt must be 16 random bytes");
     assert_eq!(mf.kdf_key_size.as_deref(), Some("32"));
 
@@ -286,10 +283,7 @@ fn s2_no_mimetype_member_falls_back_to_classify_media_type() {
     // A constructed Mode::Plain zip with no raw "mimetype" member at all --
     // classify still accepts it via the manifest-only path (plan §3's second
     // fallback tier: classify's media_type as raw UTF-8, no trailing newline).
-    use zip::write::SimpleFileOptions;
-    use zip::ZipWriter;
-
-    let media_type = "application/vnd.oasis.opendocument.text";
+    let media_type = MIME_TEXT;
     let manifest = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
@@ -298,15 +292,10 @@ fn s2_no_mimetype_member_falls_back_to_classify_media_type() {
 </manifest:manifest>
 "#
     );
-    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-    for (name, data) in [
+    let input = zip_with(&[
         ("META-INF/manifest.xml", manifest.as_bytes()),
-        ("content.xml", b"<office:document-content/>" as &[u8]),
-    ] {
-        zip.start_file(name, SimpleFileOptions::default()).unwrap();
-        std::io::Write::write_all(&mut zip, data).unwrap();
-    }
-    let input = zip.finish().unwrap().into_inner();
+        ("content.xml", b"<office:document-content/>"),
+    ]);
 
     let before = classify(&input).expect("constructed fixture classifies");
     assert_eq!(before.mode, Mode::Plain, "fixture must be Mode::Plain");
@@ -453,40 +442,180 @@ fn nontrivial_plain_fixture() -> Vec<u8> {
     let mut image_png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     image_png.extend((0u32..512).map(|i| (i % 256) as u8));
 
-    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-    for (name, data, method) in [
-        (
-            "mimetype",
-            media_type.as_bytes().to_vec(),
-            CompressionMethod::Stored,
-        ),
+    let manifest = manifest.into_bytes();
+    zip_with_methods(&[
+        ("mimetype", media_type.as_bytes(), CompressionMethod::Stored),
         (
             "META-INF/manifest.xml",
-            manifest.into_bytes(),
+            &manifest,
             CompressionMethod::Deflated,
         ),
         (
             "content.xml",
-            content_xml.as_bytes().to_vec(),
+            content_xml.as_bytes(),
             CompressionMethod::Deflated,
         ),
         (
             "styles.xml",
-            styles_xml.as_bytes().to_vec(),
+            styles_xml.as_bytes(),
+            CompressionMethod::Deflated,
+        ),
+        ("meta.xml", meta_xml.as_bytes(), CompressionMethod::Deflated),
+        (
+            "Pictures/image.png",
+            &image_png,
+            CompressionMethod::Deflated,
+        ),
+    ])
+}
+
+/// The checked-in S5 evidence -- the file real LibreOffice opened -- must
+/// also decrypt back to the exact golden it was made from. Without this the
+/// artifact is inert between LibreOffice runs: a framing change that
+/// `encrypt` and `decrypt` mirror would keep every round-trip test green and
+/// still ship output LO rejects, and nothing in CI would notice, because CI
+/// has no LibreOffice.
+#[test]
+fn s5_checked_in_evidence_still_decrypts_to_its_source_golden() {
+    let evidence = load_golden("lo-opens-our-encrypt-output.odt");
+    let source = load_golden("lo-unencrypted.odt");
+    assert_eq!(
+        classify(&evidence).expect("evidence classifies").mode,
+        Mode::Wholesome
+    );
+    assert_eq!(
+        decrypt(&evidence, PASSWORD).expect("evidence decrypts"),
+        source,
+        "tests/goldens/lo-opens-our-encrypt-output.odt must decrypt to \
+         lo-unencrypted.odt byte-for-byte -- regenerate it with \
+         tests/goldens/validate_encrypt.py if encrypt's framing changed"
+    );
+}
+
+// --- mimetype guards (review finding: an unbounded, unvalidated copy) ---
+
+/// `classify` admits a package after reading only the first 1024 bytes of its
+/// `mimetype` member, so copying an unbounded member verbatim would be a side
+/// door around `DEFLATE_CEILING` -- and a member over 8 MiB would push the
+/// emitted manifest past `classify`'s own `MANIFEST_READ_CAP`, making output
+/// this crate's own `decrypt` refuses.
+#[test]
+fn mimetype_over_ceiling_is_refused() {
+    let mut mimetype = MIME_TEXT.as_bytes().to_vec();
+    mimetype.resize(2048, b'x');
+    let manifest = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>
+"#
+    );
+    let input = zip_with_methods(&[
+        ("mimetype", &mimetype, CompressionMethod::Deflated),
+        (
+            "META-INF/manifest.xml",
+            manifest.as_bytes(),
             CompressionMethod::Deflated,
         ),
         (
-            "meta.xml",
-            meta_xml.as_bytes().to_vec(),
+            "content.xml",
+            b"<office:document-content/>",
             CompressionMethod::Deflated,
         ),
-        ("Pictures/image.png", image_png, CompressionMethod::Deflated),
-    ] {
-        zip.start_file(name, SimpleFileOptions::default().compression_method(method))
-            .unwrap();
-        zip.write_all(&data).unwrap();
-    }
-    zip.finish().unwrap().into_inner()
+    ]);
+
+    // The fixture must be one classify itself accepts, or this proves nothing.
+    assert_eq!(
+        classify(&input).expect("fixture classifies").mode,
+        Mode::Plain
+    );
+    let err = encrypt(&input, PASSWORD).unwrap_err();
+    assert!(
+        matches!(err, EncryptError::Mimetype(_)),
+        "expected Mimetype, got {err:?}"
+    );
+}
+
+/// A NUL in the media type is not an XML 1.0 `Char`. quick-xml escapes the
+/// five markup characters and emits this one as-is, so copying it verbatim
+/// would produce a manifest expat -- LibreOffice's own reader -- rejects,
+/// discarding every row: a package that classifies here and will not open
+/// there. Fail closed instead.
+#[test]
+fn mimetype_with_non_xml_char_is_refused() {
+    let mut mimetype = MIME_TEXT.as_bytes().to_vec();
+    mimetype.push(0);
+    let manifest = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>
+"#
+    );
+    let input = zip_with_methods(&[
+        ("mimetype", &mimetype, CompressionMethod::Stored),
+        (
+            "META-INF/manifest.xml",
+            manifest.as_bytes(),
+            CompressionMethod::Deflated,
+        ),
+        (
+            "content.xml",
+            b"<office:document-content/>",
+            CompressionMethod::Deflated,
+        ),
+    ]);
+
+    assert_eq!(
+        classify(&input).expect("fixture classifies").mode,
+        Mode::Plain,
+        "classify tolerates the NUL -- its check is starts_with(\"application/vnd.\")"
+    );
+    let err = encrypt(&input, PASSWORD).unwrap_err();
+    assert!(
+        matches!(err, EncryptError::Mimetype(_)),
+        "expected Mimetype, got {err:?}"
+    );
+}
+
+/// The far side of the same guard: a `mimetype` that is unusual but legal
+/// (trailing newline, exactly at the ceiling) is still copied verbatim, per
+/// plan §3 -- the guard must not have narrowed the rule for real files.
+#[test]
+fn unusual_but_legal_mimetype_is_still_copied_verbatim() {
+    let mimetype = format!("{MIME_TEXT}\n").into_bytes();
+    let manifest = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>
+"#
+    );
+    let input = zip_with_methods(&[
+        ("mimetype", &mimetype, CompressionMethod::Stored),
+        (
+            "META-INF/manifest.xml",
+            manifest.as_bytes(),
+            CompressionMethod::Deflated,
+        ),
+        (
+            "content.xml",
+            b"<office:document-content/>",
+            CompressionMethod::Deflated,
+        ),
+    ]);
+    assert_eq!(
+        classify(&input).expect("fixture classifies").mode,
+        Mode::Plain
+    );
+
+    let out = encrypt(&input, PASSWORD).expect("encrypt");
+    assert_eq!(
+        read_member(&out, "mimetype"),
+        mimetype,
+        "the trailing newline is part of the input's own bytes and is copied, not normalised"
+    );
+    assert_eq!(decrypt(&out, PASSWORD).expect("decrypt"), input);
 }
 
 #[test]
