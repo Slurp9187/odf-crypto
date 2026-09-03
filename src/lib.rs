@@ -15,6 +15,8 @@ mod zip_tree;
 
 #[cfg(feature = "decrypt")]
 mod decrypt;
+#[cfg(feature = "decrypt")]
+mod sensitive;
 
 pub use classify::classify;
 pub use types::{

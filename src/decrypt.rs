@@ -15,6 +15,7 @@ use cbc::Decryptor;
 use cfb_mode::BufDecryptor;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use pbkdf2::pbkdf2_hmac;
+use secure_gate::{RevealSecret, RevealSecretMut};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use zeroize::Zeroizing;
@@ -29,6 +30,7 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
 }
 
 use crate::classify::{classify, member_matches_path};
+use crate::sensitive::DerivedKey;
 use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode, StartKeyAlg};
 use crate::DetectError;
 
@@ -172,9 +174,11 @@ fn start_key(password: &str, alg: StartKeyAlg) -> Vec<u8> {
     }
 }
 
-fn derive_key(row: &EntryEncryption, password: &str) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
-    // Zeroizing wipes on drop, including the `?` paths below, where a manual
+fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
+    // Zeroizing wipes sk on drop, including the `?` paths below, where a manual
     // call is skipped exactly when an attacker-supplied file forces the error.
+    // sk never leaves this function, so plain Zeroizing is enough for it; derived
+    // crosses into decrypt_member, so it gets the secure-gate wrapper instead.
     let sk = Zeroizing::new(start_key(password, row.start_key));
     let n = row.derived_key_len;
     if n <= 0 {
@@ -183,27 +187,31 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<Zeroizing<Vec<u8>
         )));
     }
     let n = n as usize;
-    let mut derived = Zeroizing::new(vec![0u8; n]);
-    match &row.kdf {
-        Kdf::Pbkdf2 { iterations, salt } => {
-            if *iterations <= 0 {
-                return Err(DecryptError::BadParameters(format!(
-                    "iterations {iterations}"
-                )));
+    let mut derived = DerivedKey::new(vec![0u8; n]);
+    derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
+        match &row.kdf {
+            Kdf::Pbkdf2 { iterations, salt } => {
+                if *iterations <= 0 {
+                    return Err(DecryptError::BadParameters(format!(
+                        "iterations {iterations}"
+                    )));
+                }
+                pbkdf2_hmac::<Sha1>(&sk, salt, *iterations as u32, derived_bytes);
+                Ok(())
             }
-            pbkdf2_hmac::<Sha1>(&sk, salt, *iterations as u32, &mut derived);
+            Kdf::Argon2id { t, m, p, salt } => {
+                let params = Params::new(*m as u32, *t as u32, *p as u32, Some(n)).map_err(|e| {
+                    DecryptError::BadParameters(format!("argon2 params: {e}"))
+                })?;
+                let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+                argon2
+                    .hash_password_into(&sk, salt, derived_bytes)
+                    .map_err(|e| DecryptError::BadParameters(format!("argon2: {e}")))?;
+                Ok(())
+            }
+            Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),
         }
-        Kdf::Argon2id { t, m, p, salt } => {
-            let params = Params::new(*m as u32, *t as u32, *p as u32, Some(n)).map_err(|e| {
-                DecryptError::BadParameters(format!("argon2 params: {e}"))
-            })?;
-            let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-            argon2
-                .hash_password_into(&sk, salt, &mut derived)
-                .map_err(|e| DecryptError::BadParameters(format!("argon2: {e}")))?;
-        }
-        Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),
-    }
+    })?;
     Ok(derived)
 }
 
@@ -213,11 +221,11 @@ fn decrypt_member(
     blob: &[u8],
 ) -> Result<Vec<u8>, DecryptError> {
     let key = derive_key(row, password)?;
-    match row.cipher {
-        Cipher::AesGcmW3c => decrypt_aes_gcm(&key, row, blob),
-        Cipher::AesCbcW3c => decrypt_aes_cbc(&key, row, blob),
-        Cipher::BlowfishCfb8 => decrypt_blowfish_cfb64(&key, row, blob),
-    }
+    key.with_secret(|k| match row.cipher {
+        Cipher::AesGcmW3c => decrypt_aes_gcm(k, row, blob),
+        Cipher::AesCbcW3c => decrypt_aes_cbc(k, row, blob),
+        Cipher::BlowfishCfb8 => decrypt_blowfish_cfb64(k, row, blob),
+    })
 }
 
 fn decrypt_aes_gcm(key: &[u8], row: &EntryEncryption, blob: &[u8]) -> Result<Vec<u8>, DecryptError> {

@@ -20,6 +20,7 @@ decrypt = [
     "dep:cfb-mode",
     "dep:miniz_oxide",
     "dep:zeroize",
+    "dep:secure-gate",
 ]
 
 [dependencies]
@@ -39,6 +40,11 @@ blowfish = { version = "0.9", optional = true }
 cfb-mode = { version = "0.8", optional = true }
 miniz_oxide = { version = "0.8", optional = true }
 zeroize = { version = "1", optional = true }
+# alloc only: this crate needs Dynamic<Vec<u8>> for the derived cipher key, not
+# the encoding/rand/ct-eq extras EFV and DebitLeft pull in for their own use.
+secure-gate = { version = "0.9.0-rc.5", optional = true, default-features = false, features = [
+    "alloc",
+] }
 
 # PBKDF2 at 100k iterations and Argon2id at m=64 MiB are unusably slow in an
 # unoptimised build - the suite goes from under a second to ~90. Optimise the
