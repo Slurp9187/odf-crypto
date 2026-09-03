@@ -9,6 +9,10 @@ pub const MANIFEST_NS_OOO: &str = "http://openoffice.org/2001/manifest";
 pub const MANIFEST_NS_OASIS: &str = "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0";
 /// `urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0`.
 /// Not rewritten to `manifest:` — `ManifestImport` leaves `loext:` as-is.
+/// Read-side, LOEXT elements are matched by their hardcoded `loext:`-prefixed
+/// name constants below, not through this URI -- so the only real consumer is
+/// `encrypt.rs`'s manifest writer (`xmlns:loext`), gone under
+/// `--no-default-features` builds.
 #[allow(dead_code)]
 pub const MANIFEST_NS_LOEXT: &str =
     "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0";

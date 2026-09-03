@@ -8,7 +8,6 @@ use aes_gcm::{
     aead::{consts::U12, Aead, KeyInit},
     Aes128Gcm, Aes256Gcm, AesGcm, Nonce,
 };
-use argon2::{Algorithm, Argon2, Params, Version};
 use blowfish::Blowfish;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit as CbcKeyIvInit};
 use cbc::Decryptor;
@@ -16,7 +15,6 @@ use cfb_mode::BufDecryptor;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use pbkdf2::pbkdf2_hmac;
 use secure_gate::{RevealSecret, RevealSecretMut};
-use sha1::digest::Output;
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use zip::write::SimpleFileOptions;
@@ -30,8 +28,8 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
 }
 
 use crate::classify::{classify, member_matches_path};
-use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext, PasswordDigest};
-use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode, StartKeyAlg};
+use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext};
+use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode};
 use crate::DetectError;
 
 const INFLATE_CEILING: usize = 1 << 30;
@@ -168,30 +166,8 @@ fn member_for_archive(
     )))
 }
 
-fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
-    // `finalize_into` writes the digest straight into the wrapper's heap buffer,
-    // so no stack copy of it is left behind (a plain `finalize().to_vec()` would
-    // return it through a stack `GenericArray` first). What this cannot reach:
-    // the hasher buffers the raw password bytes internally until finalize, and
-    // `compress` spills its message schedule on the stack; the 0.10 digest /
-    // sha1 / sha2 crates offer no zeroize feature for either. That residual is
-    // inherent to the hash crates at this version — see the secure-gate skill.
-    fn digest_into<D: Digest>(password: &str) -> PasswordDigest {
-        let mut h = D::new();
-        h.update(password.as_bytes());
-        PasswordDigest::new_with(|v| {
-            v.resize(<D as Digest>::output_size(), 0);
-            h.finalize_into(Output::<D>::from_mut_slice(v));
-        })
-    }
-    match alg {
-        StartKeyAlg::Sha1 => digest_into::<Sha1>(password),
-        StartKeyAlg::Sha256 => digest_into::<Sha256>(password),
-    }
-}
-
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
-    let sk = start_key(password, row.start_key);
+    let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
     if n <= 0 || n > MAX_DERIVED_KEY_LEN {
         return Err(DecryptError::BadParameters(format!(
@@ -213,13 +189,11 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
                     Ok(())
                 }
                 Kdf::Argon2id { t, m, p, salt } => {
-                    let params = Params::new(*m as u32, *t as u32, *p as u32, Some(n))
-                        .map_err(|e| DecryptError::BadParameters(format!("argon2 params: {e}")))?;
-                    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-                    argon2
-                        .hash_password_into(sk_bytes, salt, derived_bytes)
-                        .map_err(|e| DecryptError::BadParameters(format!("argon2: {e}")))?;
-                    Ok(())
+                    // Shared with `encrypt`, which chooses the same tuple rather
+                    // than reading it: `crate::kdf` is where the manifest's
+                    // hostile-parameter guards live, so both directions get them.
+                    crate::kdf::derive_argon2id(sk_bytes, salt, *t, *m, *p, derived_bytes)
+                        .map_err(DecryptError::BadParameters)
                 }
                 Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),
             }

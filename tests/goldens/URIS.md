@@ -88,3 +88,38 @@ this string. Only **correct SHA-1 over UTF-8** decrypts the file — re-run that
 
 Regenerating it changes salts, IVs and `manifest:size`; the OQ1 conclusion does not
 depend on those, but the recorded sizes do.
+
+## encrypt: lo-opens-our-encrypt-output.odt
+
+Checked-in evidence for `docs/plans/odf-encryption-encrypt-2026-09-03.md` S5 (issue #23):
+real LibreOffice — which has never seen a line of this crate — opening what this crate's
+own `encrypt()` writes. Self-consistency (`decrypt(encrypt(p, pw)?, pw)? == p`, S3/S4) is
+necessary but not sufficient; this is the check that catches a framing mistake shared by
+both directions, which self-consistency alone cannot see.
+
+Produced 2026-09-03 by `tests/goldens/validate_encrypt.py`, run under LibreOffice's
+bundled Python (`"C:\Program Files\LibreOffice\program\python.exe"
+tests\goldens\validate_encrypt.py`, from the repo root):
+
+1. `cargo run --example encrypt_for_validation -- tests/goldens/lo-unencrypted.odt
+   password tests/goldens/lo-opens-our-encrypt-output.odt` — this crate's own `encrypt()`
+   (not LibreOffice's) encrypts `lo-unencrypted.odt` (plaintext content: `"S1 real
+   unencrypted ODT."`) under password `password`, producing this file. Zip shape:
+   `mimetype` (STORED), `encrypted-package` (STORED), `META-INF/manifest.xml`
+   (DEFLATED) — matches plan §3 exactly, no `/` file-entry.
+2. Real LibreOffice **26.2.1.2** (UNO-reported: `ooName` + `ooSetupVersionAboutBox`,
+   `soffice.exe`'s file version resolves to the same `26.2.1.2`), bootstrapped headless
+   over UNO the same way `make_goldens.py` is, `loadComponentFromURL`s this file with a
+   `Password` property set to `password`.
+
+| Field | Result |
+|---|---|
+| Password used | `password` |
+| Load | succeeded, no exception |
+| `doc.getText().getString()` | exactly `"S1 real unencrypted ODT."` |
+| Script output | `PASS: LibreOffice (LibreOffice 26.2.1.2) opened our encrypt() output (lo-opens-our-encrypt-output.odt) and recovered the exact original text` |
+
+This is not re-runnable in CI (no LibreOffice there, same as `make_goldens.py`'s own
+precondition) — this file plus this note is the checked-in evidence, the same
+"detection's real `.odt` goldens are the checked-in evidence" precedent S6 established,
+applied to the write direction.

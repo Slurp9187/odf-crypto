@@ -248,6 +248,11 @@ ENCRYPTED = [
     ("S2", "lo-odf11-nonascii-password.odt", NONASCII_PASSWORD),
     ("S3", "lo-legacy-aes-cbc.odt", PASSWORD),
     ("S4", "lo-wholesome-gcm-argon2.odt", PASSWORD),
+    # Written by the crate's own `encrypt()`, not by LibreOffice (encrypt arc
+    # #18/#23). This oracle never saw that code either, so decrypting it here
+    # checks the write direction against an implementation that shares nothing
+    # with it -- the read-direction goldens above cannot do that for `encrypt`.
+    ("E1", "lo-opens-our-encrypt-output.odt", PASSWORD),
 ]
 
 
@@ -328,7 +333,7 @@ def sweep():
         expect("wrong password -> WrongPassword", lambda d=data: decrypt(d, "wrong"), WrongPassword)
 
     print("\nS5  constructed negatives")
-    BF, NA, CBC, GCM = (n for _, n, _ in ENCRYPTED)
+    BF, NA, CBC, GCM = (n for _, n, _ in ENCRYPTED[:4])
     cases = [
         ("blowfish: truncated past the 1K digest window", BF, "content.xml",
          lambda b: b[:-64], None, PASSWORD, Inflate),

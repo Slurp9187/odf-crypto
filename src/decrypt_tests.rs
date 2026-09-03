@@ -1,87 +1,16 @@
 //! Decrypt arc tests (issues #11–#15).
 
 use std::io::{Cursor, Read, Write};
-use std::path::PathBuf;
 
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::{ZipArchive, ZipWriter};
 
 use crate::classify::classify;
 use crate::decrypt::{classification_metadata_unchanged, decrypt, DecryptError};
+use crate::test_support::{
+    load_golden, pgp_two_row_zip, read_member, zip_namelist, NONASCII_PASSWORD, PASSWORD,
+};
 use crate::{Kdf, Mode};
-
-const PASSWORD: &str = "password";
-const NONASCII_PASSWORD: &str = "äbcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP";
-const B64: &str = "AQIDBA==";
-const MIME_TEXT: &str = "application/vnd.oasis.opendocument.text";
-
-fn golden_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("goldens")
-        .join(name)
-}
-
-fn load_golden(name: &str) -> Vec<u8> {
-    std::fs::read(golden_path(name)).unwrap_or_else(|e| panic!("read {name}: {e}"))
-}
-
-fn zip_namelist(bytes: &[u8]) -> Vec<String> {
-    let mut z = ZipArchive::new(Cursor::new(bytes)).unwrap();
-    (0..z.len())
-        .map(|i| z.by_index(i).unwrap().name().to_string())
-        .collect()
-}
-
-fn pgp_two_row_zip() -> Vec<u8> {
-    let manifest = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" xmlns:loext="urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0" manifest:version="1.3">
- <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml" manifest:size="100">
-  <loext:encrypted-key>
-   <loext:encryption-method loext:PGPAlgorithm="http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p"/>
-   <loext:KeyInfo>
-    <loext:PGPData>
-     <loext:PGPKeyID>{B64}</loext:PGPKeyID>
-     <loext:PGPKeyPacket>{B64}</loext:PGPKeyPacket>
-    </loext:PGPData>
-   </loext:KeyInfo>
-   <loext:CipherData>
-    <loext:CipherValue>{B64}</loext:CipherValue>
-   </loext:CipherData>
-  </loext:encrypted-key>
-  <manifest:encryption-data>
-   <manifest:algorithm manifest:algorithm-name="http://www.w3.org/2009/xmlenc11#aes256-gcm" manifest:initialisation-vector="{B64}"/>
-   <manifest:key-derivation manifest:key-derivation-name="PGP"/>
-  </manifest:encryption-data>
- </manifest:file-entry>
- <manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml" manifest:size="50">
-  <manifest:encryption-data>
-   <manifest:algorithm manifest:algorithm-name="http://www.w3.org/2009/xmlenc11#aes256-gcm" manifest:initialisation-vector="{B64}"/>
-   <manifest:key-derivation manifest:key-derivation-name="PGP"/>
-  </manifest:encryption-data>
- </manifest:file-entry>
-</manifest:manifest>
-"#
-    );
-    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-    for (name, data) in [
-        ("mimetype", MIME_TEXT.as_bytes()),
-        ("META-INF/manifest.xml", manifest.as_bytes()),
-        ("content.xml", b"encrypted-content" as &[u8]),
-        ("styles.xml", b"encrypted-styles"),
-    ] {
-        let method = if name == "mimetype" {
-            CompressionMethod::Stored
-        } else {
-            CompressionMethod::Deflated
-        };
-        zip.start_file(name, SimpleFileOptions::default().compression_method(method))
-            .unwrap();
-        zip.write_all(data).unwrap();
-    }
-    zip.finish().unwrap().into_inner()
-}
 
 // --- S1 ---
 
@@ -121,19 +50,6 @@ fn s1_goldens_have_empty_pgp_keys() {
 }
 
 // --- S2 / S3 / S4 goldens ---
-
-fn read_member(zip_bytes: &[u8], path: &str) -> Vec<u8> {
-    let mut z = ZipArchive::new(Cursor::new(zip_bytes)).unwrap();
-    for i in 0..z.len() {
-        let mut f = z.by_index(i).unwrap();
-        if f.name() == path {
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf).unwrap();
-            return buf;
-        }
-    }
-    panic!("member {path} not in zip");
-}
 
 fn assert_well_formed_xml(body: &[u8]) {
     let mut reader = quick_xml::Reader::from_reader(body);
@@ -586,6 +502,62 @@ fn truncated_deflate_stream_errors_rather_than_returning_partial_output() {
         assert!(
             miniz_oxide::inflate::decompress_to_vec_with_limit(truncated, 1 << 20).is_err(),
             "a stream truncated by {cut} B must be an error, not partial output"
+        );
+    }
+}
+
+// --- shared kdf.rs (encrypt arc review): hostile Argon2 tuples ---
+//
+// `t`/`m`/`p` come straight off an attacker-supplied manifest, and until the
+// encrypt arc factored key derivation into `kdf.rs` the only guard was
+// `> 0` in `manifest.rs`. Both cases below reach a public `decrypt()` call:
+// neither may panic, abort, or hang -- `BadParameters` is the whole contract.
+
+fn set_argon2_lanes_to_overflow(xml: &[u8]) -> Vec<u8> {
+    // 2^29: `Params::new` computes `m_cost < p_cost * 8` *before* range-checking
+    // `p_cost`, so this overflows u32 and panics in any overflow-checks build
+    // (argon2 0.5.3 params.rs:119) unless `kdf.rs` rejects it first.
+    String::from_utf8_lossy(xml)
+        .replace("loext:argon2-lanes=\"4\"", "loext:argon2-lanes=\"536870912\"")
+        .into_bytes()
+}
+
+fn set_argon2_memory_to_2gib(xml: &[u8]) -> Vec<u8> {
+    // ~2 TiB of Argon2 blocks: `vec!` aborts the process rather than returning
+    // an error, where LO's own libargon2 returns ARGON2_MEMORY_ALLOCATION_ERROR.
+    String::from_utf8_lossy(xml)
+        .replace("loext:argon2-memory=\"65536\"", "loext:argon2-memory=\"2147483647\"")
+        .into_bytes()
+}
+
+fn set_argon2_memory_below_lanes(xml: &[u8]) -> Vec<u8> {
+    // m < 8p: argon2's own `MemoryTooLittle`, surfaced rather than panicked on.
+    String::from_utf8_lossy(xml)
+        .replace("loext:argon2-memory=\"65536\"", "loext:argon2-memory=\"1\"")
+        .into_bytes()
+}
+
+#[test]
+fn argon2_hostile_parameters_are_bad_parameters_not_a_panic() {
+    for (label, rewrite) in [
+        ("lanes 2^29 (overflows Params::new's m < 8p test)", set_argon2_lanes_to_overflow as Rewrite),
+        ("memory 2 GiB KiB (~2 TiB of blocks)", set_argon2_memory_to_2gib),
+        ("memory 1 KiB (below 8 * lanes)", set_argon2_memory_below_lanes),
+    ] {
+        let blob = mutate_zip("lo-wholesome-gcm-argon2.odt", None, None, Some(rewrite));
+        // The fixture must still be a complete row, or this proves nothing:
+        // classify has to hand decrypt an Argon2id tuple to reject.
+        let class = classify(&blob).unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert_eq!(class.mode, Mode::Wholesome, "{label}");
+        assert!(
+            matches!(class.encrypted_entries[0].kdf, Kdf::Argon2id { .. }),
+            "{label}: fixture must still carry an Argon2id row"
+        );
+
+        let err = decrypt(&blob, PASSWORD).unwrap_err();
+        assert!(
+            matches!(err, DecryptError::BadParameters(_)),
+            "{label}: expected BadParameters, got {err:?}"
         );
     }
 }

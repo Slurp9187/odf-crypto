@@ -258,7 +258,7 @@ Close in this file when evidence lands. Do not guess.
 
 3. **Embedded-object two-latch golden.** Detection OQ2: `Object N/content.xml` alongside root can make `common` the nested row. Decrypt walks every `encrypted_entries` path and selects wholesome by `path == "encrypted-package"`, so `common` does not matter. A fifth golden would still pin `common` for detection; not a decrypt blocker.
 
-Settled 2026-09-02: correct UTF-8 SHA-1 is what current LO writes (OQ1, measured); password is UTF-8 `&str`; empty is an error; output is a plaintext ODF zip; PGP is a later arc; `decrypt` feature default-on; **one Blowfish wire (64-bit-segment CFB)**; start key and derived key are zeroized after use; no PBKDF2/Argon2 cap (match LO); inflate ceiling 1 GiB; `--no-default-features` is a standing check.
+Settled 2026-09-02: correct UTF-8 SHA-1 is what current LO writes (OQ1, measured); password is UTF-8 `&str`; empty is an error; output is a plaintext ODF zip; PGP is a later arc; `decrypt` feature default-on; **one Blowfish wire (64-bit-segment CFB)**; start key and derived key are zeroized after use; no PBKDF2 cap (match LO); **Argon2 `m`/`t` capped from 2026-09-03** (encrypt arc review, `src/kdf.rs`): LO's own libargon2 returns `ARGON2_MEMORY_ALLOCATION_ERROR` where the Rust crate's `vec!` *aborts the process*, so matching LO's absence of a cap would have made a hostile `argon2-memory` uncatchable by any caller — the ceilings (1 GiB of blocks, 65536 passes, each >16x anything LO writes) sit exactly where the two behaviours diverge, and are `BadParameters`; inflate ceiling 1 GiB; `--no-default-features` is a standing check.
 
 ## 10. Why this shape
 

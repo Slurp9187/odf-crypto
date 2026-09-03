@@ -2,11 +2,11 @@
 name = "odf-crypto"
 version = "0.1.0"
 edition = "2021"
-description = "LibreOffice-faithful ODF package encryption detection and decryption"
+description = "LibreOffice-faithful ODF package encryption detection, decryption and encryption"
 rust-version = "1.85"
 
 [features]
-default = ["decrypt"]
+default = ["encrypt"]
 decrypt = [
     "dep:sha1",
     "dep:sha2",
@@ -20,6 +20,10 @@ decrypt = [
     "dep:cfb-mode",
     "dep:miniz_oxide",
 ]
+# encrypt implies decrypt: the two directions share the AES-GCM/Argon2id
+# primitives (src/kdf.rs) -- do not also list "decrypt" in `default`, that
+# would be redundant.
+encrypt = ["decrypt"]
 
 [dependencies]
 quick-xml = "0.38"
@@ -42,7 +46,18 @@ pbkdf2 = { version = "0.12", optional = true }
 argon2 = { version = "0.5", optional = true }
 aes = { version = "0.8", optional = true }
 cbc = { version = "0.1", optional = true }
-aes-gcm = { version = "0.10", optional = true }
+# "getrandom" is aes-gcm's own default feature (its Cargo.toml: default =
+# ["aes", "alloc", "getrandom"]) -- named explicitly here, not left implicit,
+# so the reliance is pinned against aes-gcm ever changing its own defaults.
+# It gates `aes_gcm::aead::OsRng` / `aes_gcm::aead::rand_core::RngCore`, which
+# encrypt's salt/IV generation uses; this is not a new crate dependency (plan
+# OQ2, settled 2026-09-03). "zeroize" wipes the expanded AES key schedule on
+# drop: `secure-gate` wraps the derived key itself, but the key schedule the
+# cipher expands from it is aes-gcm's own allocation and out of the wrapper's
+# reach -- the same class of residual the secure-gate skill names for the hash
+# crates, except this one the dependency can close, so it is turned on. It adds
+# no crate: secure-gate already depends on zeroize internally.
+aes-gcm = { version = "0.10", optional = true, features = ["getrandom", "zeroize"] }
 blowfish = { version = "0.9", optional = true }
 cfb-mode = { version = "0.8", optional = true }
 miniz_oxide = { version = "0.8", optional = true }
@@ -52,3 +67,13 @@ miniz_oxide = { version = "0.8", optional = true }
 # dependency graph only; the crate itself stays unoptimised and debuggable.
 [profile.dev.package."*"]
 opt-level = 3
+
+# Without this, `cargo test` (which builds every example target by default)
+# tries to compile encrypt_for_validation.rs even when the "encrypt" feature
+# is off, and fails: the example calls odf_crypto::encrypt() unconditionally,
+# but that symbol only exists behind #[cfg(feature = "encrypt")] (src/lib.rs).
+# required-features tells Cargo to skip the target instead when the feature
+# set doesn't satisfy it.
+[[example]]
+name = "encrypt_for_validation"
+required-features = ["encrypt"]
