@@ -86,11 +86,15 @@ def _encrypt_with_our_crate(src: Path, dest: Path) -> None:
         "encrypt_for_validation",
         "--",
         str(src),
-        PASSWORD,
         str(dest),
     ]
     print("running", " ".join(cmd), flush=True)
-    result = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True)
+    # The password goes through the environment, not argv, so it is not visible
+    # in a process listing for the lifetime of the cargo run.
+    env = {**os.environ, "ODF_ENCRYPT_PASSWORD": PASSWORD}
+    result = subprocess.run(
+        cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, env=env
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"encrypt_for_validation failed (exit {result.returncode})\n"
