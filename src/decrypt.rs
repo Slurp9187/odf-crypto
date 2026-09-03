@@ -18,7 +18,6 @@ use pbkdf2::pbkdf2_hmac;
 use secure_gate::{RevealSecret, RevealSecretMut};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
-use zeroize::Zeroizing;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -30,7 +29,7 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
 }
 
 use crate::classify::{classify, member_matches_path};
-use crate::sensitive::DerivedKey;
+use crate::sensitive::{DerivedKey, PasswordDigest};
 use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode, StartKeyAlg};
 use crate::DetectError;
 
@@ -159,27 +158,23 @@ fn member_for_archive(
     )))
 }
 
-fn start_key(password: &str, alg: StartKeyAlg) -> Vec<u8> {
+fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
     match alg {
         StartKeyAlg::Sha1 => {
             let mut h = Sha1::new();
             h.update(password.as_bytes());
-            h.finalize().to_vec()
+            PasswordDigest::new(h.finalize().to_vec())
         }
         StartKeyAlg::Sha256 => {
             let mut h = Sha256::new();
             h.update(password.as_bytes());
-            h.finalize().to_vec()
+            PasswordDigest::new(h.finalize().to_vec())
         }
     }
 }
 
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
-    // Zeroizing wipes sk on drop, including the `?` paths below, where a manual
-    // call is skipped exactly when an attacker-supplied file forces the error.
-    // sk never leaves this function, so plain Zeroizing is enough for it; derived
-    // crosses into decrypt_member, so it gets the secure-gate wrapper instead.
-    let sk = Zeroizing::new(start_key(password, row.start_key));
+    let sk = start_key(password, row.start_key);
     let n = row.derived_key_len;
     if n <= 0 {
         return Err(DecryptError::BadParameters(format!(
@@ -188,29 +183,30 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
     }
     let n = n as usize;
     let mut derived = DerivedKey::new(vec![0u8; n]);
-    derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
-        match &row.kdf {
-            Kdf::Pbkdf2 { iterations, salt } => {
-                if *iterations <= 0 {
-                    return Err(DecryptError::BadParameters(format!(
-                        "iterations {iterations}"
-                    )));
+    sk.with_secret(|sk_bytes| {
+        derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
+            match &row.kdf {
+                Kdf::Pbkdf2 { iterations, salt } => {
+                    if *iterations <= 0 {
+                        return Err(DecryptError::BadParameters(format!(
+                            "iterations {iterations}"
+                        )));
+                    }
+                    pbkdf2_hmac::<Sha1>(sk_bytes, salt, *iterations as u32, derived_bytes);
+                    Ok(())
                 }
-                pbkdf2_hmac::<Sha1>(&sk, salt, *iterations as u32, derived_bytes);
-                Ok(())
+                Kdf::Argon2id { t, m, p, salt } => {
+                    let params = Params::new(*m as u32, *t as u32, *p as u32, Some(n))
+                        .map_err(|e| DecryptError::BadParameters(format!("argon2 params: {e}")))?;
+                    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+                    argon2
+                        .hash_password_into(sk_bytes, salt, derived_bytes)
+                        .map_err(|e| DecryptError::BadParameters(format!("argon2: {e}")))?;
+                    Ok(())
+                }
+                Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),
             }
-            Kdf::Argon2id { t, m, p, salt } => {
-                let params = Params::new(*m as u32, *t as u32, *p as u32, Some(n)).map_err(|e| {
-                    DecryptError::BadParameters(format!("argon2 params: {e}"))
-                })?;
-                let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-                argon2
-                    .hash_password_into(&sk, salt, derived_bytes)
-                    .map_err(|e| DecryptError::BadParameters(format!("argon2: {e}")))?;
-                Ok(())
-            }
-            Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),
-        }
+        })
     })?;
     Ok(derived)
 }

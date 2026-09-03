@@ -8,12 +8,34 @@ description: Handling password-derived key material in odf-crypto with secure-ga
 **Sole authority for this topic.** No CLAUDE.md or AGENTS.md exists in this repo
 yet; this skill is where the policy lives until one does.
 
-## Scope: internal wrapping only — a deliberate choice
+## The rule: secure-gate is this crate's zeroizing primitive, full stop
+
+odf-crypto used to reach for bare `zeroize::Zeroizing` for anything that
+needed zeroizing on drop. It doesn't anymore — **wherever the code used to
+zeroize, it now wraps in a secure-gate alias instead.** There is no bare
+`Zeroizing` left anywhere in `src/`, and there is no "this one's local so
+plain `Zeroizing` is enough" exception: both values in `derive_key` (the
+password digest and the derived cipher key) are wrapped, not just the one
+that crosses a function boundary. Direct `zeroize` is gone from `Cargo.toml`
+— secure-gate depends on it internally, so wrapping subsumes it rather than
+sitting alongside it.
+
+**Dependency:** `secure-gate = "0.9.0-rc.7"` (`Cargo.toml`), `default-features
+= false, features = ["alloc"]` only — no `rand`, `ct-eq`, or `encoding`, since
+this crate never generates a random secret (keys come from a user-supplied
+password) and never displays or copies key material anywhere. Unlike
+`sha1`/`aes`/`argon2`/etc., **secure-gate is not optional and not gated on the
+`decrypt` feature** — it's an unconditional dependency of the crate, even
+though today only the `decrypt`-gated `sensitive.rs`/`decrypt.rs` actually use
+it. That's a deliberate choice: the other deps in the `decrypt` feature list
+are swappable algorithm implementations a `classify`-only consumer has no
+reason to pull in; secure-gate is infrastructure, not an algorithm choice.
+
+## Scope: internal wrapping only — the public API stays plain
 
 odf-crypto is a library, not an app: `decrypt(bytes: &[u8], password: &str) ->
-Result<Vec<u8>, DecryptError>` is called by code this repo doesn't control. The
-public signature stays plain types on purpose, decided when secure-gate was
-adopted here:
+Result<Vec<u8>, DecryptError>` is called by code this repo doesn't control.
+The public signature stays plain types on purpose:
 
 - **`password: &str`** — the caller owns it. Wrapping it here adds no
   protection they don't already control, and would force every caller of this
@@ -23,63 +45,69 @@ adopted here:
   return would be ceremony with no effect, since the data is about to be
   fully exposed to the caller regardless.
 
-secure-gate wraps only what stays *inside* the crate: the KDF output on its
-way from `derive_key` to the cipher constructors in `decrypt_member`.
-
-**Dependency:** `secure-gate = "0.9.0-rc.5"` (`Cargo.toml`), optional, gated
-on the `decrypt` feature alongside `zeroize`/`aes`/`argon2`/etc. —
-`default-features = false, features = ["alloc"]` only. No `rand`, `ct-eq`, or
-`encoding`: this crate never generates a random secret (keys come from a
-user-supplied password) and never displays or copies key material anywhere.
+This is a different axis from the zeroizing rule above: "wrap everywhere
+zeroizing happens" governs *internal* key material; the public API boundary
+is governed by "don't force a wrapper dependency on callers for values they
+already own or are about to receive in full." Both are real rules; they
+don't conflict because nothing on the public signature was ever a zeroizing
+candidate — a `&str` the caller owns isn't this crate's to zeroize, and the
+returned plaintext isn't secret key material.
 
 ## What is wrapped
 
 | Alias | Inner | Declared | Status |
 |---|---|---|---|
-| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:177`), consumed in `decrypt_member` (`decrypt.rs:223`). |
+| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`decrypt.rs:162`), consumed by `derive_key` (`decrypt.rs:177`). |
+| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:176`), consumed in `decrypt_member` (`decrypt.rs:221`). |
 
-That's the whole table today — one alias, one call site. It grows when the
-encrypt arc lands (see "Adding a new alias" below).
-
-**Why `Dynamic`, not `Fixed`.** The derived key's length (16/24/32 bytes)
-follows `EntryEncryption::derived_key_len`, which tracks whichever AES
-variant NSS selected when the file was written — not a compile-time
-constant. `Fixed<[u8; N]>` doesn't fit; `Dynamic<Vec<u8>>` does. Contrast
-with encrypted-file-vault's `FileKey32` or debitleft's `DbKey32` — both
-`Fixed`, because those key sizes are architectural constants the app itself
-picked. Reach for `Fixed` when the byte count is fixed by your own design;
-reach for `Dynamic` when it's fixed by input you don't control.
+Both are `Dynamic<Vec<u8>>`, not `Fixed<[u8; N]>`. **Why `Dynamic`.**
+`PasswordDigest` is 20 bytes for SHA-1 or 32 for SHA-256, decided by
+`StartKeyAlg`; `DerivedKey`'s length (16/24/32 bytes) follows
+`EntryEncryption::derived_key_len`, tracking whichever AES variant NSS
+selected when the file was written. Neither is a compile-time constant.
+Contrast with encrypted-file-vault's `FileKey32` or debitleft's `DbKey32` —
+both `Fixed`, because those key sizes are architectural constants the app
+itself picked. Reach for `Fixed` when the byte count is fixed by your own
+design; reach for `Dynamic` when it's fixed by input you don't control.
 
 ## What is deliberately NOT wrapped
 
 - **`password: &str`** and **the returned plaintext `Vec<u8>`** — the public
-  API boundary; see "Scope" above.
-- **`sk` inside `derive_key`** (the SHA-1/SHA-256 digest of the password —
-  the "start key"). It's created and consumed entirely inside `derive_key`
-  and never crosses a function boundary, so plain `zeroize::Zeroizing<Vec<u8>>`
-  already zeroizes it on every return path, including the early `?` returns.
-  This is the rule to internalize: **wrap what crosses a boundary; leave a
-  same-function intermediate on bare `Zeroizing` if it already has it.**
-  `derived` gets the secure-gate wrapper specifically because it escapes
-  `derive_key` into `decrypt_member` — `sk` doesn't escape anywhere.
+  API boundary; see "Scope" above. Neither one is this crate's zeroizing
+  responsibility.
 - **Ciphertext blobs, zip member bytes, manifest XML** — package structure
-  and still-encrypted payloads, not credentials.
+  and still-encrypted payloads, not credentials, and never zeroized before
+  this change either.
 - **KDF parameters** (`salt`, `iterations`, Argon2 `t`/`m`/`p`) — public, per
   the ODF encryption-data XML; they ship inside the file itself.
 
-## The pattern: wrap at the boundary, not the intermediate
+## The pattern: everything zeroize used to cover, now secure-gate
 
 ```rust
-// decrypt.rs — derive_key: sk stays bare Zeroizing (function-local); derived
-// becomes the secure-gate wrapper (it crosses into decrypt_member).
+// decrypt.rs — start_key returns the wrapped digest directly; derive_key
+// wraps the KDF output the same way. Both closures nest because the KDF
+// call needs read access to sk and write access to derived at once.
+fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
+    match alg {
+        StartKeyAlg::Sha1 => {
+            let mut h = Sha1::new();
+            h.update(password.as_bytes());
+            PasswordDigest::new(h.finalize().to_vec())
+        }
+        StartKeyAlg::Sha256 => { /* same shape, Sha256 */ }
+    }
+}
+
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
-    let sk = Zeroizing::new(start_key(password, row.start_key));
+    let sk = start_key(password, row.start_key);
     let n = row.derived_key_len as usize;
     let mut derived = DerivedKey::new(vec![0u8; n]);
-    derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
-        // pbkdf2_hmac(&sk, salt, iterations, derived_bytes) or
-        // argon2.hash_password_into(&sk, salt, derived_bytes) write in here
-        Ok(())
+    sk.with_secret(|sk_bytes| {
+        derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
+            // pbkdf2_hmac(sk_bytes, salt, iterations, derived_bytes) or
+            // argon2.hash_password_into(sk_bytes, salt, derived_bytes) write in here
+            Ok(())
+        })
     })?;
     Ok(derived)
 }
@@ -97,42 +125,46 @@ fn decrypt_member(row: &EntryEncryption, password: &str, blob: &[u8]) -> Result<
 ```
 
 `decrypt_aes_gcm`, `decrypt_aes_cbc`, and `decrypt_blowfish_cfb64` are
-untouched by this — they still take plain `key: &[u8]`. Rust's auto-deref
-(`&Vec<u8>` closure parameter coerces to `&[u8]` at the call site) means
-neither the KDF calls inside `derive_key` nor the cipher constructors here
-needed a signature change to work with the wrapped type's contents. This is
-the same reason `pbkdf2_hmac::<Sha1>(&sk, salt, iterations, derived_bytes)`
-compiles unchanged from before: `&sk` was already `&Zeroizing<Vec<u8>>`
-auto-deref'd to `&[u8]`, and `derived_bytes: &mut Vec<u8>` auto-derefs the
-same way.
+untouched by this — they still take plain `key: &[u8]`, and `pbkdf2_hmac`/
+`argon2.hash_password_into` still take plain `&[u8]`/`&mut [u8]` too. Rust's
+auto-deref (`&Vec<u8>` and `&mut Vec<u8>` closure parameters coerce to
+`&[u8]`/`&mut [u8]` at the call site) means none of those signatures needed
+to change to work with the wrapped types' contents — only `start_key` and
+`derive_key` themselves, which now return the wrapper instead of a bare
+`Vec<u8>`/`Zeroizing<Vec<u8>>`.
 
 ## Construction
 
 ```rust
-let derived = DerivedKey::new(vec![0u8; n]);           // used today
+PasswordDigest::new(h.finalize().to_vec())   // start_key — wrap at creation
+DerivedKey::new(vec![0u8; n])                // derive_key — used today
 ```
 
 `DerivedKey::new_with(|v| v.resize(n, 0u8))` is available too, but per
 secure-gate's own docs, `Dynamic::new_with` exists "for consistent API idiom,
 not for stack-residue avoidance" — unlike `Fixed::new_with`, it buys nothing
 here (the heap allocation happens either way), so `new(vec![0u8; n])` is
-equally correct and is what the one live call site uses.
+equally correct and is what the live call site uses. `start_key` wraps at
+the point of creation (inside the function that produces the digest) rather
+than at the call site in `derive_key` — prefer that shape for a new alias
+too: the function that creates sensitive material should hand back the
+wrapped type directly, not a bare value the caller has to remember to wrap.
 
 ## Adding a new alias
 
 `docs/plans/odf-encryption-encrypt-2026-09-03.md` plans a writer-side
-`encrypt()`, which will introduce its own key/salt/IV material. Run the same
-test before wrapping anything new:
+`encrypt()`, which will introduce its own key/salt/IV material. Apply the
+same rule: if it would have been `zeroize::Zeroizing` before, it's a
+secure-gate alias now, regardless of whether it crosses a function boundary.
 
-1. **Does it cross a function boundary while still secret?** No → plain
-   `Zeroizing`, or nothing at all if it isn't secret (see "What NOT to
-   wrap"). Yes → continue.
-2. **Is its length fixed by your own design, or by input you don't
+1. **Is its length fixed by your own design, or by input you don't
    control?** Fixed by design (always exactly N bytes) → `fixed_alias!` in
    `sensitive.rs`. Fixed by input (a manifest field, a negotiated size) →
-   `dynamic_alias!`, matching `DerivedKey`.
-3. Declare it `pub(crate)` in `sensitive.rs` beside `DerivedKey`, with a doc
-   string explaining what it is and — for a `Dynamic` — why not `Fixed`.
+   `dynamic_alias!`, matching `PasswordDigest`/`DerivedKey`.
+2. Declare it `pub(crate)` in `sensitive.rs` beside the existing two, with a
+   doc string explaining what it is and — for a `Dynamic` — why not `Fixed`.
+3. Wrap at the point of creation, not the point of first use, when the
+   creating function is itself private to this crate — see `start_key` above.
 4. Check whether the new value needs to leave the crate on a public
    signature. Unlikely per "Scope" above, but a plausible `encrypt()` could
    need to hand back key material for a recovery flow — that's the one case
@@ -144,6 +176,7 @@ test before wrapping anything new:
 
 ```bash
 cargo build                        # decrypt is a default feature
+cargo build --no-default-features  # secure-gate compiles in either way
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
