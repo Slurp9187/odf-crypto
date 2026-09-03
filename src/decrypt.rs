@@ -3,22 +3,21 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 
-use aes::Aes256;
+use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
+    aead::{consts::U12, Aead, KeyInit},
+    Aes128Gcm, Aes256Gcm, AesGcm, Nonce,
 };
 use argon2::{Algorithm, Argon2, Params, Version};
 use blowfish::Blowfish;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit as CbcKeyIvInit};
 use cbc::Decryptor;
-use cfb_mode::cipher::KeyIvInit as CfbKeyIvInit;
 use cfb_mode::BufDecryptor;
 use miniz_oxide::inflate::decompress_to_vec_with_limit;
 use pbkdf2::pbkdf2_hmac;
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -31,7 +30,7 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
 
 use crate::classify::{classify, member_matches_path};
 use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode, StartKeyAlg};
-use crate::{Classification, DetectError};
+use crate::DetectError;
 
 const INFLATE_CEILING: usize = 1 << 30;
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
@@ -87,16 +86,16 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
             .ok_or_else(|| {
                 DecryptError::BadParameters("wholesome package missing encrypted-package row".into())
             })?;
-        let member = member_for_archive(&mut archive, &row.path)?;
-        let ciphertext = read_member_by_path(&mut archive, &member)?;
+        let (index, _) = member_for_archive(&mut archive, &row.path)?;
+        let ciphertext = read_member_at(&mut archive, index)?;
         let compressed = decrypt_member(row, password, &ciphertext)?;
         return raw_inflate(&compressed, row.size);
     }
 
     let mut plain: HashMap<String, Vec<u8>> = HashMap::new();
     for row in &class.encrypted_entries {
-        let member = member_for_archive(&mut archive, &row.path)?;
-        let ciphertext = read_member_by_path(&mut archive, &member)?;
+        let (index, member) = member_for_archive(&mut archive, &row.path)?;
+        let ciphertext = read_member_at(&mut archive, index)?;
         let compressed = decrypt_member(row, password, &ciphertext)?;
         let inflated = raw_inflate(&compressed, row.size)?;
         plain.insert(member, inflated);
@@ -137,10 +136,12 @@ fn read_member_at(
     Ok(buf)
 }
 
+/// First member whose raw or slash-collapsed name matches - the rule `classify`
+/// itself uses, because a row path is a folder-tree path, not a namelist key.
 fn member_for_archive(
     archive: &mut ZipArchive<Cursor<&[u8]>>,
     path: &str,
-) -> Result<String, DecryptError> {
+) -> Result<(usize, String), DecryptError> {
     for i in 0..archive.len() {
         let name = archive
             .by_index(i)
@@ -148,7 +149,7 @@ fn member_for_archive(
             .name()
             .to_string();
         if member_matches_path(&name, path) {
-            return Ok(name);
+            return Ok((i, name));
         }
     }
     Err(DecryptError::BadParameters(format!(
@@ -171,27 +172,26 @@ fn start_key(password: &str, alg: StartKeyAlg) -> Vec<u8> {
     }
 }
 
-fn derive_key(row: &EntryEncryption, password: &str) -> Result<Vec<u8>, DecryptError> {
-    let mut sk = start_key(password, row.start_key);
+fn derive_key(row: &EntryEncryption, password: &str) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
+    // Zeroizing wipes on drop, including the `?` paths below, where a manual
+    // call is skipped exactly when an attacker-supplied file forces the error.
+    let sk = Zeroizing::new(start_key(password, row.start_key));
     let n = row.derived_key_len;
     if n <= 0 {
-        sk.zeroize();
         return Err(DecryptError::BadParameters(format!(
             "derived_key_len {n}"
         )));
     }
     let n = n as usize;
-    let mut derived = vec![0u8; n];
-    let result = match &row.kdf {
+    let mut derived = Zeroizing::new(vec![0u8; n]);
+    match &row.kdf {
         Kdf::Pbkdf2 { iterations, salt } => {
             if *iterations <= 0 {
-                Err(DecryptError::BadParameters(format!(
+                return Err(DecryptError::BadParameters(format!(
                     "iterations {iterations}"
-                )))
-            } else {
-                pbkdf2_hmac::<Sha1>(&sk, salt, *iterations as u32, &mut derived);
-                Ok(())
+                )));
             }
+            pbkdf2_hmac::<Sha1>(&sk, salt, *iterations as u32, &mut derived);
         }
         Kdf::Argon2id { t, m, p, salt } => {
             let params = Params::new(*m as u32, *t as u32, *p as u32, Some(n)).map_err(|e| {
@@ -201,12 +201,9 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<Vec<u8>, DecryptE
             argon2
                 .hash_password_into(&sk, salt, &mut derived)
                 .map_err(|e| DecryptError::BadParameters(format!("argon2: {e}")))?;
-            Ok(())
         }
         Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),
-    };
-    sk.zeroize();
-    result?;
+    }
     Ok(derived)
 }
 
@@ -215,25 +212,12 @@ fn decrypt_member(
     password: &str,
     blob: &[u8],
 ) -> Result<Vec<u8>, DecryptError> {
-    let mut key = derive_key(row, password)?;
-    let pt = match row.cipher {
-        Cipher::AesGcmW3c => {
-            let out = decrypt_aes_gcm(&key, row, blob)?;
-            key.zeroize();
-            out
-        }
-        Cipher::AesCbcW3c => {
-            let out = decrypt_aes_cbc(&key, row, blob)?;
-            key.zeroize();
-            out
-        }
-        Cipher::BlowfishCfb8 => {
-            let out = decrypt_blowfish_cfb64(&key, row, blob)?;
-            key.zeroize();
-            out
-        }
-    };
-    Ok(pt)
+    let key = derive_key(row, password)?;
+    match row.cipher {
+        Cipher::AesGcmW3c => decrypt_aes_gcm(&key, row, blob),
+        Cipher::AesCbcW3c => decrypt_aes_cbc(&key, row, blob),
+        Cipher::BlowfishCfb8 => decrypt_blowfish_cfb64(&key, row, blob),
+    }
 }
 
 fn decrypt_aes_gcm(key: &[u8], row: &EntryEncryption, blob: &[u8]) -> Result<Vec<u8>, DecryptError> {
@@ -246,12 +230,29 @@ fn decrypt_aes_gcm(key: &[u8], row: &EntryEncryption, blob: &[u8]) -> Result<Vec
     if blob[..12] != row.iv[..] {
         return Err(DecryptError::BadParameters("inconsistent IV".into()));
     }
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?;
+    // NSS selects AES-128/192/256 from the derived key length, so the row's
+    // `derived_key_len` decides the variant. `#aes128-gcm` and `#aes192-gcm` are
+    // both in the accepted URI table, and an absent `manifest:key-size` derives 16.
+    type Aes192Gcm = AesGcm<Aes192, U12>;
     let nonce = Nonce::from_slice(&row.iv);
-    cipher
-        .decrypt(nonce, &blob[12..])
-        .map_err(|_| DecryptError::WrongPassword)
+    let ct = &blob[12..];
+    let out = match key.len() {
+        16 => Aes128Gcm::new_from_slice(key)
+            .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
+            .decrypt(nonce, ct),
+        24 => Aes192Gcm::new_from_slice(key)
+            .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
+            .decrypt(nonce, ct),
+        32 => Aes256Gcm::new_from_slice(key)
+            .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
+            .decrypt(nonce, ct),
+        n => {
+            return Err(DecryptError::BadParameters(format!(
+                "AES key length {n}"
+            )))
+        }
+    };
+    out.map_err(|_| DecryptError::WrongPassword)
 }
 
 fn decrypt_aes_cbc(key: &[u8], row: &EntryEncryption, blob: &[u8]) -> Result<Vec<u8>, DecryptError> {
@@ -261,12 +262,26 @@ fn decrypt_aes_cbc(key: &[u8], row: &EntryEncryption, blob: &[u8]) -> Result<Vec
     if blob.is_empty() || blob.len() % 16 != 0 {
         return Err(DecryptError::BadParameters("not a block multiple".into()));
     }
-    type Aes256CbcDec = Decryptor<Aes256>;
     let mut buf = blob.to_vec();
-    let mut cipher = Aes256CbcDec::new_from_slices(key, &row.iv)
-        .map_err(|_| DecryptError::BadParameters("AES-CBC key/IV".into()))?;
-    for chunk in buf.chunks_mut(16) {
-        cipher.decrypt_block_mut(cbc::cipher::Block::<Aes256>::from_mut_slice(chunk));
+    // As in GCM: the variant follows the derived key length, not the URI's name.
+    macro_rules! cbc_decrypt_with {
+        ($aes:ty) => {{
+            let mut cipher = Decryptor::<$aes>::new_from_slices(key, &row.iv)
+                .map_err(|_| DecryptError::BadParameters("AES-CBC key/IV".into()))?;
+            for chunk in buf.chunks_mut(16) {
+                cipher.decrypt_block_mut(cbc::cipher::Block::<$aes>::from_mut_slice(chunk));
+            }
+        }};
+    }
+    match key.len() {
+        16 => cbc_decrypt_with!(Aes128),
+        24 => cbc_decrypt_with!(Aes192),
+        32 => cbc_decrypt_with!(Aes256),
+        n => {
+            return Err(DecryptError::BadParameters(format!(
+                "AES key length {n}"
+            )))
+        }
     }
     let Some(&pad) = buf.last() else {
         return Err(DecryptError::WrongPassword);
@@ -319,6 +334,10 @@ fn verify_checksum(row: &EntryEncryption, compressed_plain: &[u8]) -> Result<(),
     Ok(())
 }
 
+/// Raw DEFLATE, then plan section 2's two post-conditions. Both run only after the
+/// checksum or GCM tag has already passed, so neither is a password oracle.
+/// `decompress_to_vec_with_limit` fails an unterminated stream rather than
+/// returning the partial output it managed; the length check then pins the rest.
 fn raw_inflate(compressed: &[u8], expected_size: i64) -> Result<Vec<u8>, DecryptError> {
     let out = decompress_to_vec_with_limit(compressed, INFLATE_CEILING)
         .map_err(|e| DecryptError::Inflate(e.to_string()))?;
@@ -330,6 +349,20 @@ fn raw_inflate(compressed: &[u8], expected_size: i64) -> Result<Vec<u8>, Decrypt
         )));
     }
     Ok(out)
+}
+
+/// Rebuild a start tag without `manifest:size`, which an LO plaintext save never writes.
+fn without_size(e: &BytesStart<'_>) -> BytesStart<'static> {
+    let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+    let mut out = BytesStart::new(name);
+    let strip_size = e.local_name().as_ref() == b"file-entry";
+    for attr in e.attributes().flatten() {
+        if strip_size && is_manifest_size_attr(attr.key.as_ref()) {
+            continue;
+        }
+        out.push_attribute((attr.key.as_ref(), attr.value.as_ref()));
+    }
+    out.into_owned()
 }
 
 fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
@@ -352,18 +385,8 @@ fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
                     skip_depth = 1;
                     continue;
                 }
-                let tag = e.name().as_ref().to_vec();
-                let name = String::from_utf8_lossy(&tag).into_owned();
-                let mut start = BytesStart::new(&name);
-                let strip_size = e.local_name().as_ref() == b"file-entry";
-                for attr in e.attributes().flatten() {
-                    if strip_size && is_manifest_size_attr(attr.key.as_ref()) {
-                        continue;
-                    }
-                    start.push_attribute((attr.key.as_ref(), attr.value.as_ref()));
-                }
                 writer
-                    .write_event(Event::Start(start))
+                    .write_event(Event::Start(without_size(&e)))
                     .map_err(|e| DecryptError::Zip(e.to_string()))?;
             }
             Ok(Event::End(e)) => {
@@ -382,8 +405,10 @@ fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
                 if e.local_name().as_ref() == b"encryption-data" {
                     continue;
                 }
+                // A file-entry with no children is an Empty event, and it can still
+                // carry manifest:size. Filtering only Start would leave those behind.
                 writer
-                    .write_event(Event::Empty(e.into_owned()))
+                    .write_event(Event::Empty(without_size(&e)))
                     .map_err(|e| DecryptError::Zip(e.to_string()))?;
             }
             Ok(other) => {
@@ -420,8 +445,7 @@ fn rebuild_zip(
         file.read_to_end(&mut body)
             .map_err(|e| DecryptError::Zip(e.to_string()))?;
 
-        let (method, body) = if name == MANIFEST_PATH || member_matches_path(&name, MANIFEST_PATH)
-        {
+        let (method, body) = if member_matches_path(&name, MANIFEST_PATH) {
             (CompressionMethod::Deflated, stripped.clone())
         } else if let Some(pt) = plain_members.get(&name) {
             (CompressionMethod::Deflated, pt.clone())
@@ -446,8 +470,8 @@ fn rebuild_zip(
 /// Compare metadata that must survive per-entry decrypt (for tests).
 #[cfg(test)]
 pub(crate) fn classification_metadata_unchanged(
-    before: &Classification,
-    after: &Classification,
+    before: &crate::Classification,
+    after: &crate::Classification,
 ) -> bool {
     before.odf_version == after.odf_version
         && before.media_type == after.media_type

@@ -8,7 +8,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify;
 use crate::decrypt::{classification_metadata_unchanged, decrypt, DecryptError};
-use crate::{Mode};
+use crate::{Kdf, Mode};
 
 const PASSWORD: &str = "password";
 const NONASCII_PASSWORD: &str = "äbcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP";
@@ -224,11 +224,14 @@ fn s4_wholesome_gcm_golden() {
 // `BadParameters` rows are a deliberate divergence in error granularity from LO
 // (plan §4 / issue #15): both fail closed; we expose more detail.
 
+/// A fixture transform: takes a member or manifest body, returns the mutated one.
+type Rewrite = fn(&[u8]) -> Vec<u8>;
+
 fn mutate_zip(
     golden: &str,
     member: Option<&str>,
-    member_mut: Option<fn(&[u8]) -> Vec<u8>>,
-    manifest_fn: Option<fn(&[u8]) -> Vec<u8>>,
+    member_mut: Option<Rewrite>,
+    manifest_fn: Option<Rewrite>,
 ) -> Vec<u8> {
     let input = load_golden(golden);
     let mut src = ZipArchive::new(Cursor::new(&input)).unwrap();
@@ -406,4 +409,183 @@ fn s5_constructed_negatives() {
         decrypt(&blob, PASSWORD).unwrap_err(),
         DecryptError::WrongPassword
     ));
+}
+
+// --- regressions ---
+
+/// Replace `manifest:key-size` on key-derivation only, leaving start-key-generation's.
+fn rewrite_kdf_key_size(xml: &str, to: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while let Some(pos) = rest.find("<manifest:key-derivation") {
+        let (head, tail) = rest.split_at(pos);
+        out.push_str(head);
+        let end = tail.find("/>").map(|e| e + 2).unwrap_or(tail.len());
+        let (elem, after) = tail.split_at(end);
+        out.push_str(&elem.replace(
+            "manifest:key-size=\"32\"",
+            &format!("manifest:key-size=\"{to}\""),
+        ));
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Re-encrypt every row of the AES-256 golden under a 16-byte derived key and declare
+/// it as `#aes128-cbc` with `manifest:key-size="16"`. NSS picks the AES variant from
+/// the derived key length, so LibreOffice opens this file; `classify` accepts the URI
+/// and reports `derived_key_len == 16`. Salt, iteration count, IV and checksum are
+/// untouched - the checksum covers the compressed plaintext, which does not change.
+fn reencrypt_cbc_as_aes128(golden: &str) -> Vec<u8> {
+    use aes::{Aes128, Aes256};
+    use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+    use pbkdf2::pbkdf2_hmac;
+    use sha1::Sha1;
+    use sha2::{Digest, Sha256};
+
+    let input = load_golden(golden);
+    let class = classify(&input).unwrap();
+    let start = Sha256::digest(PASSWORD.as_bytes()).to_vec();
+    let mut bodies: std::collections::HashMap<String, Vec<u8>> = Default::default();
+
+    for row in &class.encrypted_entries {
+        let (salt, iters) = match &row.kdf {
+            Kdf::Pbkdf2 { iterations, salt } => (salt.clone(), *iterations as u32),
+            other => panic!("expected PBKDF2, got {other:?}"),
+        };
+        let mut k32 = vec![0u8; 32];
+        pbkdf2_hmac::<Sha1>(&start, &salt, iters, &mut k32);
+        let mut buf = read_member(&input, &row.path);
+        let mut dec = cbc::Decryptor::<Aes256>::new_from_slices(&k32, &row.iv).unwrap();
+        for chunk in buf.chunks_mut(16) {
+            dec.decrypt_block_mut(cbc::cipher::Block::<Aes256>::from_mut_slice(chunk));
+        }
+        let pad = *buf.last().unwrap() as usize;
+        buf.truncate(buf.len() - pad);
+
+        let mut k16 = vec![0u8; 16];
+        pbkdf2_hmac::<Sha1>(&start, &salt, iters, &mut k16);
+        let padlen = 16 - (buf.len() % 16);
+        buf.resize(buf.len() + padlen - 1, 0);
+        buf.push(padlen as u8);
+        let mut enc = cbc::Encryptor::<Aes128>::new_from_slices(&k16, &row.iv).unwrap();
+        for chunk in buf.chunks_mut(16) {
+            enc.encrypt_block_mut(cbc::cipher::Block::<Aes128>::from_mut_slice(chunk));
+        }
+        bodies.insert(row.path.clone(), buf);
+    }
+
+    let manifest = String::from_utf8(read_member(&input, "META-INF/manifest.xml")).unwrap();
+    let manifest = rewrite_kdf_key_size(&manifest.replace("#aes256-cbc", "#aes128-cbc"), "16");
+
+    let mut src = ZipArchive::new(Cursor::new(&input)).unwrap();
+    let mut buf = Vec::new();
+    let mut out = ZipWriter::new(Cursor::new(&mut buf));
+    for i in 0..src.len() {
+        let mut file = src.by_index(i).unwrap();
+        let name = file.name().to_string();
+        let method = file.compression();
+        let mut body = Vec::new();
+        file.read_to_end(&mut body).unwrap();
+        let body = if name == "META-INF/manifest.xml" {
+            manifest.clone().into_bytes()
+        } else {
+            bodies.get(&name).cloned().unwrap_or(body)
+        };
+        out.start_file(
+            &name,
+            SimpleFileOptions::default().compression_method(method),
+        )
+        .unwrap();
+        out.write_all(&body).unwrap();
+    }
+    out.finish().unwrap();
+    buf
+}
+
+/// AES-128 and AES-192 are in the accepted URI table, and an absent `manifest:key-size`
+/// derives 16 bytes even under an `aes256-cbc` URI. Hardcoding AES-256 refused those
+/// files as `BadParameters` - claiming the package was malformed when it was not.
+#[test]
+fn s3_aes128_cbc_decrypts_rather_than_being_refused() {
+    let bytes = reencrypt_cbc_as_aes128("lo-legacy-aes-cbc.odt");
+    let before = classify(&bytes).unwrap();
+    assert!(!before.encrypted_entries.is_empty());
+    assert!(
+        before.encrypted_entries.iter().all(|e| e.derived_key_len == 16),
+        "fixture must derive 16-byte keys"
+    );
+
+    let out = decrypt(&bytes, PASSWORD).expect("AES-128 package must decrypt");
+    let after = classify(&out).unwrap();
+    assert_eq!(after.mode, Mode::Plain);
+    assert!(after.encrypted_entries.is_empty());
+
+    // byte-identical to what the AES-256 original yields
+    let want = decrypt(&load_golden("lo-legacy-aes-cbc.odt"), PASSWORD).unwrap();
+    for path in ["content.xml", "styles.xml", "meta.xml"] {
+        assert_eq!(read_member(&out, path), read_member(&want, path), "{path}");
+    }
+    assert!(matches!(
+        decrypt(&bytes, "wrong").unwrap_err(),
+        DecryptError::WrongPassword
+    ));
+}
+
+fn add_size_to_self_closing_entry(xml: &[u8]) -> Vec<u8> {
+    String::from_utf8_lossy(xml)
+        .replacen(
+            "<manifest:file-entry manifest:full-path=\"Configurations2/\"",
+            "<manifest:file-entry manifest:size=\"99\" manifest:full-path=\"Configurations2/\"",
+            1,
+        )
+        .into_bytes()
+}
+
+/// A file-entry with no children is an `Event::Empty`, and it can still carry
+/// `manifest:size`. Filtering only `Event::Start` left those behind - invisible to the
+/// goldens, where every entry with a size also has an `encryption-data` child.
+#[test]
+fn s2_manifest_size_stripped_from_self_closing_entry() {
+    let bytes = mutate_zip(
+        "aoo-blowfish-pbkdf2.odt",
+        None,
+        None,
+        Some(add_size_to_self_closing_entry),
+    );
+    let fixture = String::from_utf8(read_member(&bytes, "META-INF/manifest.xml")).unwrap();
+    assert!(
+        fixture.contains("manifest:size=\"99\""),
+        "fixture must carry the attribute it is testing"
+    );
+
+    let out = decrypt(&bytes, PASSWORD).unwrap();
+    let mf = String::from_utf8(read_member(&out, "META-INF/manifest.xml")).unwrap();
+    assert!(
+        !mf.contains("manifest:size"),
+        "manifest:size must be dropped from self-closing entries too:\n{mf}"
+    );
+    assert_eq!(classify(&out).unwrap().mode, Mode::Plain);
+}
+
+/// Plan section 2 wants two post-conditions after inflate: the stream reaches its end
+/// marker, and the length equals `manifest:size`. The length check is explicit in
+/// `raw_inflate`; this pins the other one, which is a property of the inflater rather
+/// than of our code, so a dependency swap cannot quietly remove it.
+#[test]
+fn truncated_deflate_stream_errors_rather_than_returning_partial_output() {
+    let data: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+    let compressed = miniz_oxide::deflate::compress_to_vec(&data, 6);
+    assert_eq!(
+        miniz_oxide::inflate::decompress_to_vec_with_limit(&compressed, 1 << 20).unwrap(),
+        data
+    );
+    for cut in [1usize, 4, 16] {
+        let truncated = &compressed[..compressed.len() - cut];
+        assert!(
+            miniz_oxide::inflate::decompress_to_vec_with_limit(truncated, 1 << 20).is_err(),
+            "a stream truncated by {cut} B must be an error, not partial output"
+        );
+    }
 }

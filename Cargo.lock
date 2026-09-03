@@ -244,7 +244,6 @@ checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
  "miniz_oxide 0.9.1",
- "zlib-rs",
 ]
 
 [[package]]
@@ -360,7 +359,6 @@ dependencies = [
  "blowfish",
  "cbc",
  "cfb-mode",
- "flate2",
  "hmac",
  "miniz_oxide 0.8.9",
  "pbkdf2",
@@ -579,12 +577,6 @@ dependencies = [
  "thiserror",
  "zopfli",
 ]
-
-[[package]]
-name = "zlib-rs"
-version = "0.6.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zopfli"

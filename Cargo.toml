@@ -18,7 +18,6 @@ decrypt = [
     "dep:aes-gcm",
     "dep:blowfish",
     "dep:cfb-mode",
-    "dep:flate2",
     "dep:miniz_oxide",
     "dep:zeroize",
 ]
@@ -38,7 +37,11 @@ cbc = { version = "0.1", optional = true }
 aes-gcm = { version = "0.10", optional = true }
 blowfish = { version = "0.9", optional = true }
 cfb-mode = { version = "0.8", optional = true }
-flate2 = { version = "1", optional = true }
 miniz_oxide = { version = "0.8", optional = true }
 zeroize = { version = "1", optional = true }
 
+# PBKDF2 at 100k iterations and Argon2id at m=64 MiB are unusably slow in an
+# unoptimised build - the suite goes from under a second to ~90. Optimise the
+# dependency graph only; the crate itself stays unoptimised and debuggable.
+[profile.dev.package."*"]
+opt-level = 3
