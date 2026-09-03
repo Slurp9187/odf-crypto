@@ -206,7 +206,7 @@ S2 blocks on S1. S3 and S4 block on S2. S5 blocks on S3 (needs real output to fe
 
 ## 8. Borrow / do not copy
 
-**Borrow:** decrypt's already-audited `Zeroizing` key handling, its GCM framing constants (12-byte IV, 16-byte tag, IV-prepended), and its ceiling-on-a-buffer discipline (§4's `DEFLATE_CEILING`).
+**Borrow:** decrypt's already-audited key handling — which as shipped is `secure-gate`, not `Zeroizing`: [#25](https://github.com/Slurp9187/odf-crypto/pull/25) replaced the latter crate-wide while this arc was in review, and the writer side adopted it on the way in (see `.claude/skills/odf-crypto-secure-gate/SKILL.md`, the authority) — plus its GCM framing constants (12-byte IV, 16-byte tag, IV-prepended) and its ceiling-on-a-buffer discipline (§4's `DEFLATE_CEILING`).
 
 **Do not copy:** a per-stream salt/IV reuse (§Authority: LO generates fresh randomness per stream — moot here since wholesome has one row, but do not let a future per-entry arc reuse one salt/IV pair across members). Do not derive `manifest:version` from the input's own version (§Out of scope) — it is always `"1.4"` for this arc's one profile. Do not reimplement key derivation inside `encrypt.rs` (§4). Do not re-derive the `mimetype` member's bytes from `media_type` when the input already has a `mimetype` member to copy verbatim (§3).
 

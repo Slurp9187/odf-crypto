@@ -107,18 +107,41 @@ pub enum EncryptError {
     /// infallible, so in practice this is the 1 GiB input-size rejection.
     #[error("deflate failed: {0}")]
     Deflate(String),
-    /// The input's own `mimetype` member cannot be carried into the output:
-    /// over 1 KiB, not UTF-8, or containing a byte that is not
-    /// an XML 1.0 `Char`. `classify` admits such a package (its check is
-    /// `starts_with("application/vnd.")` over the first 1024 bytes), but
-    /// copying it verbatim would emit a `manifest.xml` real LibreOffice's
-    /// expat rejects -- so this fails closed rather than writing a package
-    /// that classifies but will not open.
+    /// The input's own `mimetype` member cannot be carried into the output.
+    /// Four reasons, all of which `classify` itself tolerates (its check is
+    /// `starts_with("application/vnd.")` over the first 1024 bytes):
+    ///
+    /// - over 1 KiB, which is all `classify` ever looked at;
+    /// - not valid UTF-8;
+    /// - containing a character outside XML 1.0's `Char` production, which
+    ///   would emit a `manifest.xml` real LibreOffice's expat rejects;
+    /// - containing a tab, LF or CR. Those are legal `Char`s, but XML
+    ///   attribute-value normalization rewrites each to a space on the way
+    ///   back in, so the verbatim `mimetype` zip member and the parsed
+    ///   `manifest:media-type` would then disagree.
+    ///
+    /// All four fail closed rather than writing a package that classifies but
+    /// will not open.
     #[error("unusable mimetype member: {0}")]
     Mimetype(String),
     /// Building the outer zip container failed.
     #[error("zip error: {0}")]
     Zip(String),
+    /// A crypto primitive rejected parameters `encrypt` chose *itself* -- the
+    /// wholesome profile's Argon2id tuple, its 32-byte key, its 12-byte nonce.
+    /// Unreachable today: every one of those is a compile-time constant
+    /// guarded by `const` asserts beside the profile, which is why this
+    /// carries no recovery advice.
+    ///
+    /// It exists because the alternative is a panic in a library. The plan
+    /// (§4) rules out a `BadParameters` analogue, and this is not one: that
+    /// variant would report an *untrusted manifest field*, which `encrypt`
+    /// never reads. This reports an internal invariant a dependency bump could
+    /// invalidate under us -- if `argon2` or `aes-gcm` ever narrows what it
+    /// accepts, the failure surfaces as an `Err` a caller can handle rather
+    /// than an abort it cannot.
+    #[error("internal invariant violated: {0}")]
+    Internal(String),
 }
 
 /// Encrypt a plaintext ODF package with `password`, producing what current
@@ -164,11 +187,6 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     let mut derived_key = DerivedKey::new(vec![0u8; WHOLESOME.derived_key_len]);
     start_key.with_secret(|sk| {
         derived_key.with_secret_mut(|key| {
-            // `encrypt` only ever passes `WHOLESOME`'s own constants, whose
-            // validity is asserted at compile time above, so this cannot fail
-            // for any input `classify` accepted. Unlike decrypt, there is no
-            // attacker-supplied tuple here, and so no `BadParameters`
-            // analogue in `EncryptError`.
             crate::kdf::derive_argon2id(
                 sk,
                 &salt,
@@ -177,9 +195,9 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
                 WHOLESOME.argon2_p,
                 key,
             )
-            .expect("WHOLESOME's Argon2id params are valid by the const asserts above");
+            .map_err(EncryptError::Internal)
         })
-    });
+    })?;
 
     // Plan §6 step 7 / `ciphercontext.cxx`'s encrypt branch: AES-256-GCM,
     // empty AAD, the 16-byte tag appended to the ciphertext. Sealing in place
@@ -188,23 +206,37 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     // not prepend the IV, so LO does, and so do we -- in `assemble_zip`,
     // which writes `IV || ciphertext || tag` without materialising a
     // concatenation.
+    //
+    // `Nonce::from_slice` panics on a length mismatch, so the length is
+    // checked first: `WHOLESOME.iv_len` is const-asserted to be 12 above, but
+    // a checked error beats a panic reachable only by editing that constant.
+    if iv.len() != 12 {
+        return Err(EncryptError::Internal(format!(
+            "GCM nonce must be 12 bytes, WHOLESOME.iv_len gave {}",
+            iv.len()
+        )));
+    }
     derived_key.with_secret(|key| {
         payload.with_secret_mut(|pt| {
             Aes256Gcm::new_from_slice(key)
-                .expect("derived_key is WHOLESOME.derived_key_len == 32 bytes")
+                .map_err(|e| EncryptError::Internal(format!("AES-256-GCM key: {e}")))?
                 .encrypt_in_place(Nonce::from_slice(&iv), b"", pt)
-                .expect(
-                    "plaintext is bounded by DEFLATE_CEILING, far under AES-GCM's per-key limit",
-                );
+                .map_err(|e| EncryptError::Internal(format!("AES-256-GCM seal: {e}")))
         })
-    });
+    })?;
 
     // Plan §2/§6 step 8: manifest.xml exactly per the emit table.
     let manifest_xml = build_manifest(bytes.len() as i64, &iv, &salt, mimetype.as_deref());
 
-    // Plan §3/§6 step 9: the three-member outer zip.
+    // Plan §3/§6 step 9: the three-member outer zip. `unwrap_or(&[])` writes a
+    // zero-length `mimetype` member when neither fallback tier produced one --
+    // deliberately, not as an oversight: LO's `ZipPackage::WriteMimetypeMagicFile`
+    // (`ZipPackage.cxx:1125-1160`) is called unconditionally for the ZIP format
+    // and writes an entry of `GetMediaType().getLength()` bytes, which is zero
+    // when the root folder carries no media type. Omitting the member instead
+    // would be the divergence.
     assemble_zip(
-        mimetype.as_deref().unwrap_or(&[]),
+        mimetype.as_deref().map(str::as_bytes).unwrap_or(&[]),
         &iv,
         &payload,
         &manifest_xml,
@@ -215,9 +247,15 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
 /// shape in the opposite direction). No zlib wrapper -- LO's own
 /// `ZipOutputEntryBase` deflates raw too (`ZipOutputEntry.cxx`).
 fn raw_deflate(bytes: &[u8]) -> Result<Vec<u8>, EncryptError> {
-    if bytes.len() > DEFLATE_CEILING {
+    raw_deflate_with_ceiling(bytes, DEFLATE_CEILING)
+}
+
+/// The body of [`raw_deflate`], with the ceiling as a parameter so a test can
+/// exercise the rejection without allocating a gigabyte to reach the real one.
+fn raw_deflate_with_ceiling(bytes: &[u8], ceiling: usize) -> Result<Vec<u8>, EncryptError> {
+    if bytes.len() > ceiling {
         return Err(EncryptError::Deflate(format!(
-            "input {} bytes exceeds ceiling {DEFLATE_CEILING}",
+            "input {} bytes exceeds ceiling {ceiling}",
             bytes.len()
         )));
     }
@@ -249,25 +287,45 @@ fn random_bytes(len: usize) -> Result<Vec<u8>, EncryptError> {
 /// [`EncryptError::Mimetype`] rather than a package that classifies and then
 /// fails to open. Every real producer's `mimetype` is a short ASCII media
 /// type, so the §3 ruling still governs every file that exists.
+/// Returns a `String`, not the raw bytes, so the UTF-8 validity established
+/// here is carried in the type rather than re-derived downstream: the manifest
+/// writer takes `&str` and has nothing left to unwrap. Copying stays verbatim
+/// -- `String::from_utf8` does not transform the bytes, and `as_bytes()` hands
+/// back exactly what the input member held.
 fn resolve_mimetype(
     bytes: &[u8],
     classify_media_type: Option<&str>,
-) -> Result<Option<Vec<u8>>, EncryptError> {
+) -> Result<Option<String>, EncryptError> {
     if let Some(raw) = read_input_mimetype_member(bytes)? {
-        check_xml_attribute_text(&raw)?;
-        return Ok(Some(raw));
+        return Ok(Some(validate_media_type(raw)?));
     }
-    Ok(classify_media_type.map(|s| s.as_bytes().to_vec()))
+    Ok(classify_media_type.map(str::to_owned))
 }
 
-/// Reject anything that cannot be written into `manifest:media-type` and
-/// still parse: invalid UTF-8, or a character outside XML 1.0's `Char`
-/// production (`#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] |
-/// [#x10000-#x10FFFF]`). quick-xml escapes the five markup characters but
-/// emits a C0 control byte as-is, and expat -- LO's own `ManifestReader` --
-/// rejects the result, discarding every row.
-fn check_xml_attribute_text(raw: &[u8]) -> Result<(), EncryptError> {
-    let text = std::str::from_utf8(raw)
+/// Reject anything that cannot be written into `manifest:media-type` and read
+/// back unchanged. Two separate reasons:
+///
+/// 1. **Invalid UTF-8, or a character outside XML 1.0's `Char` production**
+///    (`#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] |
+///    [#x10000-#x10FFFF]`). quick-xml escapes the five markup characters but
+///    emits a C0 control byte as-is, and expat -- LO's own `ManifestReader` --
+///    rejects the result, discarding every row.
+/// 2. **Tab, LF or CR**, which *are* legal `Char`s but are not attribute
+///    stable: XML 1.0 §3.3.3 attribute-value normalization replaces each with
+///    a space on the way back in (this crate's own `manifest::normalize_attr_value`
+///    implements exactly that). The `mimetype` zip member is copied verbatim,
+///    so the member bytes and the parsed attribute would then disagree --
+///    two things we write that are supposed to say the same thing.
+///
+/// Measured, not assumed: a package whose `mimetype` ends in a newline
+/// reaches `encrypt` only if its manifest declares no root media type (with
+/// one, `classify` already refuses the input as inconsistent), and real
+/// LibreOffice cannot open such a document *before* encryption either. So no
+/// loadable input is affected, and refusing costs nothing real -- every
+/// producer writes a bare ASCII media type. It closes the divergence rather
+/// than leaving it to be discovered from the other side.
+fn validate_media_type(raw: Vec<u8>) -> Result<String, EncryptError> {
+    let text = String::from_utf8(raw)
         .map_err(|e| EncryptError::Mimetype(format!("not valid UTF-8: {e}")))?;
     if let Some(c) = text.chars().find(|&c| !is_xml_char(c)) {
         return Err(EncryptError::Mimetype(format!(
@@ -275,7 +333,15 @@ fn check_xml_attribute_text(raw: &[u8]) -> Result<(), EncryptError> {
             c as u32
         )));
     }
-    Ok(())
+    if let Some(c) = text.chars().find(|&c| matches!(c, '\t' | '\n' | '\r')) {
+        return Err(EncryptError::Mimetype(format!(
+            "contains U+{:04X}, which XML attribute-value normalization would \
+             turn into a space, making the manifest attribute disagree with the \
+             verbatim mimetype member",
+            c as u32
+        )));
+    }
+    Ok(text)
 }
 
 fn is_xml_char(c: char) -> bool {
@@ -321,7 +387,7 @@ fn read_input_mimetype_member(bytes: &[u8]) -> Result<Option<Vec<u8>>, EncryptEr
 /// Every parameter it writes comes from [`WHOLESOME`] or from this call's own
 /// salt/IV, so the manifest cannot promise a tuple the key was not derived
 /// under.
-fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&[u8]>) -> Vec<u8> {
+fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&str>) -> Vec<u8> {
     // `ManifestExport.cxx:145-153`: `xmlns:loext` and `manifest:version` are
     // both written together, gated on the same ODF >= 1.2 check -- always
     // true for wholesome, which only exists at ODFSVER_LATEST_EXTENDED.
@@ -331,13 +397,10 @@ fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&[u8]>) 
     root.push_attribute((uris::ATTR_VERSION, WHOLESOME.odf_version));
 
     let size_str = size.to_string();
-    // Checked by `check_xml_attribute_text` before we got here; the `classify`
-    // fallback tier is a `&str` to begin with.
-    let media_type = media_type.map(|b| String::from_utf8_lossy(b).into_owned());
     let mut file_entry = BytesStart::new(uris::ELEMENT_FILE_ENTRY);
     file_entry.push_attribute((uris::ATTR_FULL_PATH, "encrypted-package"));
     file_entry.push_attribute((uris::ATTR_SIZE, size_str.as_str()));
-    if let Some(mt) = media_type.as_deref() {
+    if let Some(mt) = media_type {
         file_entry.push_attribute((uris::ATTR_MEDIA_TYPE, mt));
     }
 

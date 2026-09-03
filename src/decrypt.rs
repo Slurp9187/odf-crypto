@@ -106,8 +106,15 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
         let (index, member) = member_for_archive(&mut archive, &row.path)?;
         let ciphertext = read_member_at(&mut archive, index)?;
         let compressed = decrypt_member(row, password, &ciphertext)?;
-        let inflated = compressed.with_secret(|c| raw_inflate(c, row.size))?;
-        plain.insert(member, MemberPlaintext::new(inflated));
+        // Wrapped inside the closure that produces it, not on the next line:
+        // the skill's rule is that the function creating sensitive material
+        // hands back the wrapper, and a panic between the two statements would
+        // otherwise drop inflated member plaintext as a plain `Vec`. (The
+        // wholesome path above is the exception on purpose -- there the
+        // inflated package *is* the public return value.)
+        let inflated =
+            compressed.with_secret(|c| raw_inflate(c, row.size).map(MemberPlaintext::new))?;
+        plain.insert(member, inflated);
     }
 
     rebuild_zip(bytes, &manifest, &plain)

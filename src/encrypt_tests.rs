@@ -7,7 +7,7 @@ use crate::decrypt::{decrypt, DecryptError};
 use crate::encrypt::{encrypt, EncryptError};
 use crate::test_support::{
     goldens_dir, load_golden, read_member, strict_b64_decode, zip_method, zip_namelist, zip_with,
-    zip_with_methods, MIME_TEXT, PASSWORD,
+    zip_with_methods, MIME_TEXT, NONASCII_PASSWORD, PASSWORD,
 };
 use crate::{Checksum, Cipher, Kdf, Mode, StartKeyAlg};
 
@@ -271,6 +271,19 @@ fn s2_wholesome_emit_matches_table() {
     assert_eq!(row.checksum, Checksum::None);
     assert_eq!(row.derived_key_len, 32);
     assert_eq!(row.size, input.len() as i64);
+
+    // N3: the same two properties the LO wholesome golden is pinned on, so a
+    // regression in either shows up against our own output too, not only
+    // against LibreOffice's.
+    assert_eq!(
+        after.odf_version.as_deref(),
+        Some("1.4"),
+        "wholesome writes manifest:version=\"1.4\""
+    );
+    assert!(
+        !after.has_unexpected_streams,
+        "a three-member wholesome package has no unexpected ODF 1.2 streams"
+    );
 }
 
 #[test]
@@ -581,12 +594,61 @@ fn mimetype_with_non_xml_char_is_refused() {
     );
 }
 
-/// The far side of the same guard: a `mimetype` that is unusual but legal
-/// (trailing newline, exactly at the ceiling) is still copied verbatim, per
-/// plan §3 -- the guard must not have narrowed the rule for real files.
+/// A trailing newline is a legal XML `Char`, so the check above lets it
+/// through -- but XML 1.0 §3.3.3 attribute-value normalization turns it into a
+/// space on the way back in, so the verbatim `mimetype` member and the parsed
+/// `manifest:media-type` would disagree. Two things this crate writes that are
+/// meant to say the same thing must not be able to diverge.
+///
+/// Measured before being refused, in both directions: `classify` only admits
+/// such an input when its manifest declares no root media type (with one, the
+/// mimetype-vs-manifest conflict check already rejects it), and real
+/// LibreOffice cannot open a document of that shape *before* encryption
+/// either. So no loadable file is affected -- but the divergence was real, and
+/// the previous version of this test asserted it was correct.
+#[test]
+fn whitespace_unstable_mimetype_is_refused() {
+    for (label, suffix) in [("newline", "\n"), ("tab", "\t"), ("carriage return", "\r")] {
+        let mimetype = format!("{MIME_TEXT}{suffix}").into_bytes();
+        let manifest = r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>
+"#;
+        let input = zip_with_methods(&[
+            ("mimetype", &mimetype, CompressionMethod::Stored),
+            (
+                "META-INF/manifest.xml",
+                manifest.as_bytes(),
+                CompressionMethod::Deflated,
+            ),
+            (
+                "content.xml",
+                b"<office:document-content/>",
+                CompressionMethod::Deflated,
+            ),
+        ]);
+        assert_eq!(
+            classify(&input).expect("fixture classifies").mode,
+            Mode::Plain,
+            "{label}: classify tolerates it -- that is why encrypt has to not"
+        );
+        let err = encrypt(&input, PASSWORD).unwrap_err();
+        assert!(
+            matches!(err, EncryptError::Mimetype(_)),
+            "{label}: expected Mimetype, got {err:?}"
+        );
+    }
+}
+
+/// The far side of the same guard: a `mimetype` that is unusual but attribute
+/// stable is still copied verbatim, per plan §3 -- the guard must not have
+/// narrowed the rule for real files.
 #[test]
 fn unusual_but_legal_mimetype_is_still_copied_verbatim() {
-    let mimetype = format!("{MIME_TEXT}\n").into_bytes();
+    // Not a media type any producer writes, but every byte survives an XML
+    // attribute round trip unchanged, which is the only thing being asked.
+    let mimetype = b"application/vnd.oasis.opendocument.text;version=1.4+odd".to_vec();
     let manifest = r#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
@@ -614,9 +676,59 @@ fn unusual_but_legal_mimetype_is_still_copied_verbatim() {
     assert_eq!(
         read_member(&out, "mimetype"),
         mimetype,
-        "the trailing newline is part of the input's own bytes and is copied, not normalised"
+        "an attribute-stable mimetype is the input's own bytes, copied, not re-derived"
+    );
+    // And the attribute agrees with the member, which is the property the
+    // whitespace refusal above exists to preserve.
+    let mf = check_manifest(&read_member(&out, "META-INF/manifest.xml"));
+    assert_eq!(
+        mf.media_type.as_deref(),
+        Some(std::str::from_utf8(&mimetype).unwrap()),
+        "the parsed attribute must equal the verbatim member bytes"
     );
     assert_eq!(decrypt(&out, PASSWORD).expect("decrypt"), input);
+}
+
+/// N1: this arc's start key is SHA-256 over UTF-8, and nothing exercised it
+/// with a non-ASCII password -- `NONASCII_PASSWORD` existed only for decrypt's
+/// SHA-1 story (OQ1). A byte-identical round trip pins that the write side
+/// hashes the same UTF-8 bytes the read side does.
+#[test]
+fn round_trip_under_a_non_ascii_password() {
+    let original = load_golden("lo-unencrypted.odt");
+    let encrypted = encrypt(&original, NONASCII_PASSWORD).expect("encrypt");
+    assert_eq!(
+        decrypt(&encrypted, NONASCII_PASSWORD).expect("decrypt"),
+        original
+    );
+    // And the ASCII password must not open it, which would mean the non-ASCII
+    // bytes never reached the digest.
+    assert!(matches!(
+        decrypt(&encrypted, PASSWORD).unwrap_err(),
+        DecryptError::WrongPassword
+    ));
+}
+
+/// N2: `DEFLATE_CEILING` had no test -- reaching the real 1 GiB bound would
+/// mean allocating a gigabyte, so the ceiling is a parameter of the inner
+/// helper and this exercises the rejection at a size that costs nothing.
+#[test]
+fn deflate_ceiling_refuses_an_oversized_buffer() {
+    let buf = vec![0u8; 4096];
+    assert!(
+        crate::encrypt::raw_deflate_with_ceiling(&buf, 8192).is_ok(),
+        "under the ceiling must compress"
+    );
+    let err = crate::encrypt::raw_deflate_with_ceiling(&buf, 1024).unwrap_err();
+    match err {
+        EncryptError::Deflate(msg) => {
+            assert!(
+                msg.contains("4096") && msg.contains("1024"),
+                "message: {msg}"
+            )
+        }
+        other => panic!("expected Deflate, got {other:?}"),
+    }
 }
 
 #[test]

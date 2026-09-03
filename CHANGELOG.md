@@ -11,6 +11,62 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## 2026-09-04
+
+Follow-up review of the encrypt arc ([#24](https://github.com/Slurp9187/odf-crypto/pull/24))
+and the secure-gate adoption ([#25](https://github.com/Slurp9187/odf-crypto/pull/25)),
+taken together now that both have landed. Suite 97 -> 100. Two of the reported
+findings were checked against LibreOffice's own source and behaviour rather than
+accepted, and one of those turned out to be wrong.
+
+### Measured, not assumed
+
+- **`encrypt` writing a zero-length `mimetype` member is correct, not a bug.** The
+  report called it an oversight of `unwrap_or(&[])`. `ZipPackage::WriteMimetypeMagicFile`
+  (`ZipPackage.cxx:1125-1160`) is called unconditionally for the ZIP format and writes
+  `GetMediaType().getLength()` bytes -- zero when the root folder has no media type. So
+  LibreOffice writes the empty member too, and omitting it would be the divergence. The
+  call site now carries that citation so it does not get "fixed" later.
+- **A whitespace-bearing `mimetype` really can make two things we write disagree**, and
+  is now refused. XML 1.0 attribute-value normalization turns a tab/CR/LF in
+  `manifest:media-type` into a space, while the `mimetype` zip member is copied verbatim
+  -- so the attribute and the member diverge. Confirmed by round-tripping one through a
+  real parser. What the report did *not* establish, and what testing showed, is that the
+  divergence is unreachable for any loadable file: such an input only passes `classify`
+  when its manifest declares no root media type, and real LibreOffice cannot open a
+  document of that shape *before* encryption either. Refused anyway, because the previous
+  test asserted the divergence was correct -- a wrong claim pinned in place is worse than
+  no test.
+
+### Fixed
+
+- **`encrypt()` no longer panics.** Three `.expect()` calls and a `Nonce::from_slice`
+  were unreachable under the wholesome profile's `const` asserts, but a dependency bump
+  that narrowed what `argon2` or `aes-gcm` accepts would have turned them into an abort
+  inside a library. They map onto a new `EncryptError::Internal` instead -- explicitly
+  *not* the `BadParameters` analogue plan §4 rules out, since that would report an
+  untrusted manifest field and this reports an internal invariant.
+- **Every cipher now wipes its key schedule.** `aes-gcm` had `zeroize` on; `aes`, `cbc`,
+  `blowfish` and `cfb-mode` did not, so the per-entry AES-CBC and Blowfish read paths
+  left an expanded schedule behind where the GCM path did not. secure-gate wraps the
+  derived key, but each cipher expands its own copy beyond the wrapper's reach.
+- **The per-entry inflate wraps inside the closure that produces it**, not on the next
+  line, per the secure-gate skill's own rule that the producer hands back the wrapper.
+- **The skill's `file:line` table is re-grepped.** Extracting `kdf.rs` in #24 moved
+  `start_key` out of `decrypt.rs` and shifted most of the cited lines; the table had
+  drifted again after being fixed once on the #25 branch.
+- The S5 shim takes its password from `ODF_ENCRYPT_PASSWORD` rather than argv, which is
+  world-readable in a process listing; `build_manifest` uses `from_utf8` rather than a
+  second, weaker lossy path; and the plan's "borrow decrypt's `Zeroizing` handling"
+  pointer now names secure-gate.
+
+### Newly covered
+
+Non-ASCII password round trip (this arc's start key is SHA-256 over UTF-8 and nothing
+exercised it); `DEFLATE_CEILING`'s rejection, via a ceiling parameter so the test costs
+no gigabyte; and `odf_version` / `has_unexpected_streams` on encrypt's own output, the
+two properties the LibreOffice wholesome golden was already pinned on.
+
 ## 2026-09-03
 
 Two arcs, in the order they landed: the secure-gate adoption

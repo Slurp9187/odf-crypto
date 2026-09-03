@@ -50,10 +50,10 @@ derived key, each decrypted member in both its deflated and inflated forms.
 
 | Alias | Inner | Declared | Status |
 |---|---|---|---|
-| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`decrypt.rs:171`), written in place by `finalize_into` (`:179`), consumed by `derive_key`. |
-| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:193`), consumed in `decrypt_member` (`:236`). |
-| `DeflatedPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — returned by `decrypt_aes_gcm` (`:244`), `decrypt_aes_cbc` (`:286`), `decrypt_blowfish_cfb64` (`:335`) and `decrypt_member` (`:231`); inflated inside `with_secret` (`:103`). |
-| `MemberPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — the values of the `plain` map in `decrypt` (`:106`); `rebuild_zip` (`:465`) writes each straight from the wrapper into the zip writer (`:496`). |
+| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`kdf.rs:47`), written in place by `finalize_into` (`kdf.rs:53`), consumed by `derive_key` (`decrypt.rs:176`). |
+| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:176`), consumed in `decrypt_member` (`:217`). |
+| `DeflatedPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — returned by `decrypt_aes_gcm` (`:225`), `decrypt_aes_cbc` (`:267`), `decrypt_blowfish_cfb64` (`:316`) and `decrypt_member` (`:212`); inflated inside `with_secret` (`:101` wholesome, `:116` per-entry). |
+| `MemberPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — the values of the `plain` map in `decrypt` (`:104`); `rebuild_zip` (`:446`) writes each straight from the wrapper into the zip writer (`:477`). |
 
 All four are `Dynamic<Vec<u8>>`, not `Fixed<[u8; N]>`. **Why `Dynamic`.**
 `PasswordDigest` is 20 bytes for SHA-1 or 32 for SHA-256, decided by
@@ -98,8 +98,8 @@ microseconds. Don't reimplement SHA here to close it.
 
 ## Guards that sit next to the wrapping
 
-`MAX_DERIVED_KEY_LEN = 64` (`decrypt.rs:45`) bounds `manifest:key-size`
-*before* `derive_key` allocates the key buffer (`:196`). `derived_key_len` is
+`MAX_DERIVED_KEY_LEN = 64` (`decrypt.rs:43`) bounds `manifest:key-size`
+*before* `derive_key` allocates the key buffer (`:185`). `derived_key_len` is
 an `i32` the manifest controls; without the bound a value near `i32::MAX`
 allocates ~2 GiB and then runs PBKDF2 over all of it — a hang no `Result` can
 report — before any cipher gets to reject the length. AES-256 needs 32 and
@@ -111,7 +111,8 @@ guard — not the parser — is what the test exercises.
 ## The pattern
 
 ```rust
-// decrypt.rs — start_key: the digest lands in the wrapper's own buffer.
+// kdf.rs — start_key: the digest lands in the wrapper's own buffer. Shared
+// with encrypt since #24; decrypt.rs calls crate::kdf::start_key.
 fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
     fn digest_into<D: Digest>(password: &str) -> PasswordDigest {
         let mut h = D::new();
@@ -209,9 +210,15 @@ to remember to wrap.
 
 ## Adding a new alias
 
-`docs/plans/odf-encryption-encrypt-2026-09-03.md` plans a writer-side
-`encrypt()`, which will introduce its own key/salt/IV material. Apply the same
-rule: if it is key material or plaintext living inside this crate, it's a
+`docs/plans/odf-encryption-encrypt-2026-09-03.md`'s writer-side `encrypt()`
+landed in #24 and needed **no new alias**: key derivation is shared through
+`kdf.rs`, so it reuses `PasswordDigest` and `DerivedKey` verbatim, and its
+deflated-then-sealed buffer is `DeflatedPlaintext` travelling the other way
+(wrapped before the cipher runs, written to the zip straight from the wrapper).
+Its salt and IV are deliberately *not* wrapped: both are written to the
+manifest in the clear, so they are public by construction, like the KDF
+parameters beside them. For the next arc that does introduce new material,
+apply the same rule: if it is key material or plaintext living inside this crate, it's a
 secure-gate alias, regardless of whether it crosses a function boundary.
 
 1. **Is its length fixed by your own design, or by input you don't
@@ -237,7 +244,7 @@ secure-gate alias, regardless of whether it crosses a function boundary.
 cargo build                        # decrypt is a default feature
 cargo build --no-default-features  # secure-gate compiles in either way
 cargo clippy --all-targets -- -D warnings
-cargo test                         # 79 tests incl. every golden KDF/cipher path
+cargo test                         # 100 tests incl. every golden KDF/cipher path
 ```
 
 `cargo fmt --all -- --check` already fails on `main`, independent of
