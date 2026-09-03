@@ -8,7 +8,6 @@ use aes_gcm::{
     aead::{consts::U12, Aead, KeyInit},
     Aes128Gcm, Aes256Gcm, AesGcm, Nonce,
 };
-use argon2::{Algorithm, Argon2, Params, Version};
 use blowfish::Blowfish;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit as CbcKeyIvInit};
 use cbc::Decryptor;
@@ -29,7 +28,7 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
 }
 
 use crate::classify::{classify, member_matches_path};
-use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode, StartKeyAlg};
+use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode};
 use crate::DetectError;
 
 const INFLATE_CEILING: usize = 1 << 30;
@@ -157,25 +156,10 @@ fn member_for_archive(
     )))
 }
 
-fn start_key(password: &str, alg: StartKeyAlg) -> Vec<u8> {
-    match alg {
-        StartKeyAlg::Sha1 => {
-            let mut h = Sha1::new();
-            h.update(password.as_bytes());
-            h.finalize().to_vec()
-        }
-        StartKeyAlg::Sha256 => {
-            let mut h = Sha256::new();
-            h.update(password.as_bytes());
-            h.finalize().to_vec()
-        }
-    }
-}
-
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
     // Zeroizing wipes on drop, including the `?` paths below, where a manual
     // call is skipped exactly when an attacker-supplied file forces the error.
-    let sk = Zeroizing::new(start_key(password, row.start_key));
+    let sk = Zeroizing::new(crate::kdf::start_key(password, row.start_key));
     let n = row.derived_key_len;
     if n <= 0 {
         return Err(DecryptError::BadParameters(format!(
@@ -194,13 +178,8 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<Zeroizing<Vec<u8>
             pbkdf2_hmac::<Sha1>(&sk, salt, *iterations as u32, &mut derived);
         }
         Kdf::Argon2id { t, m, p, salt } => {
-            let params = Params::new(*m as u32, *t as u32, *p as u32, Some(n)).map_err(|e| {
-                DecryptError::BadParameters(format!("argon2 params: {e}"))
-            })?;
-            let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-            argon2
-                .hash_password_into(&sk, salt, &mut derived)
-                .map_err(|e| DecryptError::BadParameters(format!("argon2: {e}")))?;
+            derived = crate::kdf::derive_argon2id(&sk, salt, *t, *m, *p, n)
+                .map_err(DecryptError::BadParameters)?;
         }
         Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),
     }

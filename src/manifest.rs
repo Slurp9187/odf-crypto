@@ -541,7 +541,7 @@ fn parse_lo_int(s: &str, min: i64, max: i64) -> i64 {
 }
 
 /// `Base64::decodeSomeChars`: skip non-alphabet chars, emit complete quads.
-fn decode_b64(s: &str) -> Vec<u8> {
+pub(crate) fn decode_b64(s: &str) -> Vec<u8> {
     const TABLE: [u8; 80] = [
         62, 255, 255, 255, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 255, 255, 255, 0, 255, 255,
         255, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
@@ -580,6 +580,38 @@ fn decode_b64(s: &str) -> Vec<u8> {
             n = 0;
             got = 3;
         }
+    }
+    out
+}
+
+/// Plain RFC 4648 base64 with `=` padding -- LO's own writer produces ordinary
+/// padded base64 on output (`ManifestExport.cxx`'s use of `Sequence2Base64`),
+/// so unlike [`decode_b64`] there is no lenient-parsing quirk to reproduce
+/// here: this only has to be valid input for a decoder that already exists.
+/// Only `encrypt.rs`'s manifest writer calls this outside its own round-trip
+/// test below, so it is otherwise dead under `--no-default-features` builds.
+#[allow(dead_code)]
+pub(crate) fn encode_b64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied();
+        let b2 = chunk.get(2).copied();
+        let n = (u32::from(b0) << 16) | (u32::from(b1.unwrap_or(0)) << 8) | u32::from(b2.unwrap_or(0));
+        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        out.push(if b1.is_some() {
+            ALPHABET[((n >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if b2.is_some() {
+            ALPHABET[(n & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -728,6 +760,31 @@ mod tests {
         assert_eq!(decode_b64("AQIDBA"), vec![1, 2, 3]);
         assert_eq!(decode_b64("QUJD="), vec![65, 66, 67]);
         assert_eq!(decode_b64("AQIDBA=="), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn encode_b64_round_trips_through_decode_b64() {
+        let cases: Vec<Vec<u8>> = vec![
+            b"".to_vec(),
+            b"f".to_vec(),
+            b"fo".to_vec(),
+            b"foo".to_vec(),
+            (0..16u8).collect(),
+            (0..12u8).map(|i| i.wrapping_mul(37).wrapping_add(5)).collect(),
+        ];
+        for bytes in cases {
+            let encoded = encode_b64(&bytes);
+            assert_eq!(decode_b64(&encoded), bytes, "round-trip of {bytes:?}");
+        }
+    }
+
+    #[test]
+    fn encode_b64_matches_known_vectors() {
+        assert_eq!(encode_b64(b""), "");
+        assert_eq!(encode_b64(b"f"), "Zg==");
+        assert_eq!(encode_b64(b"fo"), "Zm8=");
+        assert_eq!(encode_b64(b"foo"), "Zm9v");
+        assert_eq!(encode_b64(&[1, 2, 3, 4]), "AQIDBA==");
     }
 
     #[test]
