@@ -252,7 +252,7 @@ Close in this file when evidence lands. Do not guess.
    | SHA-256(UTF-8) | rhbz#1013844 force-SHA256 | no |
    | StarOffice SHA-1(MS-1252) | `Bugs::WinEncodingWrongSHA1` | no |
 
-   Current LO writes the **correct UTF-8 SHA-1** start key even on the ODF 1.1 path that keeps the ladder alive on read. **This arc ships correct UTF-8 only, now measured rather than assumed.** The ladder stays what it always was: read-compat for files from OOo 1.x / StarOffice / LO < 3.5, which this arc does not implement — those decrypt as `WrongPassword`. Reopen only if such a file lands in-tree.
+   Re-derive this rather than trusting it: `python tests/goldens/sha1_star.py` self-tests the StarOffice digest against `hashlib`, then walks every rung against the golden. Current LO writes the **correct UTF-8 SHA-1** start key even on the ODF 1.1 path that keeps the ladder alive on read. **This arc ships correct UTF-8 only, now measured rather than assumed.** The ladder stays what it always was: read-compat for files from OOo 1.x / StarOffice / LO < 3.5, which this arc does not implement — those decrypt as `WrongPassword`. Reopen only if such a file lands in-tree.
 
 2. **`EncryptedDataHeader` on a zip member.** Wrapped-raw prepends `MM\002\005`. Ordinary save does not. Close if a golden or corpus file starts with `0x4d4d0205`; otherwise leave unimplemented.
 
