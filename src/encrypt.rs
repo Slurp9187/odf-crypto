@@ -107,13 +107,21 @@ pub enum EncryptError {
     /// infallible, so in practice this is the 1 GiB input-size rejection.
     #[error("deflate failed: {0}")]
     Deflate(String),
-    /// The input's own `mimetype` member cannot be carried into the output:
-    /// over 1 KiB, not UTF-8, or containing a byte that is not
-    /// an XML 1.0 `Char`. `classify` admits such a package (its check is
-    /// `starts_with("application/vnd.")` over the first 1024 bytes), but
-    /// copying it verbatim would emit a `manifest.xml` real LibreOffice's
-    /// expat rejects -- so this fails closed rather than writing a package
-    /// that classifies but will not open.
+    /// The input's own `mimetype` member cannot be carried into the output.
+    /// Four reasons, all of which `classify` itself tolerates (its check is
+    /// `starts_with("application/vnd.")` over the first 1024 bytes):
+    ///
+    /// - over 1 KiB, which is all `classify` ever looked at;
+    /// - not valid UTF-8;
+    /// - containing a character outside XML 1.0's `Char` production, which
+    ///   would emit a `manifest.xml` real LibreOffice's expat rejects;
+    /// - containing a tab, LF or CR. Those are legal `Char`s, but XML
+    ///   attribute-value normalization rewrites each to a space on the way
+    ///   back in, so the verbatim `mimetype` zip member and the parsed
+    ///   `manifest:media-type` would then disagree.
+    ///
+    /// All four fail closed rather than writing a package that classifies but
+    /// will not open.
     #[error("unusable mimetype member: {0}")]
     Mimetype(String),
     /// Building the outer zip container failed.
@@ -228,7 +236,7 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     // when the root folder carries no media type. Omitting the member instead
     // would be the divergence.
     assemble_zip(
-        mimetype.as_deref().unwrap_or(&[]),
+        mimetype.as_deref().map(str::as_bytes).unwrap_or(&[]),
         &iv,
         &payload,
         &manifest_xml,
@@ -279,15 +287,19 @@ fn random_bytes(len: usize) -> Result<Vec<u8>, EncryptError> {
 /// [`EncryptError::Mimetype`] rather than a package that classifies and then
 /// fails to open. Every real producer's `mimetype` is a short ASCII media
 /// type, so the §3 ruling still governs every file that exists.
+/// Returns a `String`, not the raw bytes, so the UTF-8 validity established
+/// here is carried in the type rather than re-derived downstream: the manifest
+/// writer takes `&str` and has nothing left to unwrap. Copying stays verbatim
+/// -- `String::from_utf8` does not transform the bytes, and `as_bytes()` hands
+/// back exactly what the input member held.
 fn resolve_mimetype(
     bytes: &[u8],
     classify_media_type: Option<&str>,
-) -> Result<Option<Vec<u8>>, EncryptError> {
+) -> Result<Option<String>, EncryptError> {
     if let Some(raw) = read_input_mimetype_member(bytes)? {
-        check_xml_attribute_text(&raw)?;
-        return Ok(Some(raw));
+        return Ok(Some(validate_media_type(raw)?));
     }
-    Ok(classify_media_type.map(|s| s.as_bytes().to_vec()))
+    Ok(classify_media_type.map(str::to_owned))
 }
 
 /// Reject anything that cannot be written into `manifest:media-type` and read
@@ -312,8 +324,8 @@ fn resolve_mimetype(
 /// loadable input is affected, and refusing costs nothing real -- every
 /// producer writes a bare ASCII media type. It closes the divergence rather
 /// than leaving it to be discovered from the other side.
-fn check_xml_attribute_text(raw: &[u8]) -> Result<(), EncryptError> {
-    let text = std::str::from_utf8(raw)
+fn validate_media_type(raw: Vec<u8>) -> Result<String, EncryptError> {
+    let text = String::from_utf8(raw)
         .map_err(|e| EncryptError::Mimetype(format!("not valid UTF-8: {e}")))?;
     if let Some(c) = text.chars().find(|&c| !is_xml_char(c)) {
         return Err(EncryptError::Mimetype(format!(
@@ -329,7 +341,7 @@ fn check_xml_attribute_text(raw: &[u8]) -> Result<(), EncryptError> {
             c as u32
         )));
     }
-    Ok(())
+    Ok(text)
 }
 
 fn is_xml_char(c: char) -> bool {
@@ -375,7 +387,7 @@ fn read_input_mimetype_member(bytes: &[u8]) -> Result<Option<Vec<u8>>, EncryptEr
 /// Every parameter it writes comes from [`WHOLESOME`] or from this call's own
 /// salt/IV, so the manifest cannot promise a tuple the key was not derived
 /// under.
-fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&[u8]>) -> Vec<u8> {
+fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&str>) -> Vec<u8> {
     // `ManifestExport.cxx:145-153`: `xmlns:loext` and `manifest:version` are
     // both written together, gated on the same ODF >= 1.2 check -- always
     // true for wholesome, which only exists at ODFSVER_LATEST_EXTENDED.
@@ -385,21 +397,10 @@ fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&[u8]>) 
     root.push_attribute((uris::ATTR_VERSION, WHOLESOME.odf_version));
 
     let size_str = size.to_string();
-    // `check_xml_attribute_text` already required valid UTF-8 for the verbatim
-    // tier, and the `classify` fallback tier was a `&str` to begin with, so
-    // this is infallible -- but it is `from_utf8`, not `from_utf8_lossy`: a
-    // lossy call here would be a second, weaker validation path that silently
-    // substitutes U+FFFD for exactly the bytes the check above exists to
-    // refuse.
-    let media_type = media_type.map(|b| {
-        std::str::from_utf8(b)
-            .expect("mimetype bytes were UTF-8-checked by check_xml_attribute_text")
-            .to_owned()
-    });
     let mut file_entry = BytesStart::new(uris::ELEMENT_FILE_ENTRY);
     file_entry.push_attribute((uris::ATTR_FULL_PATH, "encrypted-package"));
     file_entry.push_attribute((uris::ATTR_SIZE, size_str.as_str()));
-    if let Some(mt) = media_type.as_deref() {
+    if let Some(mt) = media_type {
         file_entry.push_attribute((uris::ATTR_MEDIA_TYPE, mt));
     }
 
