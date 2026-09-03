@@ -55,3 +55,13 @@ zeroize = { version = "1", optional = true }
 # dependency graph only; the crate itself stays unoptimised and debuggable.
 [profile.dev.package."*"]
 opt-level = 3
+
+# Without this, `cargo test` (which builds every example target by default)
+# tries to compile encrypt_for_validation.rs even when the "encrypt" feature
+# is off, and fails: the example calls odf_crypto::encrypt() unconditionally,
+# but that symbol only exists behind #[cfg(feature = "encrypt")] (src/lib.rs).
+# required-features tells Cargo to skip the target instead when the feature
+# set doesn't satisfy it.
+[[example]]
+name = "encrypt_for_validation"
+required-features = ["encrypt"]
