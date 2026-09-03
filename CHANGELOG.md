@@ -13,6 +13,42 @@ LibreOffice citation and a reproduction for each.
 
 ## 2026-09-03
 
+Two arcs, in the order they landed: the secure-gate adoption
+([#25](https://github.com/Slurp9187/odf-crypto/pull/25)), then password encryption
+([#24](https://github.com/Slurp9187/odf-crypto/pull/24)), which was written against the
+zeroize-era code and adopted secure-gate on the way in.
+
+### secure-gate adoption
+
+**secure-gate is now the crate's only zeroizing primitive.** `secure-gate = "0.9.0-rc.7"`
+(`alloc` only, unconditional — not gated on `decrypt` like the algorithm crates) replaces the
+direct `zeroize` dependency. Nothing on the public API moved: `decrypt(bytes: &[u8],
+password: &str) -> Result<Vec<u8>, DecryptError>` is byte-for-byte unchanged, and the
+returned zip is still a plain `Vec<u8>`. Everything between those two ends is wrapped:
+
+- `PasswordDigest` and `DerivedKey` (`src/sensitive.rs`) replace the two `Zeroizing<Vec<u8>>`
+  values in `derive_key`. `start_key` now writes the digest straight into the wrapper via
+  `finalize_into` instead of returning it through a stack `GenericArray` and copying.
+- `DeflatedPlaintext` and `MemberPlaintext` wrap every decrypted member from the cipher
+  call to the zip writer. The in-place ciphers (CBC, Blowfish) wrap the buffer before the
+  first block is decrypted, so stripped CBC padding lands in zeroized spare capacity;
+  `rebuild_zip` writes each member from its wrapper rather than cloning it into a plain
+  buffer.
+- `MAX_DERIVED_KEY_LEN = 64` bounds `manifest:key-size` before the key buffer is allocated.
+  `derived_key_len` is an `i32` the manifest controls; a value near `i32::MAX` used to
+  allocate ~2 GiB and then run PBKDF2 over all of it before any cipher rejected the length.
+  AES-256 needs 32 and Blowfish takes at most 56, so nothing LibreOffice opens is refused.
+  New test: `hostile_derived_key_len_is_refused_before_allocating`.
+
+Documented, not fixed: the `Sha1`/`Sha256` hasher buffers the raw password bytes until
+`finalize` and `compress` spills its schedule on the stack; the 0.10 digest crates offer no
+`zeroize` feature and hand-rolling the hash would remove one copy and leave the other.
+
+Suite: 79 passing. Policy lives in `.claude/skills/odf-crypto-secure-gate/SKILL.md`, the
+first repo-specific skill here (the repo has no CLAUDE.md yet).
+
+### The encrypt arc
+
 The crate writes as well as reads. `encrypt(&[u8], &str)` turns a `Mode::Plain` ODF
 package into what current LibreOffice writes for it under a password — wholesome
 Argon2id + AES-256-GCM, one `encrypted-package` member, no checksum,
@@ -20,9 +56,9 @@ Argon2id + AES-256-GCM, one `encrypted-package` member, no checksum,
 [#18](https://github.com/Slurp9187/odf-crypto/issues/18) and its five slices
 ([#19](https://github.com/Slurp9187/odf-crypto/issues/19)–[#23](https://github.com/Slurp9187/odf-crypto/issues/23)).
 Per-entry write (Blowfish CFB / AES-CBC) and PGP wrap stay later arcs, cited in the plan
-so neither has to re-derive its primitives. The suite went 78 → 97.
+so neither has to re-derive its primitives. The suite went 79 → 97 (the secure-gate arc had taken it 78 → 79 first).
 
-### Evidence, in three independent directions
+#### Evidence, in three independent directions
 
 - **Against ourselves.** `decrypt(encrypt(p, pw)?, pw)? == p`, byte-for-byte — for the
   golden and for a constructed package with non-ASCII text and a binary member, each
@@ -37,7 +73,7 @@ so neither has to re-derive its primitives. The suite went 78 → 97.
   (`ref_decrypt.py`, which shares no code with either direction) decrypts that same file
   byte-identically, and now sweeps it as a fifth entry.
 
-### What review changed
+#### What review changed
 
 Fifteen findings from a three-lens adversarial pass, all before merge. The two that were
 bugs rather than hardening:
@@ -64,6 +100,7 @@ cannot drift; `derive_key` no longer allocates a key buffer it discards; the AES
 is one `Aes256Gcm` call rather than a duplicated three-way dispatch whose 128/192 arms
 were unreachable; the payload is encrypted in place instead of copied four times; and
 `src/test_support.rs` replaces three drifted copies of the test helpers.
+
 
 ## 2026-09-02
 

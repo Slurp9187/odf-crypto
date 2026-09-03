@@ -39,7 +39,10 @@ fn s1_classify_failure_is_reported_as_classify() {
     let bare = zip_with(&[("content.xml", b"<x/>")]);
     let err = encrypt(&bare, PASSWORD).unwrap_err();
     assert!(
-        matches!(err, EncryptError::Classify(crate::DetectError::MissingManifest)),
+        matches!(
+            err,
+            EncryptError::Classify(crate::DetectError::MissingManifest)
+        ),
         "expected Classify(MissingManifest), got {err:?}"
     );
 }
@@ -51,7 +54,10 @@ fn s1_classify_failure_is_reported_as_classify() {
 #[test]
 fn s1_pgp_package_is_already_encrypted() {
     let pgp = crate::test_support::pgp_two_row_zip();
-    assert_ne!(classify(&pgp).expect("pgp zip classifies").mode, Mode::Plain);
+    assert_ne!(
+        classify(&pgp).expect("pgp zip classifies").mode,
+        Mode::Plain
+    );
     let err = encrypt(&pgp, PASSWORD).unwrap_err();
     assert!(
         matches!(err, EncryptError::AlreadyEncrypted),
@@ -240,8 +246,8 @@ fn s2_wholesome_emit_matches_table() {
     assert_eq!(mf.argon2_t.as_deref(), Some("3"));
     assert_eq!(mf.argon2_m.as_deref(), Some("65536"));
     assert_eq!(mf.argon2_p.as_deref(), Some("4"));
-    let salt =
-        strict_b64_decode(mf.salt.as_deref().expect("salt present")).expect("salt is strict base64");
+    let salt = strict_b64_decode(mf.salt.as_deref().expect("salt present"))
+        .expect("salt is strict base64");
     assert_eq!(salt.len(), 16, "salt must be 16 random bytes");
     assert_eq!(mf.kdf_key_size.as_deref(), Some("32"));
 
@@ -275,7 +281,10 @@ fn s2_salt_and_iv_are_fresh_per_call() {
     let mf_a = check_manifest(&read_member(&a, "META-INF/manifest.xml"));
     let mf_b = check_manifest(&read_member(&b, "META-INF/manifest.xml"));
     assert_ne!(mf_a.iv, mf_b.iv, "IV must be fresh per encrypt() call");
-    assert_ne!(mf_a.salt, mf_b.salt, "salt must be fresh per encrypt() call");
+    assert_ne!(
+        mf_a.salt, mf_b.salt,
+        "salt must be fresh per encrypt() call"
+    );
 }
 
 #[test]
@@ -432,10 +441,8 @@ fn nontrivial_plain_fixture() -> Vec<u8> {
  </office:body>
 </office:document-content>
 "#;
-    let styles_xml =
-        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#;
-    let meta_xml =
-        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#;
+    let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#;
+    let meta_xml = r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#;
 
     // Not a real PNG decoder target -- just non-UTF-8 binary content standing
     // in for an embedded picture, past the actual PNG signature bytes.
@@ -503,13 +510,11 @@ fn s5_checked_in_evidence_still_decrypts_to_its_source_golden() {
 fn mimetype_over_ceiling_is_refused() {
     let mut mimetype = MIME_TEXT.as_bytes().to_vec();
     mimetype.resize(2048, b'x');
-    let manifest = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    let manifest = r#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 </manifest:manifest>
-"#
-    );
+"#;
     let input = zip_with_methods(&[
         ("mimetype", &mimetype, CompressionMethod::Deflated),
         (
@@ -545,13 +550,11 @@ fn mimetype_over_ceiling_is_refused() {
 fn mimetype_with_non_xml_char_is_refused() {
     let mut mimetype = MIME_TEXT.as_bytes().to_vec();
     mimetype.push(0);
-    let manifest = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    let manifest = r#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 </manifest:manifest>
-"#
-    );
+"#;
     let input = zip_with_methods(&[
         ("mimetype", &mimetype, CompressionMethod::Stored),
         (
@@ -584,13 +587,11 @@ fn mimetype_with_non_xml_char_is_refused() {
 #[test]
 fn unusual_but_legal_mimetype_is_still_copied_verbatim() {
     let mimetype = format!("{MIME_TEXT}\n").into_bytes();
-    let manifest = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
+    let manifest = r#"<?xml version="1.0" encoding="UTF-8"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4">
  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 </manifest:manifest>
-"#
-    );
+"#;
     let input = zip_with_methods(&[
         ("mimetype", &mimetype, CompressionMethod::Stored),
         (

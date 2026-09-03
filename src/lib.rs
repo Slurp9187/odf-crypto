@@ -28,6 +28,8 @@ mod test_support;
 mod kdf;
 #[cfg(feature = "decrypt")]
 mod decrypt;
+#[cfg(feature = "decrypt")]
+mod sensitive;
 #[cfg(feature = "encrypt")]
 mod encrypt;
 

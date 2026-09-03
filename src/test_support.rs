@@ -5,6 +5,14 @@
 //! three `load_golden`s named the file that was missing or how to regenerate
 //! it. One copy means a fix to the golden path, the member lookup or the zip
 //! builder lands everywhere at once.
+//!
+//! Module-wide `dead_code` allow rather than per-item: most of what lives here
+//! is consumed by `decrypt_tests`/`encrypt_tests`, which compile out entirely
+//! under `--no-default-features`, leaving `classify_tests` as the only caller.
+//! A shared fixture menu having entries some feature configuration does not
+//! order is the normal state for this module, not a smell worth annotating one
+//! item at a time.
+#![allow(dead_code)]
 
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
@@ -145,14 +153,16 @@ pub(crate) fn pgp_two_row_zip() -> Vec<u8> {
 /// Emitted attributes are checked with this rather than with the lenient
 /// reader, so a malformed encoder cannot pass by being forgiven twice.
 pub(crate) fn strict_b64_decode(s: &str) -> Result<Vec<u8>, String> {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = s.as_bytes();
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
     if bytes.len() % 4 != 0 {
-        return Err(format!("{s:?}: length {} is not a multiple of 4", bytes.len()));
+        return Err(format!(
+            "{s:?}: length {} is not a multiple of 4",
+            bytes.len()
+        ));
     }
     let pad = bytes.iter().rev().take_while(|&&b| b == b'=').count();
     if pad > 2 {
@@ -162,7 +172,9 @@ pub(crate) fn strict_b64_decode(s: &str) -> Result<Vec<u8>, String> {
     let mut acc = 0u32;
     for (i, &b) in bytes[..bytes.len() - pad].iter().enumerate() {
         let Some(v) = ALPHABET.iter().position(|&a| a == b) else {
-            return Err(format!("{s:?}: byte {b:#04x} is outside the base64 alphabet"));
+            return Err(format!(
+                "{s:?}: byte {b:#04x} is outside the base64 alphabet"
+            ));
         };
         acc = (acc << 6) | v as u32;
         if i % 4 == 3 {

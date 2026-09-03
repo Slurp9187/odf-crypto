@@ -15,10 +15,12 @@ use aes_gcm::{
 };
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::Writer;
+use secure_gate::{RevealSecret, RevealSecretMut};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify;
+use crate::sensitive::{DeflatedPlaintext, DerivedKey};
 use crate::types::{Mode, StartKeyAlg};
 use crate::uris;
 use crate::DetectError;
@@ -102,11 +104,11 @@ pub enum EncryptError {
     #[error("random number generation failed: {0}")]
     Random(String),
     /// The input buffer cannot be deflated. `compress_to_vec` itself is
-    /// infallible, so in practice this is the [`DEFLATE_CEILING`] rejection.
+    /// infallible, so in practice this is the 1 GiB input-size rejection.
     #[error("deflate failed: {0}")]
     Deflate(String),
     /// The input's own `mimetype` member cannot be carried into the output:
-    /// over [`MIMETYPE_CEILING`], not UTF-8, or containing a byte that is not
+    /// over 1 KiB, not UTF-8, or containing a byte that is not
     /// an XML 1.0 `Char`. `classify` admits such a package (its check is
     /// `starts_with("application/vnd.")` over the first 1024 bytes), but
     /// copying it verbatim would emit a `manifest.xml` real LibreOffice's
@@ -142,43 +144,60 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     // cost a whole-input deflate plus a 64 MiB Argon2id first.
     let mimetype = resolve_mimetype(bytes, class.media_type.as_deref())?;
 
-    // Plan §6 step 3: raw-deflate the whole input buffer, unparsed.
-    let mut payload = raw_deflate(bytes)?;
+    // Plan §6 step 3: raw-deflate the whole input buffer, unparsed. Wrapped
+    // before the cipher runs, mirroring how the in-place read-side ciphers
+    // wrap before the first block turns into plaintext: this is the crate's
+    // own copy of the caller's document, so it is zeroized on drop even
+    // though the caller's original stays plain.
+    let mut payload = DeflatedPlaintext::new(raw_deflate(bytes)?);
 
     // Plan §6 step 5 / `ZipPackageStream.cxx:587-607`: fresh salt and IV per
-    // save (moot here -- wholesome writes exactly one row).
+    // save (moot here -- wholesome writes exactly one row). Neither is
+    // wrapped: both are written to the manifest in the clear.
     let salt = random_bytes(WHOLESOME.salt_len)?;
     let iv = random_bytes(WHOLESOME.iv_len)?;
 
-    // Plan §6 step 4/6: start key, then Argon2id over it with `salt`. Both
-    // are `Zeroizing` -- `kdf::start_key` returns one, and `derived_key` is
-    // wrapped here, so an early return below still wipes them.
+    // Plan §6 step 4/6: start key, then Argon2id over it with `salt` --
+    // `crate::kdf`'s helpers, shared verbatim with `decrypt`, so the two
+    // directions cannot derive keys differently.
     let start_key = crate::kdf::start_key(password, StartKeyAlg::Sha256);
-    let mut derived_key = zeroize::Zeroizing::new(vec![0u8; WHOLESOME.derived_key_len]);
-    // `encrypt` only ever passes `WHOLESOME`'s own constants, whose validity
-    // is asserted at compile time above, so this cannot fail for any input
-    // `classify` accepted. Unlike decrypt, there is no attacker-supplied
-    // tuple here and so no `BadParameters` analogue in `EncryptError`.
-    crate::kdf::derive_argon2id(
-        &start_key,
-        &salt,
-        WHOLESOME.argon2_t,
-        WHOLESOME.argon2_m_kib,
-        WHOLESOME.argon2_p,
-        &mut derived_key,
-    )
-    .expect("WHOLESOME's Argon2id params are valid by the const asserts above");
+    let mut derived_key = DerivedKey::new(vec![0u8; WHOLESOME.derived_key_len]);
+    start_key.with_secret(|sk| {
+        derived_key.with_secret_mut(|key| {
+            // `encrypt` only ever passes `WHOLESOME`'s own constants, whose
+            // validity is asserted at compile time above, so this cannot fail
+            // for any input `classify` accepted. Unlike decrypt, there is no
+            // attacker-supplied tuple here, and so no `BadParameters`
+            // analogue in `EncryptError`.
+            crate::kdf::derive_argon2id(
+                sk,
+                &salt,
+                WHOLESOME.argon2_t,
+                WHOLESOME.argon2_m_kib,
+                WHOLESOME.argon2_p,
+                key,
+            )
+            .expect("WHOLESOME's Argon2id params are valid by the const asserts above");
+        })
+    });
 
     // Plan §6 step 7 / `ciphercontext.cxx`'s encrypt branch: AES-256-GCM,
-    // empty AAD, the 16-byte tag appended to the ciphertext. Encrypting in
-    // place keeps one buffer rather than copying the whole payload again;
-    // NSS does not prepend the IV, so LO does, and so do we -- in
-    // `assemble_zip`, which writes `IV || ciphertext || tag` without
-    // materialising a concatenation.
-    Aes256Gcm::new_from_slice(&derived_key)
-        .expect("derived_key is WHOLESOME.derived_key_len == 32 bytes")
-        .encrypt_in_place(Nonce::from_slice(&iv), b"", &mut payload)
-        .expect("plaintext is bounded by DEFLATE_CEILING, far under AES-GCM's per-key limit");
+    // empty AAD, the 16-byte tag appended to the ciphertext. Sealing in place
+    // means the plaintext is overwritten rather than copied into a second
+    // buffer, and what the wrapper holds afterwards is ciphertext. NSS does
+    // not prepend the IV, so LO does, and so do we -- in `assemble_zip`,
+    // which writes `IV || ciphertext || tag` without materialising a
+    // concatenation.
+    derived_key.with_secret(|key| {
+        payload.with_secret_mut(|pt| {
+            Aes256Gcm::new_from_slice(key)
+                .expect("derived_key is WHOLESOME.derived_key_len == 32 bytes")
+                .encrypt_in_place(Nonce::from_slice(&iv), b"", pt)
+                .expect(
+                    "plaintext is bounded by DEFLATE_CEILING, far under AES-GCM's per-key limit",
+                );
+        })
+    });
 
     // Plan §2/§6 step 8: manifest.xml exactly per the emit table.
     let manifest_xml = build_manifest(bytes.len() as i64, &iv, &salt, mimetype.as_deref());
@@ -386,10 +405,11 @@ fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&[u8]>) 
 fn assemble_zip(
     mimetype: &[u8],
     iv: &[u8],
-    ciphertext: &[u8],
+    sealed: &DeflatedPlaintext,
     manifest_xml: &[u8],
 ) -> Result<Vec<u8>, EncryptError> {
-    let capacity = mimetype.len() + iv.len() + ciphertext.len() + manifest_xml.len() + 512;
+    let sealed_len = sealed.with_secret(|s| s.len());
+    let capacity = mimetype.len() + iv.len() + sealed_len + manifest_xml.len() + 512;
     let mut out = ZipWriter::new(Cursor::new(Vec::with_capacity(capacity)));
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -399,9 +419,14 @@ fn assemble_zip(
     out.start_file("mimetype", stored).map_err(zip_err)?;
     out.write_all(mimetype).map_err(io_err)?;
 
-    out.start_file("encrypted-package", stored).map_err(zip_err)?;
+    out.start_file("encrypted-package", stored)
+        .map_err(zip_err)?;
     out.write_all(iv).map_err(io_err)?;
-    out.write_all(ciphertext).map_err(io_err)?;
+    // Written straight from the wrapper, the way `rebuild_zip` writes members
+    // on the read side -- no unwrapped copy on the way out. By now the buffer
+    // holds ciphertext, but it stays wrapped until it is written, so no
+    // window exists where a plain copy of it could outlive the call.
+    sealed.with_secret(|s| out.write_all(s)).map_err(io_err)?;
 
     out.start_file(MANIFEST_PATH, deflated).map_err(zip_err)?;
     out.write_all(manifest_xml).map_err(io_err)?;
