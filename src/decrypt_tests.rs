@@ -8,7 +8,8 @@ use zip::{ZipArchive, ZipWriter};
 use crate::classify::classify;
 use crate::decrypt::{classification_metadata_unchanged, decrypt, DecryptError};
 use crate::test_support::{
-    load_golden, pgp_two_row_zip, read_member, zip_namelist, NONASCII_PASSWORD, PASSWORD,
+    append_stored_member, load_golden, pgp_two_row_zip, read_member, zip_namelist, NONASCII_PASSWORD,
+    PASSWORD,
 };
 use crate::{Kdf, Mode};
 
@@ -33,6 +34,35 @@ fn s1_pgp_zip_unsupported() {
     assert!(!class.pgp_keys.is_empty(), "pgp_keys from first entry KeyInfo");
     let err = decrypt(&zip, PASSWORD).unwrap_err();
     assert!(matches!(err, DecryptError::UnsupportedPgp));
+}
+
+#[test]
+fn odf12_fatal_encrypted_package_is_refused() {
+    let blob = append_stored_member(
+        &load_golden("lo-legacy-aes-cbc.odt"),
+        "extra.bin",
+        b"nope",
+    );
+    let class = classify(&blob).expect("fixture classifies");
+    assert!(class.odf12_fatal, "unlisted root stream on ODF 1.2 must be fatal");
+    assert_eq!(class.mode, Mode::PerEntry);
+    assert!(matches!(
+        decrypt(&blob, PASSWORD).unwrap_err(),
+        DecryptError::Odf12Fatal
+    ));
+}
+
+#[test]
+fn pre_12_unexpected_stream_still_decrypts() {
+    let blob = append_stored_member(
+        &load_golden("aoo-blowfish-pbkdf2.odt"),
+        "extra.bin",
+        b"nope",
+    );
+    let class = classify(&blob).expect("fixture classifies");
+    assert!(class.has_unexpected_streams);
+    assert!(!class.odf12_fatal, "no ODF >= 1.2 root version, so not fatal");
+    decrypt(&blob, PASSWORD).expect("ODF 1.1 unexpected streams are not fatal");
 }
 
 #[test]

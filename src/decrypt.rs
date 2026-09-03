@@ -51,6 +51,11 @@ pub enum DecryptError {
     EmptyPassword,
     #[error("PGP-encrypted packages are not supported")]
     UnsupportedPgp,
+    /// LibreOffice `LookForUnexpectedODF12Streams` plus a root version `>= 1.2`.
+    /// `classify` reports the flag without failing; decrypt refuses so it does
+    /// not return a zip LO would not open.
+    #[error("LibreOffice would refuse this package: unexpected ODF 1.2 streams")]
+    Odf12Fatal,
     #[error("wrong password")]
     WrongPassword,
     #[error("invalid encryption parameters: {0}")]
@@ -69,6 +74,9 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     let class = classify(bytes)?;
     if class.mode == Mode::Plain {
         return Err(DecryptError::NotEncrypted);
+    }
+    if class.odf12_fatal {
+        return Err(DecryptError::Odf12Fatal);
     }
     if class
         .encrypted_entries

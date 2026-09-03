@@ -80,6 +80,11 @@ pub enum EncryptError {
     /// and PGP rows alike.
     #[error("package is already encrypted")]
     AlreadyEncrypted,
+    /// LibreOffice would not open this plaintext package (`odf12_fatal`):
+    /// unexpected streams and a root version `>= 1.2`. Refuse before Argon2id
+    /// rather than wrapping a document LO rejects.
+    #[error("LibreOffice would refuse this package: unexpected ODF 1.2 streams")]
+    Odf12Fatal,
     /// Mirrors `decrypt::DecryptError::EmptyPassword` /
     /// `CreatePackageEncryptionData`'s empty sequence.
     #[error("password is empty")]
@@ -135,8 +140,10 @@ pub enum EncryptError {
 /// Refuses before any crypto runs: an empty password is rejected first
 /// (mirroring `decrypt`'s own ordering), then anything `classify` does not
 /// report as [`Mode::Plain`] (already encrypted, in any of the three `Mode`s
-/// classify can report), then an unusable `mimetype` member -- so no caller
-/// pays for a 64 MiB Argon2id before learning the input was never eligible.
+/// classify can report), then a package LibreOffice itself would refuse
+/// (`Classification::odf12_fatal`), then an unusable `mimetype` member -- so
+/// no caller pays for a 64 MiB Argon2id before learning the input was never
+/// eligible.
 pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     if password.is_empty() {
         return Err(EncryptError::EmptyPassword);
@@ -144,6 +151,9 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     let class = classify(bytes)?;
     if class.mode != Mode::Plain {
         return Err(EncryptError::AlreadyEncrypted);
+    }
+    if class.odf12_fatal {
+        return Err(EncryptError::Odf12Fatal);
     }
 
     // Plan §3's mimetype fallback chain, resolved before any crypto: it

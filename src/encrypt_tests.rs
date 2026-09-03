@@ -6,8 +6,8 @@ use crate::classify::classify;
 use crate::decrypt::{decrypt, DecryptError};
 use crate::encrypt::{encrypt, EncryptError};
 use crate::test_support::{
-    goldens_dir, load_golden, read_member, strict_b64_decode, zip_method, zip_namelist, zip_with,
-    zip_with_methods, MIME_TEXT, NONASCII_PASSWORD, PASSWORD,
+    append_stored_member, goldens_dir, load_golden, read_member, strict_b64_decode, zip_method,
+    zip_namelist, zip_with, zip_with_methods, MIME_TEXT, NONASCII_PASSWORD, PASSWORD,
 };
 use crate::{Checksum, Cipher, Kdf, Mode, StartKeyAlg};
 
@@ -23,6 +23,18 @@ fn s1_already_encrypted_wholesome() {
 fn s1_empty_password() {
     let err = encrypt(&load_golden("lo-unencrypted.odt"), "").unwrap_err();
     assert!(matches!(err, EncryptError::EmptyPassword));
+}
+
+#[test]
+fn odf12_fatal_plain_package_is_refused() {
+    let blob = append_stored_member(&load_golden("lo-unencrypted.odt"), "extra.bin", b"nope");
+    let class = classify(&blob).expect("fixture classifies");
+    assert_eq!(class.mode, Mode::Plain);
+    assert!(class.odf12_fatal, "unlisted root stream on ODF 1.4 must be fatal");
+    assert!(matches!(
+        encrypt(&blob, PASSWORD).unwrap_err(),
+        EncryptError::Odf12Fatal
+    ));
 }
 
 /// The `Classify` variant exists for input `classify` itself rejects, before
