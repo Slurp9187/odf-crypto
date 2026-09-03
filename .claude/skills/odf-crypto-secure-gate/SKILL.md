@@ -57,8 +57,8 @@ returned plaintext isn't secret key material.
 
 | Alias | Inner | Declared | Status |
 |---|---|---|---|
-| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`decrypt.rs:162`), consumed by `derive_key` (`decrypt.rs:177`). |
-| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:176`), consumed in `decrypt_member` (`decrypt.rs:221`). |
+| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`decrypt.rs:161`), consumed by `derive_key` (`decrypt.rs:177`). |
+| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:176`), consumed in `decrypt_member` (`decrypt.rs:219`). |
 
 Both are `Dynamic<Vec<u8>>`, not `Fixed<[u8; N]>`. **Why `Dynamic`.**
 `PasswordDigest` is 20 bytes for SHA-1 or 32 for SHA-256, decided by
