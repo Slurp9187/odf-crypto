@@ -128,6 +128,10 @@ gh issue view 1 --json subIssuesSummary \
 gh issue view 1 --json subIssues \
   -q '[.subIssues.nodes[] | select(.state=="OPEN") | "#\(.number)"] | join(" ")'
 
+# what a PR will actually close - GitHub's parse, not the body text
+gh pr view 17 --json closingIssuesReferences \
+  -q '[.closingIssuesReferences[] | "#\(.number)"] | join(" ")'
+
 # attach later
 gh issue edit 1 --add-sub-issue 8
 gh issue edit 8 --parent 1
@@ -140,6 +144,44 @@ empty arc.
 Native `gh` only. If GraphQL quota is exhausted (`gh api rate_limit -q
 .resources.graphql`), wait and re-verify with `gh issue view --json subIssues`.
 Do not leave a REST-only attach as the record.
+
+## Closing from a PR or a commit
+
+GitHub parses a closer as `KEYWORD #N` and links **only the first reference after
+each keyword**. To close several issues, repeat the keyword for every one. This
+applies identically to a **pull request body** and to a **commit message** — the
+two differ only in *when* they fire.
+
+| Written | What GitHub does |
+|---|---|
+| `Closes #10, closes #11, closes #12` | all three close |
+| `Closes #10` / `Closes #11` on their own lines | all close |
+| `Closes #10, #11, #12` | only #10 closes; the rest are plain mentions |
+| `Closes #10, #11 and #12` | same — only the first `#N` counts |
+| `Closes #10-#15`, `#10–#15`, `#10..#15` | a range is not an issue reference; **nothing** is linked |
+
+A comma after a valid closer is punctuation, not a new closer. The documented
+multi-issue form is `Resolves #10, resolves #123, resolves octo-org/octo-repo#100`.
+
+**When each fires.** A PR-body closer fires when the PR merges into the default
+branch. A commit-message closer fires when that commit *reaches* the default
+branch — immediately for a direct push (how the detection arc landed), or at
+merge for a branch. Rebase-merge preserves the individual messages, so their
+closers survive; squash-merge composes one body from them, and an author who
+edits that body can drop a closer without noticing. On a non-default branch,
+neither fires.
+
+**Where to put the closer.** A slice is closed by hand, with a comment carrying
+the evidence that closed it — not by a keyword in a commit nobody reads
+afterwards. Keep `Closes #<parent>` in the PR body so the
+arc handle closes on merge, and let commits *mention* issues without keywords —
+`Implement password decrypt against classify (#11-#15)` is a mention and closes
+nothing, which is what it should do.
+
+**Verify, do not assume.** `gh pr view <n> --json closingIssuesReferences` is
+GitHub's own parse, not a guess from the body text. It also catches a keyword
+whose link was broken by surrounding markdown — a code span or a list
+continuation will do it. Bold will not, but check rather than trust that.
 
 ## Close-out
 

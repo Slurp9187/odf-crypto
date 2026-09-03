@@ -66,3 +66,4 @@ User says any of: file the plan, file slices, parent issue for the plan, `label:
 - Point the parent at the plan with a relative link.
 - Write a blocker as `<parent>-S<k>` instead of the child’s `#` number.
 - Narrow a plan statement while restating it in an issue. If the issue needs a tighter condition than the plan, fix the plan.
+- Write a closer as a range or a comma list (`Closes #10-#15`, `Closes #10, #11`). GitHub links only the first `#N` after each keyword, so the range closes nothing and the list closes one. One keyword per issue, in the PR body; verify with `gh pr view <n> --json closingIssuesReferences`. Same rule in a commit message.
