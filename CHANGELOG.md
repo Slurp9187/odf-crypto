@@ -11,6 +11,35 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## 2026-09-03
+
+**secure-gate is now the crate's only zeroizing primitive.** `secure-gate = "0.9.0-rc.7"`
+(`alloc` only, unconditional — not gated on `decrypt` like the algorithm crates) replaces the
+direct `zeroize` dependency. Nothing on the public API moved: `decrypt(bytes: &[u8],
+password: &str) -> Result<Vec<u8>, DecryptError>` is byte-for-byte unchanged, and the
+returned zip is still a plain `Vec<u8>`. Everything between those two ends is wrapped:
+
+- `PasswordDigest` and `DerivedKey` (`src/sensitive.rs`) replace the two `Zeroizing<Vec<u8>>`
+  values in `derive_key`. `start_key` now writes the digest straight into the wrapper via
+  `finalize_into` instead of returning it through a stack `GenericArray` and copying.
+- `DeflatedPlaintext` and `MemberPlaintext` wrap every decrypted member from the cipher
+  call to the zip writer. The in-place ciphers (CBC, Blowfish) wrap the buffer before the
+  first block is decrypted, so stripped CBC padding lands in zeroized spare capacity;
+  `rebuild_zip` writes each member from its wrapper rather than cloning it into a plain
+  buffer.
+- `MAX_DERIVED_KEY_LEN = 64` bounds `manifest:key-size` before the key buffer is allocated.
+  `derived_key_len` is an `i32` the manifest controls; a value near `i32::MAX` used to
+  allocate ~2 GiB and then run PBKDF2 over all of it before any cipher rejected the length.
+  AES-256 needs 32 and Blowfish takes at most 56, so nothing LibreOffice opens is refused.
+  New test: `hostile_derived_key_len_is_refused_before_allocating`.
+
+Documented, not fixed: the `Sha1`/`Sha256` hasher buffers the raw password bytes until
+`finalize` and `compress` spills its schedule on the stack; the 0.10 digest crates offer no
+`zeroize` feature and hand-rolling the hash would remove one copy and leave the other.
+
+Suite: 79 passing. Policy lives in `.claude/skills/odf-crypto-secure-gate/SKILL.md`, the
+first repo-specific skill here (the repo has no CLAUDE.md yet).
+
 ## 2026-09-02
 
 No `src/` change and the suite stayed at 66 passing. `tests/goldens/` gained one
