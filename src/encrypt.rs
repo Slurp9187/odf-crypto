@@ -20,27 +20,11 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify;
+use crate::limits::{AES_GCM_IV_LEN, DEFLATE_CEILING, MIMETYPE_CEILING};
 use crate::sensitive::{DeflatedPlaintext, DerivedKey};
 use crate::types::{Mode, StartKeyAlg};
 use crate::uris;
 use crate::DetectError;
-
-/// Ceiling on the plaintext buffer [`encrypt`] will deflate, matching decrypt's
-/// `INFLATE_CEILING` (1 GiB) in shape but not in purpose: decrypt's ceiling
-/// defends against an attacker-controlled `manifest:size`, whereas `encrypt`'s
-/// caller supplies the plaintext directly -- there is no attacker on the other
-/// end. This is hygiene against an unbounded allocation on a pathological
-/// input, not a security boundary.
-const DEFLATE_CEILING: usize = 1 << 30;
-
-/// Ceiling on the input's own `mimetype` member. `classify` admits a package
-/// after reading only its first 1024 bytes (`classify.rs`'s `read_mimetype`),
-/// so copying an unbounded member here would be a side door around
-/// [`DEFLATE_CEILING`] -- and any member past this length would also push the
-/// emitted `manifest.xml` towards `classify`'s own `MANIFEST_READ_CAP`, making
-/// output this crate's own `decrypt` would refuse. 1024 is exactly what
-/// `classify` looked at, so nothing it judged goes unexamined here.
-const MIMETYPE_CEILING: usize = 1024;
 
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
 
@@ -83,7 +67,7 @@ const WHOLESOME: Profile = Profile {
 const _: () = assert!(WHOLESOME.argon2_m_kib >= 8 * WHOLESOME.argon2_p);
 const _: () = assert!(WHOLESOME.salt_len >= 8);
 const _: () = assert!(WHOLESOME.derived_key_len == 32);
-const _: () = assert!(WHOLESOME.iv_len == 12);
+const _: () = assert!(WHOLESOME.iv_len == AES_GCM_IV_LEN);
 
 /// Failures from [`encrypt`].
 #[derive(Debug, thiserror::Error)]
@@ -210,9 +194,9 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     // `Nonce::from_slice` panics on a length mismatch, so the length is
     // checked first: `WHOLESOME.iv_len` is const-asserted to be 12 above, but
     // a checked error beats a panic reachable only by editing that constant.
-    if iv.len() != 12 {
+    if iv.len() != AES_GCM_IV_LEN {
         return Err(EncryptError::Internal(format!(
-            "GCM nonce must be 12 bytes, WHOLESOME.iv_len gave {}",
+            "GCM nonce must be {AES_GCM_IV_LEN} bytes, WHOLESOME.iv_len gave {}",
             iv.len()
         )));
     }

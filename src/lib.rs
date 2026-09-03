@@ -16,6 +16,7 @@
 //! feature-gated item is a `broken_intra_doc_links` warning there.)
 
 mod classify;
+mod limits;
 mod manifest;
 mod types;
 mod uris;

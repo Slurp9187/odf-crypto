@@ -589,3 +589,96 @@ fn hostile_derived_key_len_is_refused_before_allocating() {
         other => panic!("expected BadParameters, got {other:?}"),
     }
 }
+
+fn set_pbkdf2_iterations(xml: &[u8], value: &str) -> Vec<u8> {
+    String::from_utf8_lossy(xml)
+        .replace(
+            "manifest:iteration-count=\"100000\"",
+            &format!("manifest:iteration-count=\"{value}\""),
+        )
+        .into_bytes()
+}
+
+#[test]
+fn hostile_pbkdf2_iterations_are_bad_parameters_not_a_hang() {
+    let blob = mutate_zip(
+        "lo-legacy-aes-cbc.odt",
+        None,
+        None,
+        Some(|xml| set_pbkdf2_iterations(xml, "2147483647")),
+    );
+    let class = classify(&blob).expect("classify passes iteration-count through");
+    assert!(
+        class
+            .encrypted_entries
+            .iter()
+            .any(|e| matches!(e.kdf, Kdf::Pbkdf2 { iterations: 2_147_483_647, .. })),
+        "fixture must carry hostile iteration count"
+    );
+    assert!(matches!(
+        decrypt(&blob, PASSWORD).unwrap_err(),
+        DecryptError::BadParameters(_)
+    ));
+}
+
+#[test]
+fn pbkdf2_zero_iterations_is_bad_parameters() {
+    let blob = mutate_zip(
+        "lo-legacy-aes-cbc.odt",
+        None,
+        None,
+        Some(|xml| set_pbkdf2_iterations(xml, "0")),
+    );
+    let class = classify(&blob).expect("classify still accepts a complete row with 0 iterations");
+    assert!(
+        class
+            .encrypted_entries
+            .iter()
+            .any(|e| matches!(e.kdf, Kdf::Pbkdf2 { iterations: 0, .. })),
+        "fixture must carry iteration-count 0"
+    );
+    assert!(matches!(
+        decrypt(&blob, PASSWORD).unwrap_err(),
+        DecryptError::BadParameters(_)
+    ));
+}
+
+#[test]
+fn encrypted_entry_count_ceiling_refuses_without_running_kdf() {
+    assert!(super::ensure_encrypted_entry_count(1, 1).is_ok());
+    let err = super::ensure_encrypted_entry_count(2, 1).unwrap_err();
+    match err {
+        DecryptError::BadParameters(msg) => {
+            assert!(msg.contains("encrypted entry count"), "message: {msg}");
+        }
+        other => panic!("expected BadParameters, got {other:?}"),
+    }
+}
+
+#[test]
+fn gcm_iv_tag_only_frame_is_not_rejected_as_too_short() {
+    fn iv_tag_only_member(_body: &[u8]) -> Vec<u8> {
+        let input = load_golden("lo-wholesome-gcm-argon2.odt");
+        let iv = classify(&input)
+            .unwrap()
+            .encrypted_entries
+            .into_iter()
+            .find(|e| e.path == "encrypted-package")
+            .unwrap()
+            .iv;
+        let mut frame = vec![0u8; crate::limits::AES_GCM_IV_LEN + crate::limits::AES_GCM_TAG_LEN];
+        frame[..crate::limits::AES_GCM_IV_LEN].copy_from_slice(&iv);
+        frame
+    }
+    let blob = mutate_zip(
+        "lo-wholesome-gcm-argon2.odt",
+        Some("encrypted-package"),
+        Some(iv_tag_only_member),
+        None,
+    );
+    let err = decrypt(&blob, PASSWORD).unwrap_err();
+    assert!(
+        !matches!(err, DecryptError::BadParameters(ref m) if m.contains("shorter than IV+tag")),
+        "IV||tag-only member must reach the cipher, not BadParameters: {err:?}"
+    );
+}

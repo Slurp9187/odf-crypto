@@ -17,21 +17,12 @@ use sha1::digest::Output;
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
+use crate::limits::{
+    ARGON2_MAX_M_COST_KIB, ARGON2_MAX_T_COST, ARGON2_MIN_M_COST_KIB, ARGON2_MIN_P_COST,
+    ARGON2_MIN_T_COST,
+};
 use crate::sensitive::PasswordDigest;
 use crate::types::StartKeyAlg;
-
-/// Ceilings on `argon2-memory` (KiB) and `argon2-iterations` accepted from a
-/// manifest. LibreOffice itself has no cap -- but LO's libargon2 returns
-/// `ARGON2_MEMORY_ALLOCATION_ERROR` when the block array cannot be allocated,
-/// whereas the `argon2` crate's `vec!` *aborts the process*, and a huge `t`
-/// simply pins a CPU with no `Result` to report it. The ceilings sit where the
-/// two behaviours would otherwise diverge: 1 GiB of blocks and 65536 passes,
-/// each more than 16x anything LO has ever written (`m=65536`, `t=3`,
-/// `ZipPackage.cxx:1405`). Past them is `BadParameters` on the decrypt side --
-/// the same fail-closed answer as any other malformed tuple, and the same
-/// reasoning as `decrypt`'s own `MAX_DERIVED_KEY_LEN`.
-pub(crate) const ARGON2_MAX_M_COST_KIB: u32 = 1 << 20;
-pub(crate) const ARGON2_MAX_T_COST: u32 = 1 << 16;
 
 /// LO's start-key selector, both directions (`ZipPackage::GetEncryptionKey`,
 /// `package/source/zippackage/ZipPackage.cxx:1751-1778`): SHA-1 or SHA-256
@@ -75,11 +66,11 @@ pub(crate) fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
 /// secret material of its own.
 ///
 /// The `i32`s are the manifest's own type (`sal_Int32`). Anything that does
-/// not fit `u32`, exceeds [`ARGON2_MAX_M_COST_KIB`] / [`ARGON2_MAX_T_COST`],
-/// or fails the crate's own parameter check (`m >= 8p`, `p <= 0xFFFFFF`) is an
-/// error here rather than a panic inside `Params::new`, whose
-/// `m_cost < p_cost * 8` test overflows on `p >= 2^29` *before* it
-/// range-checks `p` (argon2 0.5.3 `params.rs:119`).
+/// not fit `u32`, falls outside [`ARGON2_MIN_T_COST`]..=[`ARGON2_MAX_T_COST`]
+/// (and the matching `m`/`p` bounds), or fails the crate's own parameter
+/// check (`m >= 8p`, `p <= 0xFFFFFF`) is an error here rather than a panic
+/// inside `Params::new`, whose `m_cost < p_cost * 8` test overflows on
+/// `p >= 2^29` *before* it range-checks `p` (argon2 0.5.3 `params.rs:119`).
 pub(crate) fn derive_argon2id(
     start_key: &[u8],
     salt: &[u8],
@@ -91,17 +82,17 @@ pub(crate) fn derive_argon2id(
     let t = u32::try_from(t).map_err(|_| format!("argon2 iterations {t}"))?;
     let m = u32::try_from(m).map_err(|_| format!("argon2 memory {m}"))?;
     let p = u32::try_from(p).map_err(|_| format!("argon2 lanes {p}"))?;
-    if m > ARGON2_MAX_M_COST_KIB {
+    if t < ARGON2_MIN_T_COST || t > ARGON2_MAX_T_COST {
         return Err(format!(
-            "argon2 memory {m} KiB exceeds ceiling {ARGON2_MAX_M_COST_KIB}"
+            "argon2 iterations {t} outside {ARGON2_MIN_T_COST}..={ARGON2_MAX_T_COST}"
         ));
     }
-    if t > ARGON2_MAX_T_COST {
+    if m < ARGON2_MIN_M_COST_KIB || m > ARGON2_MAX_M_COST_KIB {
         return Err(format!(
-            "argon2 iterations {t} exceeds ceiling {ARGON2_MAX_T_COST}"
+            "argon2 memory {m} KiB outside {ARGON2_MIN_M_COST_KIB}..={ARGON2_MAX_M_COST_KIB}"
         ));
     }
-    if p > Params::MAX_P_COST {
+    if p < ARGON2_MIN_P_COST || p > Params::MAX_P_COST {
         return Err(format!("argon2 lanes {p}"));
     }
     let params =
