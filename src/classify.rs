@@ -9,7 +9,8 @@ use zip::ZipArchive;
 
 use crate::manifest::parse_manifest;
 use crate::types::{
-    Checksum, ChecksumAlg, Classification, EntryEncryption, Kdf, KdfId, PropertyBag, StartKeyAlg,
+    Checksum, ChecksumAlg, Classification, EncryptedKey, EntryEncryption, Kdf, KdfId, PropertyBag,
+    StartKeyAlg,
 };
 use crate::uris;
 use crate::zip_tree::{FolderTree, ResolvedKind, StreamAsFolder};
@@ -129,16 +130,15 @@ fn read_named_member(
     Ok(Some(buf))
 }
 
-fn member_matches_path(zip_name: &str, want: &str) -> bool {
+pub(crate) fn member_matches_path(zip_name: &str, want: &str) -> bool {
     if zip_name == want {
         return true;
     }
     // `META-INF//manifest.xml` inserts as `META-INF/manifest.xml`.
-    let collapsed: String = collapse_slashes(zip_name);
-    collapsed == want
+    collapse_slashes(zip_name) == want
 }
 
-fn collapse_slashes(name: &str) -> String {
+pub(crate) fn collapse_slashes(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut prev_slash = false;
     for c in name.chars() {
@@ -195,6 +195,7 @@ fn stage_b(
     mimetype: Option<String>,
 ) -> Result<Classification, DetectError> {
     let mut key_info = false;
+    let mut pgp_keys: Vec<EncryptedKey> = Vec::new();
     let mut o_first_version = None;
     let mut package_encrypted = false;
     let mut common = None;
@@ -207,8 +208,11 @@ fn stage_b(
                 o_first_version = Some(v.clone());
             }
         }
-        if bag.key_info.is_some() {
+        if let Some(ki) = &bag.key_info {
             key_info = true;
+            if pgp_keys.is_empty() {
+                pgp_keys = ki.keys.clone();
+            }
         }
         if bag.full_path.is_empty() {
             continue;
@@ -302,6 +306,7 @@ fn stage_b(
         encrypted_entries,
         has_unexpected_streams,
         odf12_fatal,
+        pgp_keys,
     })
 }
 

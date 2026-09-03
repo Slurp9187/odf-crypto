@@ -86,6 +86,8 @@ pub struct Classification {
     pub has_unexpected_streams: bool,
     /// `has_unexpected_streams && root version >= "1.2"` (byte-lexicographic).
     pub odf12_fatal: bool,
+    /// PGP `encrypted-key` material from the first file-entry's KeyInfo, if any.
+    pub pgp_keys: Vec<EncryptedKey>,
 }
 
 /// Failures that stop `classify` before a [`Classification`].
@@ -118,9 +120,9 @@ pub(crate) enum KdfId {
     PgpRsaOaepMgf1p,
 }
 
-/// One `encrypted-key` collected by Stage A. Typed further in S5.
+/// One `encrypted-key` collected by Stage A.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct EncryptedKey {
+pub struct EncryptedKey {
     pub key_id: Vec<u8>,
     pub key_packet: Vec<u8>,
     pub cipher_value: Vec<u8>,
