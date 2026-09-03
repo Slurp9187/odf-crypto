@@ -193,8 +193,17 @@ sibling issue — the parent *is* that signal.
 ## Skill
 
 Agents file this shape via the project skill `file-plan-issues`. This file is
-the protocol; the skill is the prompt that runs it. Skill discovery is
-per-vendor, so the launcher is duplicated verbatim — keep the two byte-identical:
+the protocol; the skill is the prompt that runs it. There is **one** launcher:
 
-- Claude Code — [`.claude/skills/file-plan-issues/SKILL.md`](../.claude/skills/file-plan-issues/SKILL.md)
-- Cursor — [`.cursor/skills/file-plan-issues/SKILL.md`](../.cursor/skills/file-plan-issues/SKILL.md)
+- [`.claude/skills/file-plan-issues/SKILL.md`](../.claude/skills/file-plan-issues/SKILL.md)
+
+`SKILL.md` is the [Agent Skills](https://agentskills.io) open format, and clients
+read each other's directories. Cursor loads `.agents/skills/` and `.cursor/skills/`
+natively and, in its own words, *"for compatibility, Cursor also loads skills from
+Claude and Codex directories: `.claude/skills/`, `.codex/skills/`, `~/.claude/skills/`,
+and `~/.codex/skills/`"* ([docs](https://cursor.com/docs/context/skills)). So a
+`.cursor/` copy buys nothing and costs a byte-identical duplicate that drifts the
+first time someone edits one side.
+
+If a client turns up that reads neither, prefer moving the launcher to the
+vendor-neutral `.agents/skills/` over re-introducing per-vendor copies.
