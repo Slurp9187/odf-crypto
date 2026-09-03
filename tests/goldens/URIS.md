@@ -71,7 +71,8 @@ Added 2026-09-02 to close decrypt-plan OQ1. Same written tuple as `aoo-blowfish-
 MS-1252 bytes. Both lengths sit in the `len % 64 ∈ {52,53,54,55}` window where
 `rtl_digest_SHA1` diverges from real SHA-1 (tdf#114939), so the four SHA-1 start-key
 candidates LibreOffice keeps — correct/StarOffice × UTF-8/MS-1252 — are all distinct for
-this string. Only **correct SHA-1 over UTF-8** decrypts the file.
+this string. Only **correct SHA-1 over UTF-8** decrypts the file — re-run that measurement with
+`python sha1_star.py`.
 
 | Field | Written |
 |---|---|

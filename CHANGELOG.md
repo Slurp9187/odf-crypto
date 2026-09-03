@@ -77,7 +77,8 @@ built so all four candidates are distinguishable: one non-ASCII character separa
 from MS-1252, and its length (53 and 52 bytes in those two encodings) lands both inside
 the window where `rtl_digest_SHA1` diverges from real SHA-1 (tdf#114939 — a comparison
 LibreOffice documents as wrong and keeps for compatibility). Only the **correct UTF-8
-SHA-1** start key decrypts the file. Current LibreOffice writes the correct digest even
+SHA-1** start key decrypts the file, which `tests/goldens/sha1_star.py` re-derives on
+demand rather than asking anyone to take it on trust. Current LibreOffice writes the correct digest even
 where it still tolerates the buggy one on read, so the decrypt arc implements one start
 key per algorithm and treats the ladder as read-compat it does not provide.
 
