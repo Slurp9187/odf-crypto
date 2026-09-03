@@ -589,3 +589,31 @@ fn truncated_deflate_stream_errors_rather_than_returning_partial_output() {
         );
     }
 }
+
+/// A hostile `manifest:key-size` used to reach `vec![0u8; n]` before any cipher had
+/// a chance to reject the length. `derived_key_len` is an `i32`, so the worst case
+/// is a ~2 GiB allocation followed by a PBKDF2 over all of it - a hang no `Result`
+/// can report. `derive_key` now bounds the length first and returns
+/// `BadParameters` without allocating. `classify` is checked to pass the value
+/// through unchanged, so the guard - not the parser - is what this exercises.
+#[test]
+fn hostile_derived_key_len_is_refused_before_allocating() {
+    fn huge_key_size(xml: &[u8]) -> Vec<u8> {
+        rewrite_kdf_key_size(std::str::from_utf8(xml).unwrap(), "2000000000").into_bytes()
+    }
+    let bytes = mutate_zip("lo-legacy-aes-cbc.odt", None, None, Some(huge_key_size));
+    let class = classify(&bytes).expect("classify passes the manifest key-size through");
+    assert!(
+        class
+            .encrypted_entries
+            .iter()
+            .all(|e| e.derived_key_len == 2_000_000_000),
+        "fixture must carry the hostile key-size"
+    );
+    match decrypt(&bytes, PASSWORD) {
+        Err(DecryptError::BadParameters(msg)) => {
+            assert!(msg.contains("derived_key_len"), "unexpected message: {msg}")
+        }
+        other => panic!("expected BadParameters, got {other:?}"),
+    }
+}
