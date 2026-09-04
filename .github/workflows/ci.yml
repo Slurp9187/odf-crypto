@@ -1,20 +1,42 @@
 name: CI
 
 on:
+  # Every branch, not just main: this repo's work lands on feature branches that
+  # often have no PR open yet, and a push is the only signal there. The cost is
+  # a duplicate run once a PR does exist. Narrow to `[main]` if that noise
+  # outweighs the earlier feedback.
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Supersede a running check when the same ref is pushed again.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+  # Nothing is reused between CI runs, so incremental artifacts are written and
+  # then thrown away.
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+
+# `-D warnings` is deliberately NOT set as a global RUSTFLAGS here. RUSTFLAGS
+# reaches every crate Cargo compiles, dependencies included, so a new warning in
+# quick-xml or zip would fail this workflow over code nobody here can edit.
+# Passing `-- -D warnings` to clippy instead applies the denial to this crate
+# alone, which is the intent.
 
 jobs:
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -27,21 +49,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The default build is detection-only, so a lint that fires solely in
-          # the cryptographic modules would go unseen without the second row.
           - name: detect-only
             flags: --no-default-features
           - name: crypto-ops
             flags: --no-default-features --features crypto-ops
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
-      - run: cargo clippy --all-targets ${{ matrix.flags }}
+      # --all-targets expands to --lib --bins --tests --benches --examples, so
+      # it compiles the library BOTH as a plain lib (cfg(test) off) and as a
+      # test harness (cfg(test) on). The plain-lib pass is what catches an item
+      # gated `any(feature = "crypto-ops", test)` that has no non-test caller
+      # left -- verified by deleting the gate on manifest.rs's encode_b64 and
+      # watching this command fail with "function `encode_b64` is never used".
+      # A separate lib-only step would add nothing.
+      - run: cargo clippy --locked --all-targets ${{ matrix.flags }} -- -D warnings
 
   test:
     name: test (${{ matrix.name }})
@@ -57,7 +84,7 @@ jobs:
           - name: crypto-ops
             flags: --no-default-features --features crypto-ops
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -65,58 +92,38 @@ jobs:
       # Cargo.toml sets [profile.dev.package."*"] opt-level = 3 on purpose:
       # PBKDF2 at 100k iterations and Argon2id at m=64 MiB take ~90s unoptimised
       # against under a second optimised. Do not "simplify" that away.
-      - run: cargo test ${{ matrix.flags }}
-
-  build:
-    name: build (${{ matrix.name }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: detect-only
-            flags: --no-default-features
-          - name: crypto-ops
-            flags: --no-default-features --features crypto-ops
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: build-${{ matrix.name }}
-      # A plain build, which is the only job here that compiles the library
-      # WITHOUT cfg(test). Several items are gated `any(feature = "crypto-ops",
-      # test)`, so the clippy and test jobs above cannot see a mis-scoped gate:
-      # cfg(test) is true in both of them. A bound dead in a detection-only
-      # library build shows up here and nowhere else.
-      - run: cargo build ${{ matrix.flags }}
+      - run: cargo test --locked ${{ matrix.flags }}
 
   msrv:
+    # Keep in step with `rust-version` in Cargo.toml; bump both together.
     name: MSRV 1.85
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      # Pinned to the rust-version declared in Cargo.toml. Bump both together.
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
+      # --locked matters most here: without it Cargo may resolve a dependency
+      # release that raised its own MSRV, and the job would fail for a reason
+      # that has nothing to do with this crate.
+      #
       # Build, not test: dev-dependencies are free to require a newer toolchain
       # than the library's own MSRV promise.
-      - run: cargo build --no-default-features --features crypto-ops
+      - run: cargo build --locked --no-default-features --features crypto-ops
 
   docs:
     name: rustdoc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           key: docs
       # Mirrors [package.metadata.docs.rs] all-features = true, so a broken link
       # is caught here rather than on the docs.rs build after publishing.
-      - run: cargo doc --all-features --no-deps
+      - run: cargo doc --locked --all-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -124,17 +131,22 @@ jobs:
     name: cargo package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           key: package
-      # Guards the `include` allowlist in Cargo.toml. The verification build
-      # compiles the unpacked tarball, so a file the crate needs but that the
-      # allowlist omits fails here instead of after publishing. Run with the
-      # crypto-ops feature so the tarball is checked against the largest
-      # source set, not just the detection modules.
-      - run: cargo package --features crypto-ops
+      # Guards two things at once.
+      #
+      # The `include` allowlist in Cargo.toml: the verification build compiles
+      # the unpacked tarball, so a file the crate needs but the allowlist omits
+      # fails here instead of after publishing. Run with crypto-ops so the
+      # tarball is checked against the largest source set.
+      #
+      # And --locked catches a stale Cargo.lock. Bumping `version` alone leaves
+      # the lock out of date, which `cargo package` refuses -- a real failure
+      # this repo already hit once, at 0.1.0 -> 0.1.0-rc.1.
+      - run: cargo package --locked --features crypto-ops
 
 # The Python helpers under tests/goldens/ are deliberately NOT run here. Both
 # make_goldens.py and validate_encrypt.py bootstrap a local LibreOffice over UNO
