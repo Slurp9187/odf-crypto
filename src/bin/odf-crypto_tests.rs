@@ -1,36 +1,19 @@
-//! Unit tests for the CLI's own logic — the parts that are not the library.
+//! Unit tests for the CLI's own logic — the parts that are not the library and
+//! not clap.
 //!
 //! End-to-end behaviour (exit codes, argv handling, atomic writes) is exercised
 //! by `tests/cli.rs`, which drives the built binary. What is tested here is the
-//! pure helpers, where a unit test is sharper than a subprocess.
+//! pure helpers and the command definition, where a unit test is sharper than a
+//! subprocess.
 
 use super::*;
 
 #[test]
-fn json_escape_covers_the_four_classes() {
-    // Quote and backslash: RFC 8259 requires both.
-    assert_eq!(json_escape(r#"a"b"#), r#"a\"b"#);
-    assert_eq!(json_escape(r"a\b"), r"a\\b");
-    // Named short escapes.
-    assert_eq!(json_escape("a\nb"), r"a\nb");
-    assert_eq!(json_escape("a\tb"), r"a\tb");
-    assert_eq!(json_escape("a\rb"), r"a\rb");
-    assert_eq!(json_escape("a\u{08}b"), r"a\bb");
-    assert_eq!(json_escape("a\u{0c}b"), r"a\fb");
-    // Any other scalar below 0x20 must be \u-escaped, not emitted raw.
-    assert_eq!(json_escape("a\u{01}b"), "a\\u0001b");
-    assert_eq!(json_escape("a\u{1f}b"), "a\\u001fb");
-    // Non-ASCII passes through as UTF-8; the spec allows it and it keeps a
-    // media type readable.
-    assert_eq!(json_escape("äöü→"), "äöü→");
-    // 0x7f is not a control character by the spec's definition.
-    assert_eq!(json_escape("a\u{7f}b"), "a\u{7f}b");
-}
-
-#[test]
-fn json_escape_leaves_ordinary_text_alone() {
-    let s = "application/vnd.oasis.opendocument.text";
-    assert_eq!(json_escape(s), s);
+fn the_command_definition_is_internally_consistent() {
+    // clap's own audit: catches a duplicate id, a group naming an argument that
+    // does not exist, a short flag used twice. Cheap, and it covers every
+    // subcommand rather than only the paths a test happens to take.
+    cli().debug_assert();
 }
 
 #[test]
@@ -127,91 +110,128 @@ fn exit_codes_map_each_error_class() {
 }
 
 #[test]
-fn help_and_version_are_not_errors() {
-    assert_eq!(run(&["--help".to_string()]), EX_OK);
-    assert_eq!(run(&["-h".to_string()]), EX_OK);
-    assert_eq!(run(&["--version".to_string()]), EX_OK);
-    assert_eq!(run(&["-V".to_string()]), EX_OK);
+fn exactly_one_password_source_is_accepted() {
+    // clap's ArgGroup enforces it, so this pins the wiring rather than the rule.
+    let two = cli().try_get_matches_from([
+        "odf-crypto",
+        "decrypt",
+        "f.odt",
+        "--password-stdin",
+        "--password-env",
+        "PW",
+    ]);
+    assert!(two.is_err(), "two password sources must be rejected");
+
+    for one in [
+        vec!["odf-crypto", "decrypt", "f.odt", "--password-stdin"],
+        vec!["odf-crypto", "decrypt", "f.odt", "--password-env", "PW"],
+        vec!["odf-crypto", "decrypt", "f.odt", "--password-file", "p"],
+        // None is legal: it means "prompt".
+        vec!["odf-crypto", "decrypt", "f.odt"],
+    ] {
+        assert!(
+            cli().try_get_matches_from(&one).is_ok(),
+            "{one:?} must parse"
+        );
+    }
 }
 
 #[test]
-fn no_arguments_and_unknown_commands_are_usage_errors() {
-    assert_eq!(run(&[]), EX_USAGE);
-    assert_eq!(run(&["frobnicate".to_string()]), EX_USAGE);
+fn the_equals_form_parses() {
+    // The gap that motivated moving to clap: `--output=x.odt` was rejected
+    // outright by the hand-rolled parser this replaced.
+    let m = cli()
+        .try_get_matches_from(["odf-crypto", "decrypt", "f.odt", "--output=x.odt"])
+        .expect("--flag=value must parse");
+    let sub = m.subcommand_matches("decrypt").expect("decrypt");
+    assert_eq!(
+        sub.get_one::<String>("output").map(String::as_str),
+        Some("x.odt")
+    );
 }
 
 #[test]
-fn the_password_flag_is_refused_by_name() {
-    // Not "unrecognised option" -- a caller reaching for --password gets told
-    // why it does not exist and what to use instead.
-    let args = [
-        "decrypt".to_string(),
-        "--password".to_string(),
-        "x".to_string(),
-    ];
-    assert_eq!(cmd_crypt(&args[1..], Direction::Decrypt), EX_USAGE);
+fn the_password_argument_is_hidden_but_recognised() {
+    // Plan §2. It parses -- so `cmd_crypt` can explain *why* it does not exist,
+    // rather than clap reporting a generic unexpected argument -- and it never
+    // appears in help, so it is not offered.
+    let m = cli()
+        .try_get_matches_from(["odf-crypto", "decrypt", "f.odt", "--password", "secret"])
+        .expect("the trap argument must parse");
+    let sub = m.subcommand_matches("decrypt").expect("decrypt");
+    assert_eq!(
+        sub.get_one::<String>(PASSWORD_TRAP).map(String::as_str),
+        Some("secret")
+    );
+    // And it is refused with an explanation, not acted on.
+    assert_eq!(cmd_crypt(sub, Direction::Decrypt), EX_USAGE);
 }
 
 #[test]
-fn two_password_sources_is_a_usage_error() {
-    let args = [
-        "f.odt".to_string(),
-        "--password-stdin".to_string(),
-        "--password-env".to_string(),
-        "PW".to_string(),
-    ];
-    assert_eq!(cmd_crypt(&args, Direction::Decrypt), EX_USAGE);
-}
-
-#[test]
-fn usage_strings_never_offer_a_password_value_flag() {
-    // Pins the plan's §2 decision: reintroducing the flag has to defeat this.
-    for text in [USAGE, CLASSIFY_USAGE, &decrypt_usage(), &encrypt_usage()] {
-        // The predicate is "no line DEFINES the option", not "the string never
-        // appears": the help text mentions `--password <VALUE>` precisely to
-        // say it does not exist, and a substring check fails on that prose.
-        // An option definition is an indented line whose first token is it.
+fn no_help_output_ever_offers_a_password_value_argument() {
+    // The predicate is "no line DEFINES the option", not "the string never
+    // appears": the after-help text mentions `--password VALUE` precisely to say
+    // it does not exist, and a substring check would fail on that prose.
+    let mut cmd = cli();
+    let mut texts = vec![cmd.render_long_help().to_string()];
+    for name in ["classify", "decrypt", "encrypt"] {
+        texts.push(
+            cmd.find_subcommand_mut(name)
+                .expect("subcommand")
+                .render_long_help()
+                .to_string(),
+        );
+    }
+    for text in texts {
         for line in text.lines() {
             let t = line.trim_start();
             assert!(
                 !(t.starts_with("--password ") || t.starts_with("--password=")),
-                "a `--password <VALUE>` option must never be defined in help output, found: {line:?}"
+                "a `--password <VALUE>` option must never be defined in help: {line:?}"
             );
         }
-    }
-    // The three real sources are all advertised.
-    for text in [&decrypt_usage(), &encrypt_usage()] {
-        assert!(text.contains("--password-env"));
-        assert!(text.contains("--password-file"));
-        assert!(text.contains("--password-stdin"));
     }
 }
 
 #[test]
-fn classification_json_is_well_formed_for_a_real_golden() {
+fn help_advertises_the_three_real_password_sources() {
+    let mut cmd = cli();
+    for name in ["decrypt", "encrypt"] {
+        let text = cmd
+            .find_subcommand_mut(name)
+            .expect("subcommand")
+            .render_long_help()
+            .to_string();
+        for flag in ["--password-env", "--password-file", "--password-stdin"] {
+            assert!(text.contains(flag), "{name} help must offer {flag}");
+        }
+    }
+}
+
+#[test]
+fn classification_json_is_valid_json_for_a_real_golden() {
     let bytes = include_bytes!("../../tests/goldens/lo-wholesome-gcm-argon2.odt");
     let c = classify(bytes).expect("golden classifies");
-    let json = classification_json(&c);
+    let v: serde_json::Value =
+        serde_json::from_str(&classification_json(&c)).expect("must be valid JSON");
 
-    assert!(json.starts_with('{') && json.ends_with('}'));
-    assert!(json.contains("\"mode\":\"wholesome\""));
-    assert!(json.contains("\"encrypted\":true"));
-    assert!(json.contains("\"cipher\":\"AES-GCM (W3C)\""));
-    assert!(json.contains("\"kdf\":\"Argon2id t=3 m=65536KiB p=4\""));
-    assert!(json.contains("\"key_size\":32"));
-    // Balanced braces and quotes: a hand-written serialiser's failure mode.
-    assert_eq!(json.matches('{').count(), json.matches('}').count());
-    assert_eq!(json.matches('"').count() % 2, 0);
+    assert_eq!(v["mode"], "wholesome");
+    assert_eq!(v["encrypted"], true);
+    assert_eq!(v["cipher"], "AES-GCM (W3C)");
+    assert_eq!(v["kdf"], "Argon2id t=3 m=65536KiB p=4");
+    assert_eq!(v["key_size"], 32);
+    assert_eq!(v["odf_version"], "1.4");
 }
 
 #[test]
 fn classification_json_nulls_the_row_fields_when_plain() {
     let bytes = include_bytes!("../../tests/goldens/lo-unencrypted.odt");
     let c = classify(bytes).expect("golden classifies");
-    let json = classification_json(&c);
-    assert!(json.contains("\"encrypted\":false"));
-    assert!(json.contains("\"cipher\":null"));
-    assert!(json.contains("\"key_size\":null"));
+    let v: serde_json::Value =
+        serde_json::from_str(&classification_json(&c)).expect("must be valid JSON");
+    assert_eq!(v["encrypted"], false);
+    assert!(v["cipher"].is_null());
+    assert!(v["key_size"].is_null());
 }
 
 #[test]

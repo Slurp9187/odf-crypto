@@ -2,26 +2,24 @@
 //!
 //! Plan: `docs/plans/odf-crypto-cli-2026-09-04.md`.
 //!
-//! Argument parsing is hand-rolled rather than `clap`: three subcommands and six
-//! flags do not justify roughly fifteen crates in a project that advertises 27
-//! for detection. The bar that still has to be met is `--help` everywhere,
-//! `--version`, an unknown flag that names itself, and a usage line on stderr.
-//!
 //! Passwords never come from `argv`. There is deliberately no `--password
-//! VALUE` flag, because `argv` is world-readable in a process listing for the
-//! lifetime of the run.
+//! VALUE` argument, because `argv` is world-readable in a process listing for
+//! the lifetime of the run. `--password` is registered anyway, hidden, purely so
+//! that reaching for it produces an explanation rather than "unexpected
+//! argument".
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
 use odf_crypto::{
     classify, decrypt, encrypt, Checksum, Cipher, Classification, DecryptError, DetectError,
     EncryptError, Kdf, Mode, StartKeyAlg,
 };
 
-// Plan §3. A CLI that returns 1 for everything cannot be scripted; 4 vs 5 is
-// the distinction that earns the table -- "try again" against "wrong file".
+// Plan §3. A CLI that returns 1 for everything cannot be scripted; 4 against 5
+// is the distinction that earns the table -- "try again" against "wrong file".
 const EX_OK: u8 = 0;
 const EX_USAGE: u8 = 1;
 const EX_IO: u8 = 2;
@@ -31,147 +29,155 @@ const EX_REFUSED: u8 = 5;
 const EX_MALFORMED: u8 = 6;
 const EX_INTERNAL: u8 = 7;
 
-const USAGE: &str = "\
-odf-crypto — LibreOffice-faithful ODF package encryption
+const AFTER_HELP: &str = "\
+EXIT CODES:
+  0 ok        1 usage      2 io          3 not-odf
+  4 wrong-password         5 refused     6 malformed   7 internal
 
-USAGE:
-    odf-crypto <COMMAND> [OPTIONS] <FILE>
+4 and 5 differ on purpose: 4 means try again, 5 means you had the wrong file.";
 
-COMMANDS:
-    classify    Report whether a file is an ODF package and how it is encrypted
-    decrypt     Decrypt an encrypted ODF package
-    encrypt     Encrypt a plaintext ODF package
-
-OPTIONS:
-    -h, --help       Print help (use with a command for its own options)
-    -V, --version    Print version
+const PASSWORD_AFTER_HELP: &str = "\
+PASSWORDS:
+  argv is world-readable in a process listing, so there is no `--password
+  VALUE` argument. Give exactly one source, or none to be prompted without echo.
 
 EXIT CODES:
-    0 ok   1 usage   2 io   3 not-odf   4 wrong-password
-    5 refused   6 malformed   7 internal
+  0 ok        1 usage      2 io          3 not-odf
+  4 wrong-password         5 refused     6 malformed   7 internal";
 
-Run `odf-crypto <COMMAND> --help` for command options.";
+/// Registered but hidden, so `--password secret` is met with the reason it does
+/// not exist rather than clap's generic "unexpected argument". Removing it would
+/// make the tool *less* clear about a decision the plan calls load-bearing.
+const PASSWORD_TRAP: &str = "password";
 
-const CLASSIFY_USAGE: &str = "\
-odf-crypto classify — report what a file is, and how it is encrypted
-
-USAGE:
-    odf-crypto classify [OPTIONS] <FILE>
-
-OPTIONS:
-        --json    Emit one JSON object instead of key-value lines
-    -h, --help    Print help
-
-Needs no password. An unencrypted package prints `encrypted: no` and exits 0 —
-that is an answer, not a failure. Only a non-ODF input exits 3.";
-
-const PASSWORD_HELP: &str = "\
-PASSWORD (exactly one, or none to be prompted):
-        --password-env <NAME>    Read the password from this environment variable
-        --password-file <PATH>   Read the first line of this file
-        --password-stdin         Read one line from stdin
-
-There is deliberately no `--password <VALUE>` flag: argv is world-readable in a
-process listing for the lifetime of the run. With none of these and a terminal,
-you are prompted without echo.";
-
-fn decrypt_usage() -> String {
-    format!(
-        "\
-odf-crypto decrypt — decrypt an encrypted ODF package
-
-USAGE:
-    odf-crypto decrypt [OPTIONS] <FILE>
-
-OPTIONS:
-    -o, --output <PATH>    Write here; `-` for stdout. Default: FILE.decrypted.odt
-        --force            Overwrite an existing output file
-    -h, --help             Print help
-
-{PASSWORD_HELP}"
-    )
+fn password_args() -> [Arg; 4] {
+    [
+        Arg::new("password-env")
+            .long("password-env")
+            .value_name("NAME")
+            .help("Read the password from this environment variable"),
+        Arg::new("password-file")
+            .long("password-file")
+            .value_name("PATH")
+            .help("Read the password from the first line of this file"),
+        Arg::new("password-stdin")
+            .long("password-stdin")
+            .action(ArgAction::SetTrue)
+            .help("Read the password as one line from stdin"),
+        Arg::new(PASSWORD_TRAP)
+            .long("password")
+            .value_name("VALUE")
+            .hide(true),
+    ]
 }
 
-fn encrypt_usage() -> String {
-    format!(
-        "\
-odf-crypto encrypt — encrypt a plaintext ODF package
+fn crypt_command(name: &'static str, about: &'static str, default_suffix: &'static str) -> Command {
+    let output_help: &'static str = Box::leak(
+        format!("Write here; `-` for stdout. Default: FILE.{default_suffix}.odt").into_boxed_str(),
+    );
+    Command::new(name)
+        .about(about)
+        .arg(
+            Arg::new("file")
+                .value_name("FILE")
+                .required(true)
+                .help("The ODF package to read"),
+        )
+        .arg(
+            Arg::new("output")
+                .short('o')
+                .long("output")
+                .value_name("PATH")
+                .help(output_help),
+        )
+        .arg(
+            Arg::new("force")
+                .long("force")
+                .action(ArgAction::SetTrue)
+                .help("Overwrite an existing output file"),
+        )
+        .args(password_args())
+        // Exactly one password source, so two is an error rather than a silent
+        // precedence win. Not `required`: none of them means "prompt".
+        .group(
+            ArgGroup::new("password-source")
+                .args(["password-env", "password-file", "password-stdin"])
+                .multiple(false),
+        )
+        .after_help(PASSWORD_AFTER_HELP)
+}
 
-USAGE:
-    odf-crypto encrypt [OPTIONS] <FILE>
-
-OPTIONS:
-    -o, --output <PATH>    Write here; `-` for stdout. Default: FILE.encrypted.odt
-        --force            Overwrite an existing output file
-    -h, --help             Print help
-
-{PASSWORD_HELP}"
-    )
+fn cli() -> Command {
+    Command::new("odf-crypto")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("LibreOffice-faithful ODF package encryption")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .after_help(AFTER_HELP)
+        .subcommand(
+            Command::new("classify")
+                .about("Report whether a file is an ODF package, and how it is encrypted")
+                .arg(
+                    Arg::new("file")
+                        .value_name("FILE")
+                        .required(true)
+                        .help("The file to inspect"),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .action(ArgAction::SetTrue)
+                        .help("Emit one JSON object instead of key-value lines"),
+                )
+                .after_help(
+                    "An unencrypted package prints `encrypted: no` and exits 0 — that is an \
+                     answer, not a failure. Only a non-ODF input exits 3.",
+                ),
+        )
+        .subcommand(crypt_command(
+            "decrypt",
+            "Decrypt an encrypted ODF package",
+            "decrypted",
+        ))
+        .subcommand(crypt_command(
+            "encrypt",
+            "Encrypt a plaintext ODF package",
+            "encrypted",
+        ))
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    ExitCode::from(run(&args))
+    // Parsed by hand rather than `get_matches()` so a clap usage error becomes
+    // exit 1 from the table above, not clap's own exit 2 -- which would collide
+    // with the I/O code.
+    let m = match cli().try_get_matches() {
+        Ok(m) => m,
+        Err(e) => {
+            let ok = matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            );
+            let _ = e.print();
+            return ExitCode::from(if ok { EX_OK } else { EX_USAGE });
+        }
+    };
+    ExitCode::from(dispatch(&m))
 }
 
-fn run(args: &[String]) -> u8 {
-    let Some(first) = args.first() else {
-        eprintln!("{USAGE}");
-        return EX_USAGE;
-    };
-    match first.as_str() {
-        "-h" | "--help" | "help" => {
-            println!("{USAGE}");
-            EX_OK
-        }
-        "-V" | "--version" => {
-            println!("odf-crypto {}", env!("CARGO_PKG_VERSION"));
-            EX_OK
-        }
-        "classify" => cmd_classify(&args[1..]),
-        "decrypt" => cmd_crypt(&args[1..], Direction::Decrypt),
-        "encrypt" => cmd_crypt(&args[1..], Direction::Encrypt),
-        other => {
-            eprintln!("odf-crypto: unknown command `{other}`\n\n{USAGE}");
-            EX_USAGE
-        }
+fn dispatch(m: &ArgMatches) -> u8 {
+    match m.subcommand() {
+        Some(("classify", sub)) => cmd_classify(sub),
+        Some(("decrypt", sub)) => cmd_crypt(sub, Direction::Decrypt),
+        Some(("encrypt", sub)) => cmd_crypt(sub, Direction::Encrypt),
+        _ => EX_USAGE,
     }
 }
 
 // --- classify -------------------------------------------------------------
 
-fn cmd_classify(args: &[String]) -> u8 {
-    let mut json = false;
-    let mut file: Option<String> = None;
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "-h" | "--help" => {
-                println!("{CLASSIFY_USAGE}");
-                return EX_OK;
-            }
-            "--json" => json = true,
-            "--" => {
-                if let Some(f) = it.next() {
-                    file = Some(f.clone());
-                }
-            }
-            other if other.starts_with('-') && other != "-" => {
-                return usage_err(&format!("unrecognised option `{other}` for `classify`"));
-            }
-            other => {
-                if file.is_some() {
-                    return usage_err("classify takes exactly one FILE");
-                }
-                file = Some(other.to_string());
-            }
-        }
-    }
-    let Some(file) = file else {
-        return usage_err("classify needs a FILE");
-    };
-
-    let bytes = match std::fs::read(&file) {
+fn cmd_classify(m: &ArgMatches) -> u8 {
+    let file = m.get_one::<String>("file").expect("required by clap");
+    let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("odf-crypto: cannot read {file}: {e}");
@@ -180,7 +186,7 @@ fn cmd_classify(args: &[String]) -> u8 {
     };
     match classify(&bytes) {
         Ok(c) => {
-            if json {
+            if m.get_flag("json") {
                 println!("{}", classification_json(&c));
             } else {
                 print!("{}", classification_human(&c));
@@ -235,122 +241,71 @@ fn checksum_str(c: &Checksum) -> &'static str {
 
 fn classification_human(c: &Classification) -> String {
     let mut out = String::new();
-    let line = |out: &mut String, k: &str, v: &str| {
-        out.push_str(&format!("{k:<13}{v}\n"));
-    };
-    line(&mut out, "package:", "ODF");
-    line(&mut out, "mode:", mode_str(c.mode));
-    line(
-        &mut out,
-        "encrypted:",
-        if c.package_encrypted { "yes" } else { "no" },
-    );
-    line(
-        &mut out,
-        "odf-version:",
-        c.odf_version.as_deref().unwrap_or("(none)"),
-    );
-    line(
-        &mut out,
-        "media-type:",
-        c.media_type.as_deref().unwrap_or("(none)"),
-    );
+    let mut line = |k: &str, v: &str| out.push_str(&format!("{k:<13}{v}\n"));
+    line("package:", "ODF");
+    line("mode:", mode_str(c.mode));
+    line("encrypted:", if c.package_encrypted { "yes" } else { "no" });
+    line("odf-version:", c.odf_version.as_deref().unwrap_or("(none)"));
+    line("media-type:", c.media_type.as_deref().unwrap_or("(none)"));
     if c.odf12_fatal {
-        line(&mut out, "refused:", "unexpected ODF 1.2 streams");
+        line("refused:", "unexpected ODF 1.2 streams");
     }
     if !c.pgp_keys.is_empty() {
         line(
-            &mut out,
             "pgp-keys:",
             &format!("{} (not decryptable by this tool)", c.pgp_keys.len()),
         );
     }
     if let Some(row) = c.common.as_ref() {
-        line(&mut out, "cipher:", cipher_str(row.cipher));
-        line(&mut out, "kdf:", &kdf_str(&row.kdf));
-        line(&mut out, "start-key:", start_key_str(row.start_key));
-        line(&mut out, "checksum:", checksum_str(&row.checksum));
-        line(&mut out, "key-size:", &row.derived_key_len.to_string());
+        line("cipher:", cipher_str(row.cipher));
+        line("kdf:", &kdf_str(&row.kdf));
+        line("start-key:", start_key_str(row.start_key));
+        line("checksum:", checksum_str(&row.checksum));
+        line("key-size:", &row.derived_key_len.to_string());
     }
     if c.encrypted_entries.len() > 1 {
-        line(&mut out, "entries:", &c.encrypted_entries.len().to_string());
+        line("entries:", &c.encrypted_entries.len().to_string());
     }
     out
 }
 
-/// Hand-written rather than `serde_json`: the field set is fixed and small, and
-/// ten scalars do not justify that graph in a crate whose manifest argues about
-/// single dependencies. Quoting is the one real risk, so it goes through
-/// [`json_escape`], which is tested.
+/// Built as a `serde_json::Value` rather than by string concatenation.
+///
+/// The hand-written version this replaced was correct and tested, so this buys
+/// nothing today. What it removes is a class of future error: a field added
+/// without remembering to escape it can no longer emit broken JSON, because
+/// escaping is no longer something this function does.
 fn classification_json(c: &Classification) -> String {
-    let mut f: Vec<String> = Vec::new();
-    f.push(format!("\"package\":\"{}\"", json_escape("ODF")));
-    f.push(format!("\"mode\":\"{}\"", mode_str(c.mode)));
-    f.push(format!("\"encrypted\":{}", c.package_encrypted));
-    f.push(match c.odf_version.as_deref() {
-        Some(v) => format!("\"odf_version\":\"{}\"", json_escape(v)),
-        None => "\"odf_version\":null".to_string(),
-    });
-    f.push(match c.media_type.as_deref() {
-        Some(v) => format!("\"media_type\":\"{}\"", json_escape(v)),
-        None => "\"media_type\":null".to_string(),
-    });
-    f.push(format!("\"odf12_fatal\":{}", c.odf12_fatal));
-    f.push(format!(
-        "\"has_unexpected_streams\":{}",
-        c.has_unexpected_streams
-    ));
-    f.push(format!("\"pgp_keys\":{}", c.pgp_keys.len()));
-    f.push(format!(
-        "\"encrypted_entries\":{}",
-        c.encrypted_entries.len()
-    ));
+    use serde_json::{json, Map, Value};
+
+    let mut o = Map::new();
+    o.insert("package".into(), json!("ODF"));
+    o.insert("mode".into(), json!(mode_str(c.mode)));
+    o.insert("encrypted".into(), json!(c.package_encrypted));
+    o.insert("odf_version".into(), json!(c.odf_version));
+    o.insert("media_type".into(), json!(c.media_type));
+    o.insert("odf12_fatal".into(), json!(c.odf12_fatal));
+    o.insert(
+        "has_unexpected_streams".into(),
+        json!(c.has_unexpected_streams),
+    );
+    o.insert("pgp_keys".into(), json!(c.pgp_keys.len()));
+    o.insert("encrypted_entries".into(), json!(c.encrypted_entries.len()));
     match c.common.as_ref() {
         Some(row) => {
-            f.push(format!(
-                "\"cipher\":\"{}\"",
-                json_escape(cipher_str(row.cipher))
-            ));
-            f.push(format!("\"kdf\":\"{}\"", json_escape(&kdf_str(&row.kdf))));
-            f.push(format!(
-                "\"start_key\":\"{}\"",
-                json_escape(start_key_str(row.start_key))
-            ));
-            f.push(format!(
-                "\"checksum\":\"{}\"",
-                json_escape(checksum_str(&row.checksum))
-            ));
-            f.push(format!("\"key_size\":{}", row.derived_key_len));
+            o.insert("cipher".into(), json!(cipher_str(row.cipher)));
+            o.insert("kdf".into(), json!(kdf_str(&row.kdf)));
+            o.insert("start_key".into(), json!(start_key_str(row.start_key)));
+            o.insert("checksum".into(), json!(checksum_str(&row.checksum)));
+            o.insert("key_size".into(), json!(row.derived_key_len));
         }
         None => {
             for k in ["cipher", "kdf", "start_key", "checksum", "key_size"] {
-                f.push(format!("\"{k}\":null"));
+                o.insert(k.into(), Value::Null);
             }
         }
     }
-    format!("{{{}}}", f.join(","))
-}
-
-/// RFC 8259 §7: `"` and `\` must be escaped, every scalar below `0x20` must be,
-/// and anything else may be emitted literally. Non-ASCII passes through as UTF-8
-/// rather than `\u`-escaping, which the spec allows and which keeps a media type
-/// readable.
-fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
+    Value::Object(o).to_string()
 }
 
 // --- decrypt / encrypt ----------------------------------------------------
@@ -368,16 +323,8 @@ impl Direction {
             Direction::Encrypt => "encrypted",
         }
     }
-    fn usage(self) -> String {
-        match self {
-            Direction::Decrypt => decrypt_usage(),
-            Direction::Encrypt => encrypt_usage(),
-        }
-    }
 }
 
-/// Exactly one may be selected. Two is a usage error rather than a silent
-/// precedence win, because a script that sets both is wrong and should be told.
 enum PasswordSource {
     Env(String),
     File(PathBuf),
@@ -385,68 +332,30 @@ enum PasswordSource {
     Prompt,
 }
 
-fn cmd_crypt(args: &[String], dir: Direction) -> u8 {
-    let mut file: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut force = false;
-    let mut sources: Vec<PasswordSource> = Vec::new();
-
-    let mut it = args.iter().peekable();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "-h" | "--help" => {
-                println!("{}", dir.usage());
-                return EX_OK;
-            }
-            "--force" => force = true,
-            "--password-stdin" => sources.push(PasswordSource::Stdin),
-            "-o" | "--output" => match it.next() {
-                Some(v) => output = Some(v.clone()),
-                None => return usage_err("`--output` needs a PATH"),
-            },
-            "--password-env" => match it.next() {
-                Some(v) => sources.push(PasswordSource::Env(v.clone())),
-                None => return usage_err("`--password-env` needs a NAME"),
-            },
-            "--password-file" => match it.next() {
-                Some(v) => sources.push(PasswordSource::File(PathBuf::from(v))),
-                None => return usage_err("`--password-file` needs a PATH"),
-            },
-            "--password" => {
-                return usage_err(
-                    "there is no `--password` flag: argv is world-readable in a process \
-                     listing. Use --password-env, --password-file or --password-stdin",
-                );
-            }
-            other if other.starts_with('-') && other != "-" => {
-                return usage_err(&format!(
-                    "unrecognised option `{other}` for `{}`",
-                    match dir {
-                        Direction::Decrypt => "decrypt",
-                        Direction::Encrypt => "encrypt",
-                    }
-                ));
-            }
-            other => {
-                if file.is_some() {
-                    return usage_err("takes exactly one FILE");
-                }
-                file = Some(other.to_string());
-            }
-        }
-    }
-
-    let Some(file) = file else {
-        return usage_err("needs a FILE");
-    };
-    if sources.len() > 1 {
-        return usage_err(
-            "give exactly one of --password-env, --password-file or --password-stdin",
+fn cmd_crypt(m: &ArgMatches, dir: Direction) -> u8 {
+    // The hidden trap arg. Registered so this explains itself rather than
+    // clap saying "unexpected argument", which would not tell a caller why.
+    if m.get_one::<String>(PASSWORD_TRAP).is_some() {
+        eprintln!(
+            "odf-crypto: there is no `--password` argument: argv is world-readable in a \
+             process listing.\nUse --password-env NAME, --password-file PATH or --password-stdin."
         );
+        return EX_USAGE;
     }
-    let source = sources.pop().unwrap_or(PasswordSource::Prompt);
 
-    let bytes = match std::fs::read(&file) {
+    // The ArgGroup already rejects two sources, so at most one is present.
+    let source = if let Some(name) = m.get_one::<String>("password-env") {
+        PasswordSource::Env(name.clone())
+    } else if let Some(path) = m.get_one::<String>("password-file") {
+        PasswordSource::File(PathBuf::from(path))
+    } else if m.get_flag("password-stdin") {
+        PasswordSource::Stdin
+    } else {
+        PasswordSource::Prompt
+    };
+
+    let file = m.get_one::<String>("file").expect("required by clap");
+    let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("odf-crypto: cannot read {file}: {e}");
@@ -476,7 +385,7 @@ fn cmd_crypt(args: &[String], dir: Direction) -> u8 {
         },
     };
 
-    match output.as_deref() {
+    match m.get_one::<String>("output").map(String::as_str) {
         Some("-") => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(&produced).and_then(|()| stdout.flush()) {
@@ -485,12 +394,12 @@ fn cmd_crypt(args: &[String], dir: Direction) -> u8 {
             }
             EX_OK
         }
-        _ => {
-            let target = match output {
+        other => {
+            let target = match other {
                 Some(o) => PathBuf::from(o),
-                None => derived_output(Path::new(&file), dir.suffix()),
+                None => derived_output(Path::new(file), dir.suffix()),
             };
-            if target.exists() && !force {
+            if target.exists() && !m.get_flag("force") {
                 eprintln!(
                     "odf-crypto: {} already exists; pass --force to overwrite",
                     target.display()
@@ -600,11 +509,6 @@ fn first_line(s: &str) -> String {
 }
 
 // --- error -> exit code ---------------------------------------------------
-
-fn usage_err(msg: &str) -> u8 {
-    eprintln!("odf-crypto: {msg}");
-    EX_USAGE
-}
 
 fn detect_exit(e: &DetectError) -> u8 {
     match e {

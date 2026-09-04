@@ -6,6 +6,15 @@
 //! itself already has 107 tests.
 //!
 //! Gated on the `cli` feature, which is what builds the binary at all.
+//!
+//! Exit-code coverage. Codes 0-5 are proven here against real fixtures. 6
+//! (malformed) and 7 (internal) are not, deliberately: 6 needs a package that
+//! classifies cleanly and then fails mid-decrypt, which means rebuilding a zip
+//! with a hostile manifest and no zip crate in scope here, and 7 is unreachable
+//! by construction -- both `Internal` variants report an invariant nothing can
+//! currently violate. Their *mapping* is what matters, and that is asserted
+//! directly in the binary's own unit tests (`exit_codes_map_each_error_class`),
+//! which is sharper than constructing a hostile fixture to reach the same line.
 #![cfg(feature = "cli")]
 
 use std::io::Write;
@@ -15,6 +24,7 @@ use std::process::{Command, Output, Stdio};
 // Plan §3.
 const EX_OK: i32 = 0;
 const EX_USAGE: i32 = 1;
+const EX_IO: i32 = 2;
 const EX_NOT_ODF: i32 = 3;
 const EX_WRONG_PASSWORD: i32 = 4;
 const EX_REFUSED: i32 = 5;
@@ -544,4 +554,156 @@ fn output_dash_writes_the_package_to_stdout() {
     // A zip local file header, so what landed on stdout is the package itself
     // and not a progress line.
     assert_eq!(&out.stdout[..2], b"PK", "stdout must carry the zip");
+}
+
+// --- coverage for the exit codes and paths the suite did not reach ---------
+
+#[test]
+fn a_missing_input_file_is_an_io_error() {
+    let s = Scratch::new("missing");
+    let out = run(&["classify", s.join("nope.odt").to_str().unwrap()]);
+    assert_eq!(
+        code(&out),
+        EX_IO,
+        "exit 2, not 'not-odf' -- the file is absent"
+    );
+    assert!(stderr(&out).contains("cannot read"), "{}", stderr(&out));
+}
+
+#[test]
+fn a_missing_password_file_is_an_io_error() {
+    let s = Scratch::new("nopw");
+    let out = run(&[
+        "decrypt",
+        golden("lo-wholesome-gcm-argon2.odt").to_str().unwrap(),
+        "-o",
+        s.join("x.odt").to_str().unwrap(),
+        "--password-file",
+        s.join("nope").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), EX_IO);
+}
+
+#[test]
+fn an_unset_password_env_var_is_a_usage_error() {
+    // Usage, not I/O: the caller named a variable that does not exist, which is
+    // a mistake in the invocation rather than a failure to read something.
+    let s = Scratch::new("unsetenv");
+    let out = run(&[
+        "decrypt",
+        golden("lo-wholesome-gcm-argon2.odt").to_str().unwrap(),
+        "-o",
+        s.join("x.odt").to_str().unwrap(),
+        "--password-env",
+        "ODF_CRYPTO_DEFINITELY_UNSET_VARIABLE",
+    ]);
+    assert_eq!(code(&out), EX_USAGE);
+    assert!(stderr(&out).contains("is not set"), "{}", stderr(&out));
+}
+
+#[test]
+fn an_empty_password_is_refused() {
+    // A password file holding only a newline. first_line yields "", the library
+    // rejects it as EmptyPassword, and that maps to refused rather than to
+    // wrong-password -- it never got as far as trying a key.
+    let s = Scratch::new("emptypw");
+    let pw = s.join("pw.txt");
+    std::fs::write(&pw, "\n").unwrap();
+    let out = run(&[
+        "decrypt",
+        golden("lo-wholesome-gcm-argon2.odt").to_str().unwrap(),
+        "-o",
+        s.join("x.odt").to_str().unwrap(),
+        "--password-file",
+        pw.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), EX_REFUSED);
+}
+
+#[test]
+fn a_truncated_package_is_not_odf() {
+    let s = Scratch::new("trunc");
+    let whole = std::fs::read(golden("lo-wholesome-gcm-argon2.odt")).unwrap();
+    let f = s.join("trunc.odt");
+    std::fs::write(&f, &whole[..400]).unwrap();
+    let out = run(&["classify", f.to_str().unwrap()]);
+    assert_eq!(
+        code(&out),
+        EX_NOT_ODF,
+        "a truncated zip has no central directory"
+    );
+}
+
+#[test]
+fn a_near_miss_flag_is_given_a_suggestion() {
+    // One of the two gaps that motivated moving to clap: the hand-rolled parser
+    // said only "unrecognised option".
+    let out = run(&[
+        "decrypt",
+        "--password-en",
+        "X",
+        golden("lo-unencrypted.odt").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), EX_USAGE);
+    let e = stderr(&out);
+    assert!(
+        e.contains("--password-env"),
+        "must suggest the real flag: {e}"
+    );
+}
+
+#[test]
+fn the_equals_form_works_end_to_end() {
+    // The other gap: `--output=PATH` was rejected outright before clap.
+    let s = Scratch::new("equals");
+    let pw = s.join("pw.txt");
+    std::fs::write(&pw, PASSWORD).unwrap();
+    let target = s.join("eq.odt");
+    let out = run(&[
+        "decrypt",
+        golden("lo-wholesome-gcm-argon2.odt").to_str().unwrap(),
+        &format!("--output={}", target.display()),
+        &format!("--password-file={}", pw.display()),
+    ]);
+    assert_eq!(code(&out), EX_OK, "{}", stderr(&out));
+    assert!(target.exists(), "--output=PATH must be honoured");
+}
+
+#[test]
+fn encrypt_also_accepts_a_piped_password() {
+    // decrypt's stdin path is covered above; encrypt shares the code, so this
+    // pins that the wiring is actually shared rather than duplicated.
+    let s = Scratch::new("encstdin");
+    let mut child = Command::new(bin())
+        .args([
+            "encrypt",
+            golden("lo-unencrypted.odt").to_str().unwrap(),
+            "-o",
+            s.join("sealed.odt").to_str().unwrap(),
+            "--password-stdin",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(format!("{PASSWORD}\n").as_bytes())
+        .expect("write");
+    let out = child.wait_with_output().expect("wait");
+    assert_eq!(out.status.code(), Some(EX_OK), "{}", stderr(&out));
+    assert!(
+        stdout(&run(&["classify", s.join("sealed.odt").to_str().unwrap()])).contains("wholesome")
+    );
+}
+
+#[test]
+fn no_subcommand_prints_help_and_exits_usage() {
+    // clap's arg_required_else_help. Help on stdout is a courtesy; the exit code
+    // still has to say the invocation was wrong, or a script cannot tell.
+    let out = run(&[]);
+    assert_eq!(code(&out), EX_USAGE);
 }

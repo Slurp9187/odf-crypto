@@ -100,7 +100,7 @@ default = []
 # `cargo install odf-crypto --features cli` is the install line. Making it a
 # default would put rpassword in front of every library consumer, and
 # `cargo install` on a library is not the common path anyway.
-cli = ["crypto-ops", "dep:rpassword"]
+cli = ["crypto-ops", "dep:rpassword", "dep:clap", "dep:serde_json"]
 
 crypto-ops = [
     "dep:sha1",
@@ -163,6 +163,25 @@ miniz_oxide = { version = "0.8", optional = true }
 # rtoolbox and windows-sys; libc is already in the crypto-ops graph. The
 # alternative is echoing a password to the terminal, which is not one.
 rpassword = { version = "7", optional = true }
+
+# Builder API, not `derive`, and no `wrap_help`. Measured: derive is 21 crates,
+# builder+suggestions is 5, adding wrap_help is 8. Five is worth it for
+# `--flag=value`, "did you mean --password-env", and help that cannot drift from
+# the definitions it documents. None of it reaches a library consumer: `cli` is
+# opt-in, and the default build still resolves 27 crates.
+clap = { version = "4", optional = true, default-features = false, features = [
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "suggestions",
+] }
+
+# No `serde` derive (11 crates); the object is built directly, which is 5.
+# Buys nothing today -- json_escape was tested and correct -- but makes one
+# class of future error impossible: a field added without escaping. That is
+# the same trade clap got, and the `cli` feature is opt-in either way.
+serde_json = { version = "1", optional = true }
 
 # PBKDF2 at 100k iterations and Argon2id at m=64 MiB are unusably slow in an
 # unoptimised build - the suite goes from under a second to ~90. Optimise the
