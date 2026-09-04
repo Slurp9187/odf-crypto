@@ -101,6 +101,84 @@ Output is validated against a real LibreOffice: the repository carries a golden
 (`tests/goldens/validate_encrypt.py`) that bootstraps LibreOffice and confirms it
 opens what this crate wrote.
 
+## Command line
+
+```sh
+cargo install odf-crypto --features cli
+```
+
+`cli` is not a default feature: a library consumer should not pay for an
+argument parser or a terminal crate to link `classify`.
+
+```sh
+odf-crypto classify report.odt              # what is it, and how is it encrypted
+odf-crypto classify --json report.odt       # the same, as one JSON object
+odf-crypto decrypt  locked.odt -o plain.odt
+odf-crypto encrypt  plain.odt  -o locked.odt
+```
+
+```
+$ odf-crypto classify report.odt
+package:     ODF
+mode:        wholesome
+encrypted:   yes
+odf-version: 1.4
+media-type:  application/vnd.oasis.opendocument.text
+cipher:      AES-GCM (W3C)
+kdf:         Argon2id t=3 m=65536KiB p=4
+start-key:   SHA-256
+checksum:    none
+key-size:    32
+```
+
+### Passwords never come from the command line
+
+There is deliberately **no `--password VALUE` flag**. `argv` is world-readable
+in a process listing for the lifetime of the run — `ps aux`, or Task Manager's
+command-line column. Four sources instead, exactly one per invocation:
+
+| Flag | Source |
+| --- | --- |
+| `--password-env NAME` | that environment variable |
+| `--password-file PATH` | first line of the file |
+| `--password-stdin` | one line from stdin |
+| *(none)* | non-echoing terminal prompt |
+
+```sh
+ODF_PW=... odf-crypto decrypt locked.odt --password-env ODF_PW
+odf-crypto decrypt locked.odt --password-file ~/.secrets/odf
+pass show odf | odf-crypto decrypt locked.odt --password-stdin
+```
+
+Giving two sources is an error rather than a silent precedence win. With none of
+them and no terminal, the command fails telling you which flags exist instead of
+blocking on a prompt nobody can see.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | success |
+| 1 | usage error |
+| 2 | I/O error |
+| 3 | not an ODF package |
+| 4 | wrong password |
+| 5 | refused — not encrypted, already encrypted, PGP, or one LibreOffice would not open |
+| 6 | malformed or hostile package |
+| 7 | internal invariant violated |
+
+4 and 5 are the distinction that earns the table: **4 means try again, 5 means
+you had the wrong file.** An unencrypted package passed to `classify` is exit 0
+with `encrypted: no` — an answer, not a failure.
+
+### Output files
+
+With no `-o`, output lands beside the input as `report.decrypted.odt` or
+`report.encrypted.odt`. An existing file is never overwritten without `--force`,
+and writes go to a temporary in the destination directory and are renamed over
+the target, so an interrupted run cannot leave a half-written `.odt` that looks
+complete. `-o -` writes to stdout.
+
 ## Supported algorithms
 
 | Cipher (`Cipher`) | KDF (`Kdf`) | Start key (`StartKeyAlg`) | Typical producer |
@@ -131,6 +209,7 @@ simply the smaller one.
 | --- | --- | --- |
 | **Detection-only** | `odf-crypto = "0.1.0-rc.1"` | `classify` alone. No cryptographic dependency. **27 crates.** |
 | **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **61 crates.** |
+| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `rpassword` for the prompt. |
 
 **Detection is the default because it is cheap.** `classify` parses
 `META-INF/manifest.xml` and the zip central directory; it never derives a key or
