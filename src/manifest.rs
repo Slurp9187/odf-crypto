@@ -589,8 +589,13 @@ pub(crate) fn decode_b64(s: &str) -> Vec<u8> {
 /// so unlike [`decode_b64`] there is no lenient-parsing quirk to reproduce
 /// here: this only has to be valid input for a decoder that already exists.
 /// Only `encrypt.rs`'s manifest writer calls this outside its own round-trip
-/// test below, so it is otherwise dead under `--no-default-features` builds.
-#[allow(dead_code)]
+/// test below.
+///
+/// Gated rather than allowed: a detection-only build genuinely has no caller,
+/// and `cfg` says that where `allow(dead_code)` would only silence it. `test` is
+/// in the gate because the round-trip and known-vector tests below compile in
+/// every configuration.
+#[cfg(any(feature = "encrypt", test))]
 pub(crate) fn encode_b64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

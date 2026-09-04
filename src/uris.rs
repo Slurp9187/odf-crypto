@@ -11,9 +11,13 @@ pub const MANIFEST_NS_OASIS: &str = "urn:oasis:names:tc:opendocument:xmlns:manif
 /// Not rewritten to `manifest:` — `ManifestImport` leaves `loext:` as-is.
 /// Read-side, LOEXT elements are matched by their hardcoded `loext:`-prefixed
 /// name constants below, not through this URI -- so the only real consumer is
-/// `encrypt.rs`'s manifest writer (`xmlns:loext`), gone under
-/// `--no-default-features` builds.
-#[allow(dead_code)]
+/// `encrypt.rs`'s manifest writer (`xmlns:loext`).
+///
+/// Gated rather than allowed: a detection-only build genuinely has no caller,
+/// and `cfg` says that where `allow(dead_code)` would only silence it. `test` is
+/// in the gate because the negative assertion in this module's own tests
+/// compiles in every configuration.
+#[cfg(any(feature = "encrypt", test))]
 pub const MANIFEST_NS_LOEXT: &str =
     "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0";
 
