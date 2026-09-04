@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The default build is detection-only, so a lint that fires solely in
+          # the cryptographic modules would go unseen without the other two rows.
+          - name: detect-only
+            flags: --no-default-features
+          - name: decrypt
+            flags: --no-default-features --features decrypt
+          - name: encrypt
+            flags: --no-default-features --features encrypt
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo clippy --all-targets ${{ matrix.flags }}
+
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `classify_tests` only — `decrypt_tests` and `encrypt_tests` live
+          # inside their feature-gated parent modules and compile out here.
+          - name: detect-only
+            flags: --no-default-features
+          - name: decrypt
+            flags: --no-default-features --features decrypt
+          - name: encrypt
+            flags: --no-default-features --features encrypt
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      # Cargo.toml sets [profile.dev.package."*"] opt-level = 3 on purpose:
+      # PBKDF2 at 100k iterations and Argon2id at m=64 MiB take ~90s unoptimised
+      # against under a second optimised. Do not "simplify" that away.
+      - run: cargo test ${{ matrix.flags }}
+
+  msrv:
+    name: MSRV 1.85
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Pinned to the rust-version declared in Cargo.toml. Bump both together.
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      # Build, not test: dev-dependencies are free to require a newer toolchain
+      # than the library's own MSRV promise.
+      - run: cargo build --no-default-features --features encrypt
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+      # Mirrors [package.metadata.docs.rs] all-features = true, so a broken link
+      # is caught here rather than on the docs.rs build after publishing.
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  package:
+    name: cargo package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package
+      # Guards the `include` allowlist in Cargo.toml. The verification build
+      # compiles the unpacked tarball, so a file the crate needs but that the
+      # allowlist omits fails here instead of after publishing. Run with the
+      # cryptographic features so the tarball is checked against the largest
+      # source set, not just the detection modules.
+      - run: cargo package --features encrypt
+
+# The Python helpers under tests/goldens/ are deliberately NOT run here. Both
+# make_goldens.py and validate_encrypt.py bootstrap a local LibreOffice over UNO
+# to generate and re-open fixtures; they need a LibreOffice install, they are
+# developer tooling rather than test inputs, and no Rust test invokes them. The
+# .odt goldens they produce are committed, and those are what the suite reads.
