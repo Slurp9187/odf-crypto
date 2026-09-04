@@ -15,17 +15,17 @@ accept predicates, so a package this crate calls encrypted is one LibreOffice
 would prompt for, and a package it refuses is one LibreOffice would refuse to
 open.
 
-> **Pre-release.** This is `0.1.0-rc.1`. The API may change before `0.1.0`.
+> **Pre-release.** This is `0.1.0-rc.2`. The API may change before `0.1.0`.
 
 ## Install
 
 ```toml
 [dependencies]
 # Detection only — no cryptographic dependency.
-odf-crypto = "0.1.0-rc.1"
+odf-crypto = "0.1.0-rc.2"
 
 # Detection, reading and writing.
-odf-crypto = { version = "0.1.0-rc.1", features = ["crypto-ops"] }
+odf-crypto = { version = "0.1.0-rc.2", features = ["crypto-ops"] }
 ```
 
 Pre-release versions are not matched by ordinary requirements — name the full
@@ -207,7 +207,7 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0-rc.1"` | `classify` alone. No cryptographic dependency. **27 crates.** |
+| **Detection-only** | `odf-crypto = "0.1.0-rc.2"` | `classify` alone. No cryptographic dependency. **27 crates.** |
 | **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **61 crates.** |
 | **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `rpassword` for the prompt. |
 
