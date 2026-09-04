@@ -49,6 +49,42 @@ cipher stack to ask whether a file is encrypted.
 PGP-encrypted packages are detected (`Classification::pgp_keys`) and refused
 (`DecryptError::UnsupportedPgp`), never decrypted.
 
+### Documentation
+
+Every public item is documented, and nine doctests execute against the
+LibreOffice goldens shipped inside the crate — so the published tarball verifies
+its own fidelity claim rather than asking to be believed. `missing_docs`, seven
+`rustdoc::*` lints and three `clippy::*` lints are declared in `Cargo.toml` and
+enforced by CI in both feature configurations.
+
+`decrypt` and `encrypt` document their refusal **order**, which is load-bearing
+rather than decorative: every ineligible input is rejected before any key
+derivation, so no caller pays for PBKDF2 or a 64 MiB Argon2id to learn the
+package was never eligible.
+
+### Robustness
+
+No `panic!`, `unwrap`, `expect`, `unreachable!` or `todo!` remains in any
+non-test path of the library.
+
+A violated internal invariant returns `DecryptError::Internal` or
+`EncryptError::Internal` instead of aborting the caller's process — a library
+must not take a process down to report something it could return. `classify`'s
+six remaining panics were removed differently: its `pgp_complete` /
+`password_complete` guards returned a bool and its builders then re-read the
+same fields and unwrapped them, so the guards were folded into the builders.
+The completeness test and the extraction are now the same code and cannot
+drift, which removes the possibility rather than reporting it.
+
+`DetectError` gains `#[non_exhaustive]`, matching the other two error enums.
+None of the three implements `PartialEq`; match with `matches!`.
+
+`DetectError::Manifest` is removed. No code ever constructed it — every
+`parse_manifest` failure path discards the rows and returns an empty list,
+because LibreOffice does the same and still opens the package. Its
+`"failed to parse manifest.xml"` display advertised behaviour the crate
+deliberately refuses.
+
 ### Licensing
 
 Dual MIT OR Apache-2.0. LibreOffice (MPL-2.0) is the behavioural reference and
