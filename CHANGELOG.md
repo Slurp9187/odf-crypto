@@ -11,6 +11,67 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## v0.1.0-rc.2 — 2026-09-04
+
+Adds a command-line front end, and fixes the docs.rs build — which was broken in
+`0.1.0-rc.1` and cannot be repaired there, because a published version is
+immutable.
+
+### Fixed
+
+**The docs.rs build.** `0.1.0-rc.1` reports `doc_status: false`. Its
+`#![cfg_attr(docsrs, feature(doc_auto_cfg))]` is a hard `E0557`: `doc_auto_cfg`
+was removed in Rust 1.92 and merged into `doc_cfg`, so the attribute fails on
+stable *and* nightly whenever `docsrs` is set — which is exactly and only what
+docs.rs does, via this crate's own `rustdoc-args`. Now `feature(doc_cfg)`, which
+builds and emits the intended badge, *"Available on crate feature `crypto-ops`
+only"*, on the gated items.
+
+CI could not have caught it: the `docs` job runs stable and does not pass
+`--cfg docsrs`, so the only configuration that broke was the one nothing built.
+A `docsrs` job now mirrors docs.rs — nightly, `--all-features`, `--cfg docsrs`,
+`-D warnings` — and was verified by reintroducing the removed feature and
+watching the new job fail while the old one passed.
+
+### Added
+
+**A CLI**, behind a `cli` feature that is off by default.
+
+```sh
+cargo install odf-crypto --features cli
+
+odf-crypto classify report.odt          # and --json
+odf-crypto decrypt  locked.odt -o plain.odt --password-env ODF_PW
+odf-crypto encrypt  plain.odt  -o locked.odt --password-stdin
+```
+
+A library consumer is unaffected, and that is measured rather than asserted:
+the default build still resolves 27 crates with no `rpassword`.
+
+**Passwords never come from `argv`.** There is deliberately no `--password
+VALUE` flag — `argv` is world-readable in a process listing for the lifetime of
+the run. Four sources instead: `--password-env`, `--password-file`,
+`--password-stdin`, or a non-echoing prompt. Two together is an error rather
+than a silent precedence win; none with no terminal is an error naming the flags
+rather than a prompt nobody can see.
+
+**Exit codes are scriptable**, and 4 is distinct from 5 on purpose: *wrong
+password* means try again, *refused* means you had the wrong file. An
+unencrypted package passed to `classify` is exit 0 with `encrypted: no` — an
+answer, not a failure.
+
+Writes go to a temporary in the destination directory and are renamed over the
+target, and never overwrite without `--force`: a decrypt that silently replaced
+the encrypted original would be unrecoverable.
+
+Argument parsing is `clap`'s builder API — not `derive`, which is 21 crates
+against the builder's 5 — and `--json` is built as a `serde_json::Value`. Both
+were hand-rolled first and both were changed after measuring: the hand-rolled
+parser rejected `--output=x.odt`, the GNU `--flag=value` form, and offered no
+suggestion on a near-miss like `--password-en`. The JSON had no defect; it was
+replaced so that a field added later without escaping cannot silently emit
+broken output.
+
 ## v0.1.0-rc.1 — 2026-09-04
 
 First published release, and a pre-release: the API may change before `0.1.0`. Cargo
@@ -41,7 +102,7 @@ odf-crypto = { version = "0.1.0-rc.1", features = ["crypto-ops"] }
 ### Features
 
 Detection is the default build and carries no cryptographic dependency — 27 crates.
-`crypto-ops` adds `decrypt` and `encrypt`, and takes that to 62. Nobody pays for a
+`crypto-ops` adds `decrypt` and `encrypt`, and takes that to 61. Nobody pays for a
 cipher stack to ask whether a file is encrypted.
 
 ### Not supported

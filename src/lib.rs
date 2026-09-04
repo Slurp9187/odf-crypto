@@ -54,8 +54,8 @@
 
 // Scoped to the one config where `decrypt`/`encrypt` genuinely are not compiled.
 #![cfg_attr(not(feature = "crypto-ops"), allow(rustdoc::broken_intra_doc_links))]
-// Inert on stable; on docs.rs it badges the feature-gated items.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+// doc_auto_cfg merged into doc_cfg in 1.92; docs.rs sets `docsrs` for us.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod classify;
 mod limits;

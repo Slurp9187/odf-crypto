@@ -1,9 +1,13 @@
 [package]
 name = "odf-crypto"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 edition = "2021"
 description = "LibreOffice-faithful ODF package encryption detection, decryption and encryption"
 rust-version = "1.85"
+# Every src/bin/*.rs is otherwise auto-discovered as its own binary, which turns
+# the CLI's `#[path]` test module into a second bin target with no `main`. The
+# one binary is declared explicitly in [[bin]] below.
+autobins = false
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Slurp9187/odf-crypto"
 readme = "README.md"
@@ -39,9 +43,15 @@ categories = ["cryptography", "parser-implementations"]
 # README.md is absent deliberately: `readme = "README.md"` above makes cargo
 # include it regardless, so listing it here was redundant.
 include = [
+    # Covers src/bin/ too, so the `cli` binary ships. The allowlist is an
+    # allowlist: a new directory is excluded until a pattern names it.
     "src/**/*.rs",
     "examples/encrypt_for_validation.rs",
     "tests/goldens/*.odt",
+    # The CLI's end-to-end suite. `#![cfg(feature = "cli")]` throughout, so it
+    # compiles to nothing without the feature and costs a library consumer
+    # nothing -- but the published tarball can then run it, like the rest.
+    "tests/cli.rs",
     "LICENSE-MIT",
     "LICENSE-APACHE",
 ]
@@ -84,6 +94,14 @@ default = []
 #
 # Named for what it gates, which is not only ciphers: pbkdf2 and argon2 are
 # KDFs, sha1/sha2 are hashes, hmac is a MAC, and miniz_oxide is compression.
+# The `odf-crypto` binary. Default OFF: a library consumer must not pay for an
+# argument parser or a terminal crate to link `classify`.
+#
+# `cargo install odf-crypto --features cli` is the install line. Making it a
+# default would put rpassword in front of every library consumer, and
+# `cargo install` on a library is not the common path anyway.
+cli = ["crypto-ops", "dep:rpassword", "dep:clap", "dep:serde_json"]
+
 crypto-ops = [
     "dep:sha1",
     "dep:sha2",
@@ -141,6 +159,30 @@ blowfish = { version = "0.9", optional = true, features = ["zeroize"] }
 cfb-mode = { version = "0.8", optional = true, features = ["zeroize"] }
 miniz_oxide = { version = "0.8", optional = true }
 
+# Non-echoing password prompt, for the `cli` feature only. Pulls libc,
+# rtoolbox and windows-sys; libc is already in the crypto-ops graph. The
+# alternative is echoing a password to the terminal, which is not one.
+rpassword = { version = "7", optional = true }
+
+# Builder API, not `derive`, and no `wrap_help`. Measured: derive is 21 crates,
+# builder+suggestions is 5, adding wrap_help is 8. Five is worth it for
+# `--flag=value`, "did you mean --password-env", and help that cannot drift from
+# the definitions it documents. None of it reaches a library consumer: `cli` is
+# opt-in, and the default build still resolves 27 crates.
+clap = { version = "4", optional = true, default-features = false, features = [
+    "std",
+    "help",
+    "usage",
+    "error-context",
+    "suggestions",
+] }
+
+# No `serde` derive (11 crates); the object is built directly, which is 5.
+# Buys nothing today -- json_escape was tested and correct -- but makes one
+# class of future error impossible: a field added without escaping. That is
+# the same trade clap got, and the `cli` feature is opt-in either way.
+serde_json = { version = "1", optional = true }
+
 # PBKDF2 at 100k iterations and Argon2id at m=64 MiB are unusably slow in an
 # unoptimised build - the suite goes from under a second to ~90. Optimise the
 # dependency graph only; the crate itself stays unoptimised and debuggable.
@@ -153,6 +195,14 @@ opt-level = 3
 # symbol only exists behind #[cfg(feature = "crypto-ops")] (src/lib.rs).
 # required-features tells Cargo to skip the target instead when the feature
 # set doesn't satisfy it.
+# required-features is load-bearing, exactly as it is for the example below:
+# without it `cargo test --no-default-features` tries to build a binary that
+# calls odf_crypto::decrypt, which does not exist in that configuration.
+[[bin]]
+name = "odf-crypto"
+path = "src/bin/odf-crypto.rs"
+required-features = ["cli"]
+
 [[example]]
 name = "encrypt_for_validation"
 required-features = ["crypto-ops"]

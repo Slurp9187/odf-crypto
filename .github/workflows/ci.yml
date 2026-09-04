@@ -127,6 +127,25 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  docsrs:
+    name: docs.rs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # docs.rs builds on nightly. The `docs` job above uses stable and does NOT
+      # pass --cfg docsrs, so it cannot see anything that only breaks under the
+      # cfg this crate's [package.metadata.docs.rs] asks docs.rs to set. That
+      # gap shipped once: `feature(doc_auto_cfg)` was removed in Rust 1.92 and
+      # became a hard E0557 under --cfg docsrs, which broke the docs.rs build
+      # for 0.1.0-rc.1 while every CI job stayed green.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docsrs
+      - run: cargo doc --locked --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+
   package:
     name: cargo package
     runs-on: ubuntu-latest
