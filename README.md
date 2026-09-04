@@ -21,7 +21,14 @@ open.
 
 ```toml
 [dependencies]
+# Detection only — no cipher, KDF or inflate dependency.
 odf-crypto = "0.1.0-rc.1"
+
+# Reading.
+odf-crypto = { version = "0.1.0-rc.1", features = ["decrypt"] }
+
+# Reading and writing.
+odf-crypto = { version = "0.1.0-rc.1", features = ["encrypt"] }
 ```
 
 Pre-release versions are not matched by ordinary requirements — name the full
@@ -109,12 +116,21 @@ not decrypted — `DecryptError::UnsupportedPgp`.
 
 | Feature | Default | Effect |
 | --- | --- | --- |
-| `encrypt` | **yes** | Writing. Implies `decrypt` — the two directions share the AES-GCM/Argon2id primitives. |
-| `decrypt` | via `encrypt` | Reading. |
-| *(none)* | — | `classify` only: detection with no cryptographic dependencies. |
+| *(none)* | **yes** | `classify` only: detection with no cryptographic dependencies. |
+| `decrypt` | opt-in | Reading. Adds the cipher, KDF and inflate stack. |
+| `encrypt` | opt-in | Writing. Implies `decrypt` — the two directions share the AES-GCM/Argon2id primitives. |
 
-Detection-only builds are genuinely dependency-light — `--no-default-features`
-drops the entire cipher and KDF stack.
+**Detection is the default because it is cheap.** `classify` parses
+`META-INF/manifest.xml` and the zip central directory; it never derives a key or
+touches a cipher. The default build resolves **27 crates**; adding `decrypt` or
+`encrypt` takes that to **62** — `aes`, `aes-gcm`, `argon2`, `blowfish`,
+`pbkdf2`, `sha1`, `sha2`, `hmac` and their transitive graph, plus `libc` and
+`getrandom`. Nobody should pay for a cipher stack to ask whether a file is
+encrypted.
+
+`decrypt` and `encrypt` pull an *identical* dependency graph — the split gates
+compiled code, not crates, so a consumer that only reads cannot accidentally
+emit a package.
 
 ## MSRV
 

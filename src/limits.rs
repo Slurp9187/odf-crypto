@@ -5,6 +5,13 @@
 //! single named cap, shared wherever the same 1 GiB / 8 MiB / 1 KiB figure
 //! used to be spelled as a local literal.
 
+// The default build is detection-only, where `classify` uses just the manifest
+// and mimetype caps and every cryptographic bound below is dead. Gating them
+// one by one would put a `#[cfg]` on nearly every line to say something the
+// module doc already says. Dead-code checking still applies in the `decrypt`
+// and `encrypt` builds, which is where these are live.
+#![cfg_attr(not(feature = "decrypt"), allow(dead_code))]
+
 /// Inclusive floor on `manifest:iteration-count` for a PBKDF2 row. Zero is
 /// what a missing attribute becomes (`""` → `toInt32` → 0); classify still
 /// accepts that row, decrypt must not run HMAC-SHA1 zero times.

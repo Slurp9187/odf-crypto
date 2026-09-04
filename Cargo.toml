@@ -31,8 +31,18 @@ include = [
     "LICENSE-APACHE",
 ]
 
+# docs.rs builds with default features unless told otherwise, and the default
+# here is detection-only -- without this the rendered docs would omit `decrypt`
+# and `encrypt` entirely.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
-default = ["encrypt"]
+# Detection only. `classify` needs no cipher, KDF or inflate dependency, so the
+# default build pulls 27 crates where a cryptographic one pulls 62. Readers and
+# writers opt in; nobody pays for a cipher stack to ask whether a file is
+# encrypted.
+default = []
 decrypt = [
     "dep:sha1",
     "dep:sha2",
@@ -47,8 +57,10 @@ decrypt = [
     "dep:miniz_oxide",
 ]
 # encrypt implies decrypt: the two directions share the AES-GCM/Argon2id
-# primitives (src/kdf.rs) -- do not also list "decrypt" in `default`, that
-# would be redundant.
+# primitives (src/kdf.rs). The two pull an identical dependency graph -- the
+# split gates compiled code, not crates, so a reader that never writes cannot
+# accidentally emit a package. The 35-crate saving is `default = []` vs either
+# of these, not decrypt vs encrypt.
 encrypt = ["decrypt"]
 
 [dependencies]
