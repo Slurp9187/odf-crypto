@@ -45,6 +45,11 @@ pub(crate) const MAX_ENCRYPTED_ENTRIES: usize = 4096;
 /// cannot allocate past it on one path while another still would.
 pub(crate) const PAYLOAD_CEILING: usize = 1 << 30;
 pub(crate) const INFLATE_CEILING: usize = PAYLOAD_CEILING;
+/// Only `encrypt` deflates, so this is gated rather than covered by the
+/// module-level `allow`: under `--features decrypt` alone it would otherwise be
+/// the one dead constant, and widening the allow to hide it would also hide a
+/// genuinely unused bound.
+#[cfg(feature = "encrypt")]
 pub(crate) const DEFLATE_CEILING: usize = PAYLOAD_CEILING;
 pub(crate) const CIPHERTEXT_READ_CEILING: usize = PAYLOAD_CEILING;
 

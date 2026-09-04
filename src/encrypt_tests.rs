@@ -30,7 +30,10 @@ fn odf12_fatal_plain_package_is_refused() {
     let blob = append_stored_member(&load_golden("lo-unencrypted.odt"), "extra.bin", b"nope");
     let class = classify(&blob).expect("fixture classifies");
     assert_eq!(class.mode, Mode::Plain);
-    assert!(class.odf12_fatal, "unlisted root stream on ODF 1.4 must be fatal");
+    assert!(
+        class.odf12_fatal,
+        "unlisted root stream on ODF 1.4 must be fatal"
+    );
     assert!(matches!(
         encrypt(&blob, PASSWORD).unwrap_err(),
         EncryptError::Odf12Fatal

@@ -97,7 +97,9 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
             .iter()
             .find(|e| e.path == "encrypted-package")
             .ok_or_else(|| {
-                DecryptError::BadParameters("wholesome package missing encrypted-package row".into())
+                DecryptError::BadParameters(
+                    "wholesome package missing encrypted-package row".into(),
+                )
             })?;
         let (index, _) = member_for_archive(&mut archive, &row.path)?;
         let ciphertext = read_member_at(&mut archive, index)?;
@@ -198,7 +200,7 @@ fn member_for_archive(
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
     let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
-    if n < DERIVED_KEY_MIN_LEN || n > DERIVED_KEY_MAX_LEN {
+    if !(DERIVED_KEY_MIN_LEN..=DERIVED_KEY_MAX_LEN).contains(&n) {
         return Err(DecryptError::BadParameters(format!(
             "derived_key_len {n} outside {DERIVED_KEY_MIN_LEN}..={DERIVED_KEY_MAX_LEN}"
         )));
@@ -212,7 +214,7 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
                     let iters = u32::try_from(*iterations).map_err(|_| {
                         DecryptError::BadParameters(format!("iterations {iterations}"))
                     })?;
-                    if iters < PBKDF2_MIN_ITER || iters > PBKDF2_MAX_ITER {
+                    if !(PBKDF2_MIN_ITER..=PBKDF2_MAX_ITER).contains(&iters) {
                         return Err(DecryptError::BadParameters(format!(
                             "iterations {iters} outside {PBKDF2_MIN_ITER}..={PBKDF2_MAX_ITER}"
                         )));
@@ -277,11 +279,7 @@ fn decrypt_aes_gcm(
         32 => Aes256Gcm::new_from_slice(key)
             .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
             .decrypt(nonce, ct),
-        n => {
-            return Err(DecryptError::BadParameters(format!(
-                "AES key length {n}"
-            )))
-        }
+        n => return Err(DecryptError::BadParameters(format!("AES key length {n}"))),
     };
     // The aead crate hands back a fresh Vec; moving it into the wrapper copies
     // nothing, and the buffer is zeroized when the wrapper drops.
@@ -319,11 +317,7 @@ fn decrypt_aes_cbc(
             16 => cbc_decrypt_with!(Aes128),
             24 => cbc_decrypt_with!(Aes192),
             32 => cbc_decrypt_with!(Aes256),
-            n => {
-                return Err(DecryptError::BadParameters(format!(
-                    "AES key length {n}"
-                )))
-            }
+            n => return Err(DecryptError::BadParameters(format!("AES key length {n}"))),
         }
         let Some(&pad) = b.last() else {
             return Err(DecryptError::WrongPassword);

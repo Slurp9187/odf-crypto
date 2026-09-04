@@ -592,14 +592,14 @@ pub(crate) fn decode_b64(s: &str) -> Vec<u8> {
 /// test below, so it is otherwise dead under `--no-default-features` builds.
 #[allow(dead_code)]
 pub(crate) fn encode_b64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0];
         let b1 = chunk.get(1).copied();
         let b2 = chunk.get(2).copied();
-        let n = (u32::from(b0) << 16) | (u32::from(b1.unwrap_or(0)) << 8) | u32::from(b2.unwrap_or(0));
+        let n =
+            (u32::from(b0) << 16) | (u32::from(b1.unwrap_or(0)) << 8) | u32::from(b2.unwrap_or(0));
         out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
         out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
         out.push(if b1.is_some() {
@@ -770,7 +770,9 @@ mod tests {
             b"fo".to_vec(),
             b"foo".to_vec(),
             (0..16u8).collect(),
-            (0..12u8).map(|i| i.wrapping_mul(37).wrapping_add(5)).collect(),
+            (0..12u8)
+                .map(|i| i.wrapping_mul(37).wrapping_add(5))
+                .collect(),
         ];
         for bytes in cases {
             let encoded = encode_b64(&bytes);

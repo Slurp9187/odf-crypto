@@ -31,13 +31,13 @@ mod zip_tree;
 mod test_support;
 
 #[cfg(feature = "decrypt")]
-mod kdf;
-#[cfg(feature = "decrypt")]
 mod decrypt;
-#[cfg(feature = "decrypt")]
-mod sensitive;
 #[cfg(feature = "encrypt")]
 mod encrypt;
+#[cfg(feature = "decrypt")]
+mod kdf;
+#[cfg(feature = "decrypt")]
+mod sensitive;
 
 pub use classify::classify;
 pub use types::{
