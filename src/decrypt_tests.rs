@@ -8,8 +8,8 @@ use zip::{ZipArchive, ZipWriter};
 use crate::classify::classify;
 use crate::decrypt::{classification_metadata_unchanged, decrypt, DecryptError};
 use crate::test_support::{
-    append_stored_member, load_golden, pgp_two_row_zip, read_member, zip_namelist, NONASCII_PASSWORD,
-    PASSWORD,
+    append_stored_member, load_golden, pgp_two_row_zip, read_member, zip_namelist,
+    NONASCII_PASSWORD, PASSWORD,
 };
 use crate::{Kdf, Mode};
 
@@ -31,20 +31,22 @@ fn s1_empty_password() {
 fn s1_pgp_zip_unsupported() {
     let zip = pgp_two_row_zip();
     let class = classify(&zip).expect("pgp zip classifies");
-    assert!(!class.pgp_keys.is_empty(), "pgp_keys from first entry KeyInfo");
+    assert!(
+        !class.pgp_keys.is_empty(),
+        "pgp_keys from first entry KeyInfo"
+    );
     let err = decrypt(&zip, PASSWORD).unwrap_err();
     assert!(matches!(err, DecryptError::UnsupportedPgp));
 }
 
 #[test]
 fn odf12_fatal_encrypted_package_is_refused() {
-    let blob = append_stored_member(
-        &load_golden("lo-legacy-aes-cbc.odt"),
-        "extra.bin",
-        b"nope",
-    );
+    let blob = append_stored_member(&load_golden("lo-legacy-aes-cbc.odt"), "extra.bin", b"nope");
     let class = classify(&blob).expect("fixture classifies");
-    assert!(class.odf12_fatal, "unlisted root stream on ODF 1.2 must be fatal");
+    assert!(
+        class.odf12_fatal,
+        "unlisted root stream on ODF 1.2 must be fatal"
+    );
     assert_eq!(class.mode, Mode::PerEntry);
     assert!(matches!(
         decrypt(&blob, PASSWORD).unwrap_err(),
@@ -61,7 +63,10 @@ fn pre_12_unexpected_stream_still_decrypts() {
     );
     let class = classify(&blob).expect("fixture classifies");
     assert!(class.has_unexpected_streams);
-    assert!(!class.odf12_fatal, "no ODF >= 1.2 root version, so not fatal");
+    assert!(
+        !class.odf12_fatal,
+        "no ODF >= 1.2 root version, so not fatal"
+    );
     decrypt(&blob, PASSWORD).expect("ODF 1.1 unexpected streams are not fatal");
 }
 
@@ -131,11 +136,7 @@ fn s2_blowfish_golden() {
 #[test]
 fn s2_nonascii_password_golden() {
     assert_decrypts_to_plain("lo-odf11-nonascii-password.odt", NONASCII_PASSWORD);
-    let err = decrypt(
-        &load_golden("lo-odf11-nonascii-password.odt"),
-        "wrong",
-    )
-    .unwrap_err();
+    let err = decrypt(&load_golden("lo-odf11-nonascii-password.odt"), "wrong").unwrap_err();
     assert!(matches!(err, DecryptError::WrongPassword));
 }
 
@@ -459,7 +460,10 @@ fn s3_aes128_cbc_decrypts_rather_than_being_refused() {
     let before = classify(&bytes).unwrap();
     assert!(!before.encrypted_entries.is_empty());
     assert!(
-        before.encrypted_entries.iter().all(|e| e.derived_key_len == 16),
+        before
+            .encrypted_entries
+            .iter()
+            .all(|e| e.derived_key_len == 16),
         "fixture must derive 16-byte keys"
     );
 
@@ -548,7 +552,10 @@ fn set_argon2_lanes_to_overflow(xml: &[u8]) -> Vec<u8> {
     // `p_cost`, so this overflows u32 and panics in any overflow-checks build
     // (argon2 0.5.3 params.rs:119) unless `kdf.rs` rejects it first.
     String::from_utf8_lossy(xml)
-        .replace("loext:argon2-lanes=\"4\"", "loext:argon2-lanes=\"536870912\"")
+        .replace(
+            "loext:argon2-lanes=\"4\"",
+            "loext:argon2-lanes=\"536870912\"",
+        )
         .into_bytes()
 }
 
@@ -556,7 +563,10 @@ fn set_argon2_memory_to_2gib(xml: &[u8]) -> Vec<u8> {
     // ~2 TiB of Argon2 blocks: `vec!` aborts the process rather than returning
     // an error, where LO's own libargon2 returns ARGON2_MEMORY_ALLOCATION_ERROR.
     String::from_utf8_lossy(xml)
-        .replace("loext:argon2-memory=\"65536\"", "loext:argon2-memory=\"2147483647\"")
+        .replace(
+            "loext:argon2-memory=\"65536\"",
+            "loext:argon2-memory=\"2147483647\"",
+        )
         .into_bytes()
 }
 
@@ -570,9 +580,18 @@ fn set_argon2_memory_below_lanes(xml: &[u8]) -> Vec<u8> {
 #[test]
 fn argon2_hostile_parameters_are_bad_parameters_not_a_panic() {
     for (label, rewrite) in [
-        ("lanes 2^29 (overflows Params::new's m < 8p test)", set_argon2_lanes_to_overflow as Rewrite),
-        ("memory 2 GiB KiB (~2 TiB of blocks)", set_argon2_memory_to_2gib),
-        ("memory 1 KiB (below 8 * lanes)", set_argon2_memory_below_lanes),
+        (
+            "lanes 2^29 (overflows Params::new's m < 8p test)",
+            set_argon2_lanes_to_overflow as Rewrite,
+        ),
+        (
+            "memory 2 GiB KiB (~2 TiB of blocks)",
+            set_argon2_memory_to_2gib,
+        ),
+        (
+            "memory 1 KiB (below 8 * lanes)",
+            set_argon2_memory_below_lanes,
+        ),
     ] {
         let blob = mutate_zip("lo-wholesome-gcm-argon2.odt", None, None, Some(rewrite));
         // The fixture must still be a complete row, or this proves nothing:
@@ -639,10 +658,13 @@ fn hostile_pbkdf2_iterations_are_bad_parameters_not_a_hang() {
     );
     let class = classify(&blob).expect("classify passes iteration-count through");
     assert!(
-        class
-            .encrypted_entries
-            .iter()
-            .any(|e| matches!(e.kdf, Kdf::Pbkdf2 { iterations: 2_147_483_647, .. })),
+        class.encrypted_entries.iter().any(|e| matches!(
+            e.kdf,
+            Kdf::Pbkdf2 {
+                iterations: 2_147_483_647,
+                ..
+            }
+        )),
         "fixture must carry hostile iteration count"
     );
     assert!(matches!(

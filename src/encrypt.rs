@@ -220,7 +220,7 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     })?;
 
     // Plan §2/§6 step 8: manifest.xml exactly per the emit table.
-    let manifest_xml = build_manifest(bytes.len() as i64, &iv, &salt, mimetype.as_deref());
+    let manifest_xml = build_manifest(bytes.len() as i64, &iv, &salt, mimetype.as_deref())?;
 
     // Plan §3/§6 step 9: the three-member outer zip. `unwrap_or(&[])` writes a
     // zero-length `mimetype` member when neither fallback tier produced one --
@@ -381,7 +381,12 @@ fn read_input_mimetype_member(bytes: &[u8]) -> Result<Option<Vec<u8>>, EncryptEr
 /// Every parameter it writes comes from [`WHOLESOME`] or from this call's own
 /// salt/IV, so the manifest cannot promise a tuple the key was not derived
 /// under.
-fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&str>) -> Vec<u8> {
+fn build_manifest(
+    size: i64,
+    iv: &[u8],
+    salt: &[u8],
+    media_type: Option<&str>,
+) -> Result<Vec<u8>, EncryptError> {
     // `ManifestExport.cxx:145-153`: `xmlns:loext` and `manifest:version` are
     // both written together, gated on the same ODF >= 1.2 check -- always
     // true for wholesome, which only exists at ODFSVER_LATEST_EXTENDED.
@@ -442,11 +447,15 @@ fn build_manifest(size: i64, iv: &[u8], salt: &[u8], media_type: Option<&str>) -
 
     let mut writer = Writer::new(Vec::new());
     for event in events {
+        // `io::Write for Vec<u8>` is infallible, so this cannot fail today --
+        // but quick-xml's signature says it can, and an `.expect()` here would
+        // abort a caller's process to report that quick-xml had changed its
+        // mind. Same reasoning as every other Internal in this file.
         writer
             .write_event(event)
-            .expect("writing to an in-memory Vec<u8> cannot fail");
+            .map_err(|e| EncryptError::Internal(format!("manifest XML write: {e}")))?;
     }
-    writer.into_inner()
+    Ok(writer.into_inner())
 }
 
 /// Assemble the outer zip: exactly three members, in order -- `mimetype`

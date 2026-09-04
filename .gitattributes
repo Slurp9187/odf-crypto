@@ -1,0 +1,15 @@
+# LF everywhere -- in the index and in the working tree, on every platform.
+#
+# Without `eol=lf`, a Windows clone with core.autocrlf=true rewrites text files
+# to CRLF on checkout. That fights an editor configured for LF, and it makes
+# `cargo fmt --check` depend on the machine it runs on rather than on the code.
+# Setting it here rather than in local git config means CI and every clone get
+# the same answer.
+* text=auto eol=lf
+
+# The ODF goldens are zip archives whose encrypted members the suite compares
+# byte for byte. Git already auto-detects them as binary, but say so outright:
+# a single CRLF substitution inside a compressed member would corrupt a fixture
+# and surface as a decryption failure that reads like a crypto bug rather than
+# a checkout artifact.
+*.odt binary

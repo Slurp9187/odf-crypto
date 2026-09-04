@@ -1,6 +1,6 @@
 ---
 name: odf-crypto-secure-gate
-description: Handling password-derived key material and decrypted intermediates in odf-crypto with secure-gate wrappers. Use when touching derive_key/start_key or the cipher functions in decrypt.rs, adding a new KDF or cipher path under the 'decrypt' feature, or wiring the planned encrypt arc's writer-side keys/salts/IVs. Not for the password argument or the returned plaintext Vec<u8> on the public decrypt() API — those stay plain by design — and not for classify/manifest/uris/zip_tree code, which never sees key material.
+description: Handling password-derived key material and decrypted intermediates in odf-crypto with secure-gate wrappers. Use when touching derive_key/start_key in kdf.rs or the cipher functions in decrypt.rs/encrypt.rs, or adding a new KDF or cipher path under the 'crypto-ops' feature. Not for the password argument or the returned plaintext Vec<u8> on the public decrypt() API — those stay plain by design — and not for classify/manifest/uris/zip_tree code, which never sees key material.
 ---
 
 # secure-gate in odf-crypto
@@ -19,15 +19,20 @@ bare `Zeroizing` left anywhere in `src/`, and no "this one's local so plain
 secure-gate depends on it internally, so wrapping subsumes it.
 
 **Dependency:** `secure-gate = "0.9.0-rc.7"` (`Cargo.toml`), `default-features
-= false, features = ["alloc"]` only — no `rand`, `ct-eq`, or `encoding`, since
-this crate never generates a random secret (keys come from a user-supplied
-password) and never displays or copies key material anywhere. Unlike
+= false, features = ["alloc"]` only — no `rand`, `ct-eq`, or `encoding`. This
+crate never generates a random *secret* (keys come from a user-supplied
+password; `encrypt`'s salt and IV are public and use `aes-gcm`'s `OsRng`) and
+never displays or copies key material anywhere. Unlike
 `sha1`/`aes`/`argon2`/etc., **secure-gate is not optional and not gated on the
-`decrypt` feature** — it's an unconditional dependency, even though today only
-the `decrypt`-gated `sensitive.rs`/`decrypt.rs` use it. The other deps in the
-`decrypt` feature list are swappable algorithm implementations a
-`classify`-only consumer has no reason to pull in; secure-gate is
-infrastructure, not an algorithm choice.
+`crypto-ops` feature** — it's an unconditional dependency, even though today
+only the `crypto-ops`-gated `sensitive.rs` / `decrypt.rs` / `encrypt.rs` /
+`kdf.rs` use it. The other deps in the `crypto-ops` feature list are swappable
+algorithm implementations a `classify`-only consumer has no reason to pull in;
+secure-gate is infrastructure, not an algorithm choice.
+
+`decrypt` and `encrypt` were separate features until they were collapsed into
+`crypto-ops`: they pulled an identical dependency graph, and the split's only
+product was a third build configuration for a mis-scoped `cfg` to hide in.
 
 ## Scope: the public API stays plain
 
@@ -50,10 +55,10 @@ derived key, each decrypted member in both its deflated and inflated forms.
 
 | Alias | Inner | Declared | Status |
 |---|---|---|---|
-| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`kdf.rs:47`), written in place by `finalize_into` (`kdf.rs:53`), consumed by `derive_key` (`decrypt.rs:176`). |
-| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:176`), consumed in `decrypt_member` (`:217`). |
-| `DeflatedPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — returned by `decrypt_aes_gcm` (`:225`), `decrypt_aes_cbc` (`:267`), `decrypt_blowfish_cfb64` (`:316`) and `decrypt_member` (`:212`); inflated inside `with_secret` (`:101` wholesome, `:116` per-entry). |
-| `MemberPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — the values of the `plain` map in `decrypt` (`:104`); `rebuild_zip` (`:446`) writes each straight from the wrapper into the zip writer (`:477`). |
+| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`kdf.rs:38`), written in place by `finalize_into` (`kdf.rs:44`), consumed by `derive_key` (`decrypt.rs:200`). |
+| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:200`), consumed in `decrypt_member` (`:244`). Also `encrypt`'s wholesome key (`encrypt.rs:181`). |
+| `DeflatedPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — returned by `decrypt_aes_gcm` (`:252`), `decrypt_aes_cbc` (`:290`), `decrypt_blowfish_cfb64` (`:335`) and `decrypt_member` (`:239`); inflated inside `with_secret` (`:109` wholesome, `:124` per-entry). Also `encrypt`'s deflated-then-sealed payload (`encrypt.rs:169`). |
+| `MemberPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — the values of the `plain` map in `decrypt` (`:112`); `rebuild_zip` (`:476`) writes each straight from the wrapper into the zip writer (`:514`). |
 
 All four are `Dynamic<Vec<u8>>`, not `Fixed<[u8; N]>`. **Why `Dynamic`.**
 `PasswordDigest` is 20 bytes for SHA-1 or 32 for SHA-256, decided by
@@ -98,8 +103,9 @@ microseconds. Don't reimplement SHA here to close it.
 
 ## Guards that sit next to the wrapping
 
-`MAX_DERIVED_KEY_LEN = 64` (`decrypt.rs:43`) bounds `manifest:key-size`
-*before* `derive_key` allocates the key buffer (`:185`). `derived_key_len` is
+`DERIVED_KEY_MIN_LEN = 1` / `DERIVED_KEY_MAX_LEN = 64` (`limits.rs:50-51`,
+inside the `crypto-ops`-gated `crypto` submodule) bound `manifest:key-size`
+*before* `derive_key` allocates the key buffer (`decrypt.rs:203`). `derived_key_len` is
 an `i32` the manifest controls; without the bound a value near `i32::MAX`
 allocates ~2 GiB and then runs PBKDF2 over all of it — a hang no `Result` can
 report — before any cipher gets to reject the length. AES-256 needs 32 and
@@ -132,7 +138,7 @@ fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
     let sk = start_key(password, row.start_key);
     let n = row.derived_key_len;
-    if n <= 0 || n > MAX_DERIVED_KEY_LEN { /* BadParameters, no allocation */ }
+    if !(DERIVED_KEY_MIN_LEN..=DERIVED_KEY_MAX_LEN).contains(&n) { /* BadParameters, no allocation */ }
     let mut derived = DerivedKey::new(vec![0u8; n as usize]);
     sk.with_secret(|sk_bytes| {
         derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
@@ -240,17 +246,17 @@ secure-gate alias, regardless of whether it crosses a function boundary.
 
 ## Verify
 
+Detection is the default build now, so the cryptographic paths need naming
+explicitly:
+
 ```bash
-cargo build                        # decrypt is a default feature
-cargo build --no-default-features  # secure-gate compiles in either way
-cargo clippy --all-targets -- -D warnings
-cargo test                         # 100 tests incl. every golden KDF/cipher path
+cargo build --no-default-features                     # secure-gate compiles either way
+cargo build --no-default-features --features crypto-ops
+cargo clippy --all-targets --no-default-features -- -D warnings
+cargo clippy --all-targets --no-default-features --features crypto-ops -- -D warnings
+cargo test  --no-default-features --features crypto-ops   # 107 tests, every golden KDF/cipher path
+cargo fmt --all --check
 ```
 
-`cargo fmt --all -- --check` already fails on `main`, independent of
-secure-gate (confirmed by stashing the secure-gate change and re-running) —
-mostly long `format!`/`.ok_or_else` calls an older rustfmt output collapses
-differently than the toolchain in this environment does. Check new code on
-its own instead of running a blanket reformat that would drag in unrelated
-lines: `rustfmt --check --edition 2021 src/<file>.rs`, or grep the
-`cargo fmt --check` diff for the identifiers you added.
+`cargo fmt --all --check` used to fail on `main` independently of secure-gate.
+It no longer does — the drift was cleared, so a failure now is yours.

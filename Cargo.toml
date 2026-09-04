@@ -1,13 +1,78 @@
 [package]
 name = "odf-crypto"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition = "2021"
 description = "LibreOffice-faithful ODF package encryption detection, decryption and encryption"
 rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Slurp9187/odf-crypto"
+readme = "README.md"
+keywords = ["odf", "libreoffice", "opendocument", "encryption", "decrypt"]
+categories = ["cryptography", "parser-implementations"]
+# Allowlist -- everything not named here stays out of the tarball uploaded to
+# crates.io. It does NOT affect git: docs/, .claude/, CHANGELOG.md and the
+# Python helpers under tests/goldens/ all remain in the repository and on GitHub.
+#
+# Those helpers are developer tooling, not test inputs: no Rust code invokes them
+# (they appear only in doc comments and one assertion message) and each needs a
+# local LibreOffice over UNO to do anything.
+#
+# Trimmed to what the tarball provably needs; each entry was tested by removing
+# it and packaging.
+#
+#   - src/**/*.rs must include the *_tests.rs files and test_support.rs. They are
+#     pulled in by `#[cfg(test)] #[path = "..."] mod tests;`, so without them the
+#     published crate fails `cargo test` with "couldn't read src/classify_tests.rs".
+#     Dropping those and the goldens takes the tarball from 350K to 180K and
+#     leaves a crate that distro packagers, `cargo vendor` audits and anyone
+#     checking the LibreOffice-fidelity claim cannot run. Not a trade worth 170K.
+#   - tests/goldens/*.odt are what `test_support::load_golden` reads, so they
+#     follow the tests.
+#   - LICENSE-* are not auto-included (that only happens for `license-file`, and
+#     this crate uses an SPDX `license` expression). Both licences require the
+#     text to travel with the copy: MIT's notice clause, Apache-2.0 section 4(a).
+#   - examples/encrypt_for_validation.rs is NOT load-bearing -- cargo warns and
+#     packages happily without it. Kept anyway: dropping it saves 8K of 350K and
+#     buys a warning on every publish, because the [[example]] table below would
+#     then declare a target the tarball does not contain.
+#
+# README.md is absent deliberately: `readme = "README.md"` above makes cargo
+# include it regardless, so listing it here was redundant.
+include = [
+    "src/**/*.rs",
+    "examples/encrypt_for_validation.rs",
+    "tests/goldens/*.odt",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+# docs.rs builds with default features unless told otherwise, and the default
+# here is detection-only -- without this the rendered docs would omit `decrypt`
+# and `encrypt` entirely.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
-default = ["encrypt"]
-decrypt = [
+# Detection only. `classify` needs no cipher, KDF or inflate dependency, so the
+# default build pulls 27 crates where a cryptographic one pulls 62. Nobody pays
+# for a cipher stack to ask whether a file is encrypted.
+default = []
+
+# Everything past detection: `decrypt` and `encrypt`.
+#
+# This was two features, `decrypt` and `encrypt` with `encrypt = ["decrypt"]`.
+# They were collapsed because the split earned nothing it cost. Both pulled an
+# identical dependency graph -- the 35-crate saving is this feature versus the
+# default, never one direction versus the other -- and a consumer that never
+# calls `encrypt` has it eliminated at link time regardless. What the split did
+# produce was a third build configuration in which a bound could be dead in
+# neither of the others: `DEFLATE_CEILING` was live under `encrypt`, live under
+# nothing, and dead under `decrypt` alone. One fewer configuration is one fewer
+# place for a mis-scoped `cfg` to hide.
+#
+# Named for what it gates, which is not only ciphers: pbkdf2 and argon2 are
+# KDFs, sha1/sha2 are hashes, hmac is a MAC, and miniz_oxide is compression.
+crypto-ops = [
     "dep:sha1",
     "dep:sha2",
     "dep:hmac",
@@ -20,10 +85,6 @@ decrypt = [
     "dep:cfb-mode",
     "dep:miniz_oxide",
 ]
-# encrypt implies decrypt: the two directions share the AES-GCM/Argon2id
-# primitives (src/kdf.rs) -- do not also list "decrypt" in `default`, that
-# would be redundant.
-encrypt = ["decrypt"]
 
 [dependencies]
 quick-xml = "0.38"
@@ -75,11 +136,11 @@ miniz_oxide = { version = "0.8", optional = true }
 opt-level = 3
 
 # Without this, `cargo test` (which builds every example target by default)
-# tries to compile encrypt_for_validation.rs even when the "encrypt" feature
-# is off, and fails: the example calls odf_crypto::encrypt() unconditionally,
-# but that symbol only exists behind #[cfg(feature = "encrypt")] (src/lib.rs).
+# tries to compile encrypt_for_validation.rs even when "crypto-ops" is off, and
+# fails: the example calls odf_crypto::encrypt() unconditionally, but that
+# symbol only exists behind #[cfg(feature = "crypto-ops")] (src/lib.rs).
 # required-features tells Cargo to skip the target instead when the feature
 # set doesn't satisfy it.
 [[example]]
 name = "encrypt_for_validation"
-required-features = ["encrypt"]
+required-features = ["crypto-ops"]

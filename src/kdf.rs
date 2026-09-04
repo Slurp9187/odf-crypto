@@ -82,17 +82,17 @@ pub(crate) fn derive_argon2id(
     let t = u32::try_from(t).map_err(|_| format!("argon2 iterations {t}"))?;
     let m = u32::try_from(m).map_err(|_| format!("argon2 memory {m}"))?;
     let p = u32::try_from(p).map_err(|_| format!("argon2 lanes {p}"))?;
-    if t < ARGON2_MIN_T_COST || t > ARGON2_MAX_T_COST {
+    if !(ARGON2_MIN_T_COST..=ARGON2_MAX_T_COST).contains(&t) {
         return Err(format!(
             "argon2 iterations {t} outside {ARGON2_MIN_T_COST}..={ARGON2_MAX_T_COST}"
         ));
     }
-    if m < ARGON2_MIN_M_COST_KIB || m > ARGON2_MAX_M_COST_KIB {
+    if !(ARGON2_MIN_M_COST_KIB..=ARGON2_MAX_M_COST_KIB).contains(&m) {
         return Err(format!(
             "argon2 memory {m} KiB outside {ARGON2_MIN_M_COST_KIB}..={ARGON2_MAX_M_COST_KIB}"
         ));
     }
-    if p < ARGON2_MIN_P_COST || p > Params::MAX_P_COST {
+    if !(ARGON2_MIN_P_COST..=Params::MAX_P_COST).contains(&p) {
         return Err(format!("argon2 lanes {p}"));
     }
     let params =

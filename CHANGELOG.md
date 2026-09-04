@@ -1,15 +1,64 @@
-Status: Living — dated entries, newest first
+Status: Released — version headings, newest first
 
 # Changelog
 
-Keyed by **date, not release**. Nothing is published, the version has stayed `0.1.0`
-throughout, and the work is organized by arc — a release-style changelog would have one
-heading and tell you nothing. When the crate is first published this file gains version
-headings above the dates; the dates stay.
+Releases lead. Everything below the first version heading is the dated development
+record from before the crate was published: entries keyed by date rather than release,
+organized by arc, kept as written. Those dates stay — they are where the reasoning for a
+behaviour actually lives, and a release heading summarizing them would lose it.
 
 Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
+
+## v0.1.0-rc.1 — 2026-09-04
+
+First published release, and a pre-release: the API may change before `0.1.0`. Cargo
+does not match a pre-release from an ordinary requirement, so name the full version —
+`"0.1"` will not resolve to this.
+
+```toml
+odf-crypto = "0.1.0-rc.1"                                    # detection only
+odf-crypto = { version = "0.1.0-rc.1", features = ["crypto-ops"] }
+```
+
+### Added
+
+- **`classify`** — whether a file is an ODF package, whether it is encrypted, in which
+  zip shape (`Plain` / `PerEntry` / `Wholesome`), and with which algorithm tuple. Follows
+  LibreOffice's `package/` accept predicates rather than a spec-literal reading, and
+  refuses what LibreOffice itself will not open (`odf12_fatal`).
+- **`decrypt`** — an LO-encrypted package to the plaintext ODF zip LibreOffice would open
+  after a correct password. AES-GCM + Argon2id, AES-CBC + PBKDF2, and Blowfish-CFB +
+  PBKDF2, including LibreOffice's four-candidate SHA-1 start-key ladder and the
+  deliberately non-conforming `rtl_digest_SHA1` it keeps for compatibility (`tdf#114939`).
+- **`encrypt`** — a plaintext `Mode::Plain` package to what current LibreOffice writes
+  for that input under a password, backed by a golden that real LibreOffice opens.
+- Six LibreOffice- and Apache OpenOffice-produced goldens ship inside the crate, so the
+  published tarball verifies its own fidelity claim under `cargo test` rather than
+  asking to be believed.
+
+### Features
+
+Detection is the default build and carries no cryptographic dependency — 27 crates.
+`crypto-ops` adds `decrypt` and `encrypt`, and takes that to 62. Nobody pays for a
+cipher stack to ask whether a file is encrypted.
+
+### Not supported
+
+PGP-encrypted packages are detected (`Classification::pgp_keys`) and refused
+(`DecryptError::UnsupportedPgp`), never decrypted.
+
+### Licensing
+
+Dual MIT OR Apache-2.0. LibreOffice (MPL-2.0) is the behavioural reference and
+[Horsmann/odfdecrypt](https://github.com/Horsmann/odfdecrypt) (Apache-2.0) is prior art;
+neither imposes an obligation here. [docs/LICENSING.md](docs/LICENSING.md) records the
+evidence for that rather than only the conclusion.
+
+### Requires
+
+Rust 1.85.
 
 ## 2026-09-04
 
