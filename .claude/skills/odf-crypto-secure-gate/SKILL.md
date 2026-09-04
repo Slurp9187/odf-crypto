@@ -5,8 +5,9 @@ description: Handling password-derived key material and decrypted intermediates 
 
 # secure-gate in odf-crypto
 
-**Sole authority for this topic.** No CLAUDE.md or AGENTS.md exists in this repo
-yet; this skill is where the policy lives until one does.
+**Sole authority for this topic.** [`CLAUDE.md`](../../../CLAUDE.md) carries the
+project rules and points here for secret handling rather than restating any of
+it; if the two ever disagree about `secure-gate`, this file is right.
 
 ## The rule: secure-gate is this crate's zeroizing primitive, full stop
 
