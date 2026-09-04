@@ -60,6 +60,17 @@ pub enum DecryptError {
     WrongPassword,
     #[error("invalid encryption parameters: {0}")]
     BadParameters(String),
+    /// Deliberately NOT the `BadParameters` analogue: that reports a hostile
+    /// value read out of the manifest, and this reports an invariant of our own
+    /// that something upstream was supposed to have enforced. Reaching it means
+    /// a guard moved, not that the input was bad.
+    ///
+    /// It exists for the same reason `EncryptError::Internal` does: a library
+    /// must not abort its caller's process to report a condition it could
+    /// return. `encrypt` gained this in #24; `decrypt` kept an `unreachable!`
+    /// until the secure-gate sweep noticed the asymmetry.
+    #[error("internal invariant violated: {0}")]
+    Internal(String),
     #[error("inflate failed: {0}")]
     Inflate(String),
     #[error("zip error: {0}")]
@@ -229,7 +240,14 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
                     crate::kdf::derive_argon2id(sk_bytes, salt, *t, *m, *p, derived_bytes)
                         .map_err(DecryptError::BadParameters)
                 }
-                Kdf::PgpRsaOaepMgf1p => unreachable!("PGP refused earlier"),
+                // Screened out at the top of `decrypt`, ~140 lines and one
+                // function away. That distance is the whole argument for a
+                // returned error over a panic: nothing local keeps the two in
+                // step, so a future edit to the screen turns an `unreachable!`
+                // into an abort inside somebody else's library call.
+                Kdf::PgpRsaOaepMgf1p => Err(DecryptError::Internal(
+                    "PGP row reached derive_key; decrypt screens PGP before deriving".into(),
+                )),
             }
         })
     })?;
