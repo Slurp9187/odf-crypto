@@ -39,11 +39,25 @@ all-features = true
 
 [features]
 # Detection only. `classify` needs no cipher, KDF or inflate dependency, so the
-# default build pulls 27 crates where a cryptographic one pulls 62. Readers and
-# writers opt in; nobody pays for a cipher stack to ask whether a file is
-# encrypted.
+# default build pulls 27 crates where a cryptographic one pulls 62. Nobody pays
+# for a cipher stack to ask whether a file is encrypted.
 default = []
-decrypt = [
+
+# Everything past detection: `decrypt` and `encrypt`.
+#
+# This was two features, `decrypt` and `encrypt` with `encrypt = ["decrypt"]`.
+# They were collapsed because the split earned nothing it cost. Both pulled an
+# identical dependency graph -- the 35-crate saving is this feature versus the
+# default, never one direction versus the other -- and a consumer that never
+# calls `encrypt` has it eliminated at link time regardless. What the split did
+# produce was a third build configuration in which a bound could be dead in
+# neither of the others: `DEFLATE_CEILING` was live under `encrypt`, live under
+# nothing, and dead under `decrypt` alone. One fewer configuration is one fewer
+# place for a mis-scoped `cfg` to hide.
+#
+# Named for what it gates, which is not only ciphers: pbkdf2 and argon2 are
+# KDFs, sha1/sha2 are hashes, hmac is a MAC, and miniz_oxide is compression.
+crypto-ops = [
     "dep:sha1",
     "dep:sha2",
     "dep:hmac",
@@ -56,12 +70,6 @@ decrypt = [
     "dep:cfb-mode",
     "dep:miniz_oxide",
 ]
-# encrypt implies decrypt: the two directions share the AES-GCM/Argon2id
-# primitives (src/kdf.rs). The two pull an identical dependency graph -- the
-# split gates compiled code, not crates, so a reader that never writes cannot
-# accidentally emit a package. The 35-crate saving is `default = []` vs either
-# of these, not decrypt vs encrypt.
-encrypt = ["decrypt"]
 
 [dependencies]
 quick-xml = "0.38"
@@ -113,11 +121,11 @@ miniz_oxide = { version = "0.8", optional = true }
 opt-level = 3
 
 # Without this, `cargo test` (which builds every example target by default)
-# tries to compile encrypt_for_validation.rs even when the "encrypt" feature
-# is off, and fails: the example calls odf_crypto::encrypt() unconditionally,
-# but that symbol only exists behind #[cfg(feature = "encrypt")] (src/lib.rs).
+# tries to compile encrypt_for_validation.rs even when "crypto-ops" is off, and
+# fails: the example calls odf_crypto::encrypt() unconditionally, but that
+# symbol only exists behind #[cfg(feature = "crypto-ops")] (src/lib.rs).
 # required-features tells Cargo to skip the target instead when the feature
 # set doesn't satisfy it.
 [[example]]
 name = "encrypt_for_validation"
-required-features = ["encrypt"]
+required-features = ["crypto-ops"]

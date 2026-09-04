@@ -6,10 +6,10 @@
 //! used to be spelled as a local literal.
 //!
 //! Two bounds are what `classify` reads and are compiled in every
-//! configuration. The rest exist solely for a cipher path and live in [`crypto`]
-//! behind one gate, so `dead_code` stays live everywhere rather than being
-//! silenced by a module-wide `allow` that would hide a genuinely unused bound as
-//! readily as an expected one.
+//! configuration. The rest exist solely for a `crypto-ops` path and live in
+//! [`crypto`] behind one gate, so `dead_code` stays live everywhere rather than
+//! being silenced by a module-wide `allow` that would hide a genuinely unused
+//! bound as readily as an expected one.
 
 /// `META-INF/manifest.xml` read cap in [`crate::classify`].
 pub(crate) const MANIFEST_READ_CAP: usize = 8 * 1024 * 1024;
@@ -18,13 +18,13 @@ pub(crate) const MANIFEST_READ_CAP: usize = 8 * 1024 * 1024;
 /// encrypt will carry into the outer zip.
 pub(crate) const MIMETYPE_CEILING: usize = 1024;
 
-#[cfg(feature = "decrypt")]
+#[cfg(feature = "crypto-ops")]
 pub(crate) use crypto::*;
 
-/// Bounds no detection-only build can reach. `encrypt` implies `decrypt`, so
-/// one gate on the module covers both cipher directions; the single bound that
-/// is narrower than that carries its own.
-#[cfg(feature = "decrypt")]
+/// Bounds no detection-only build can reach. One gate on the module covers all
+/// of them: `crypto-ops` is a single feature, so there is no configuration in
+/// which some of these are live and others are not.
+#[cfg(feature = "crypto-ops")]
 mod crypto {
     /// Inclusive floor on `manifest:iteration-count` for a PBKDF2 row. Zero is
     /// what a missing attribute becomes (`""` → `toInt32` → 0); classify still
@@ -64,8 +64,6 @@ mod crypto {
     pub(crate) const PAYLOAD_CEILING: usize = 1 << 30;
     pub(crate) const INFLATE_CEILING: usize = PAYLOAD_CEILING;
     pub(crate) const CIPHERTEXT_READ_CEILING: usize = PAYLOAD_CEILING;
-    /// Only `encrypt` deflates — the one bound narrower than the module gate.
-    #[cfg(feature = "encrypt")]
     pub(crate) const DEFLATE_CEILING: usize = PAYLOAD_CEILING;
 
     /// `AES_GCM_IV_LEN` is also encrypt's nonce length; `encrypt` implies

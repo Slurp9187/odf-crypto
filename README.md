@@ -24,11 +24,8 @@ open.
 # Detection only — no cipher, KDF or inflate dependency.
 odf-crypto = "0.1.0-rc.1"
 
-# Reading.
-odf-crypto = { version = "0.1.0-rc.1", features = ["decrypt"] }
-
-# Reading and writing.
-odf-crypto = { version = "0.1.0-rc.1", features = ["encrypt"] }
+# Detection, reading and writing.
+odf-crypto = { version = "0.1.0-rc.1", features = ["crypto-ops"] }
 ```
 
 Pre-release versions are not matched by ordinary requirements — name the full
@@ -114,23 +111,29 @@ not decrypted — `DecryptError::UnsupportedPgp`.
 
 ## Features
 
-| Feature | Default | Effect |
+There are two builds, and no feature flag turns anything off — the default is
+simply the smaller one.
+
+| Build | How | What you get |
 | --- | --- | --- |
-| *(none)* | **yes** | `classify` only: detection with no cryptographic dependencies. |
-| `decrypt` | opt-in | Reading. Adds the cipher, KDF and inflate stack. |
-| `encrypt` | opt-in | Writing. Implies `decrypt` — the two directions share the AES-GCM/Argon2id primitives. |
+| **Detection-only** | `odf-crypto = "0.1.0-rc.1"` | `classify` alone. No cryptographic dependency. **27 crates.** |
+| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **62 crates.** |
 
 **Detection is the default because it is cheap.** `classify` parses
 `META-INF/manifest.xml` and the zip central directory; it never derives a key or
-touches a cipher. The default build resolves **27 crates**; adding `decrypt` or
-`encrypt` takes that to **62** — `aes`, `aes-gcm`, `argon2`, `blowfish`,
-`pbkdf2`, `sha1`, `sha2`, `hmac` and their transitive graph, plus `libc` and
-`getrandom`. Nobody should pay for a cipher stack to ask whether a file is
+touches a cipher. Enabling `crypto-ops` adds `aes`, `aes-gcm`, `argon2`,
+`blowfish`, `pbkdf2`, `sha1`, `sha2`, `hmac` and their transitive graph, plus
+`libc` and `getrandom`. Nobody should pay for that to ask whether a file is
 encrypted.
 
-`decrypt` and `encrypt` pull an *identical* dependency graph — the split gates
-compiled code, not crates, so a consumer that only reads cannot accidentally
-emit a package.
+The feature is named for what it gates, which is not only ciphers: `pbkdf2` and
+`argon2` are KDFs, `sha1`/`sha2` are hashes, `hmac` is a MAC, and `miniz_oxide`
+is compression.
+
+Reading and writing were once separate features. They are not any more: both
+pulled an identical dependency graph, so the split cost a build configuration
+and bought nothing a linker does not already do for a consumer that never calls
+`encrypt`.
 
 ## MSRV
 

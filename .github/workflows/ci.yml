@@ -28,13 +28,11 @@ jobs:
       matrix:
         include:
           # The default build is detection-only, so a lint that fires solely in
-          # the cryptographic modules would go unseen without the other two rows.
+          # the cryptographic modules would go unseen without the second row.
           - name: detect-only
             flags: --no-default-features
-          - name: decrypt
-            flags: --no-default-features --features decrypt
-          - name: encrypt
-            flags: --no-default-features --features encrypt
+          - name: crypto-ops
+            flags: --no-default-features --features crypto-ops
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -56,10 +54,8 @@ jobs:
           # inside their feature-gated parent modules and compile out here.
           - name: detect-only
             flags: --no-default-features
-          - name: decrypt
-            flags: --no-default-features --features decrypt
-          - name: encrypt
-            flags: --no-default-features --features encrypt
+          - name: crypto-ops
+            flags: --no-default-features --features crypto-ops
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -70,6 +66,30 @@ jobs:
       # PBKDF2 at 100k iterations and Argon2id at m=64 MiB take ~90s unoptimised
       # against under a second optimised. Do not "simplify" that away.
       - run: cargo test ${{ matrix.flags }}
+
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: detect-only
+            flags: --no-default-features
+          - name: crypto-ops
+            flags: --no-default-features --features crypto-ops
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-${{ matrix.name }}
+      # A plain build, which is the only job here that compiles the library
+      # WITHOUT cfg(test). Several items are gated `any(feature = "crypto-ops",
+      # test)`, so the clippy and test jobs above cannot see a mis-scoped gate:
+      # cfg(test) is true in both of them. A bound dead in a detection-only
+      # library build shows up here and nowhere else.
+      - run: cargo build ${{ matrix.flags }}
 
   msrv:
     name: MSRV 1.85
@@ -83,7 +103,7 @@ jobs:
           key: msrv
       # Build, not test: dev-dependencies are free to require a newer toolchain
       # than the library's own MSRV promise.
-      - run: cargo build --no-default-features --features encrypt
+      - run: cargo build --no-default-features --features crypto-ops
 
   docs:
     name: rustdoc
@@ -112,9 +132,9 @@ jobs:
       # Guards the `include` allowlist in Cargo.toml. The verification build
       # compiles the unpacked tarball, so a file the crate needs but that the
       # allowlist omits fails here instead of after publishing. Run with the
-      # cryptographic features so the tarball is checked against the largest
+      # crypto-ops feature so the tarball is checked against the largest
       # source set, not just the detection modules.
-      - run: cargo package --features encrypt
+      - run: cargo package --features crypto-ops
 
 # The Python helpers under tests/goldens/ are deliberately NOT run here. Both
 # make_goldens.py and validate_encrypt.py bootstrap a local LibreOffice over UNO

@@ -17,7 +17,7 @@ pub const MANIFEST_NS_OASIS: &str = "urn:oasis:names:tc:opendocument:xmlns:manif
 /// and `cfg` says that where `allow(dead_code)` would only silence it. `test` is
 /// in the gate because the negative assertion in this module's own tests
 /// compiles in every configuration.
-#[cfg(any(feature = "encrypt", test))]
+#[cfg(any(feature = "crypto-ops", test))]
 pub const MANIFEST_NS_LOEXT: &str =
     "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0";
 

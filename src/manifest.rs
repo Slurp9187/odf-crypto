@@ -595,7 +595,7 @@ pub(crate) fn decode_b64(s: &str) -> Vec<u8> {
 /// and `cfg` says that where `allow(dead_code)` would only silence it. `test` is
 /// in the gate because the round-trip and known-vector tests below compile in
 /// every configuration.
-#[cfg(any(feature = "encrypt", test))]
+#[cfg(any(feature = "crypto-ops", test))]
 pub(crate) fn encode_b64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

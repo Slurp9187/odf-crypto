@@ -5,16 +5,15 @@
 //! LibreOffice `package/` accept predicates, not Horsmann's origin detector.
 //!
 //! Detection is the default build: [`classify`] needs no cipher, KDF or inflate
-//! dependency. Reading and writing are opt-in features.
+//! dependency. Everything past it is behind the `crypto-ops` feature.
 //!
-//! With the `decrypt` feature enabled, `decrypt` turns an LO-encrypted
-//! package into the plaintext ODF zip LibreOffice would open after a correct
-//! password. Packages `classify` reports as `odf12_fatal` are refused: LO
-//! would not open them, so neither does this crate.
+//! With `crypto-ops` enabled, `decrypt` turns an LO-encrypted package into the
+//! plaintext ODF zip LibreOffice would open after a correct password. Packages
+//! `classify` reports as `odf12_fatal` are refused: LO would not open them, so
+//! neither does this crate.
 //!
-//! With the `encrypt` feature enabled (it implies `decrypt`), `encrypt`
-//! is the reverse: it turns a plaintext (`Mode::Plain`) ODF package into what
-//! current LibreOffice writes for that input under a password.
+//! `encrypt` is the reverse: it turns a plaintext (`Mode::Plain`) ODF package
+//! into what current LibreOffice writes for that input under a password.
 //!
 //! (Those two are named in code spans rather than doc links because a
 //! `--no-default-features` build compiles neither, and an intra-doc link to a
@@ -30,13 +29,13 @@ mod zip_tree;
 #[cfg(test)]
 mod test_support;
 
-#[cfg(feature = "decrypt")]
+#[cfg(feature = "crypto-ops")]
 mod decrypt;
-#[cfg(feature = "encrypt")]
+#[cfg(feature = "crypto-ops")]
 mod encrypt;
-#[cfg(feature = "decrypt")]
+#[cfg(feature = "crypto-ops")]
 mod kdf;
-#[cfg(feature = "decrypt")]
+#[cfg(feature = "crypto-ops")]
 mod sensitive;
 
 pub use classify::classify;
@@ -45,7 +44,7 @@ pub use types::{
     StartKeyAlg,
 };
 
-#[cfg(feature = "decrypt")]
+#[cfg(feature = "crypto-ops")]
 pub use decrypt::{decrypt, DecryptError};
-#[cfg(feature = "encrypt")]
+#[cfg(feature = "crypto-ops")]
 pub use encrypt::{encrypt, EncryptError};
