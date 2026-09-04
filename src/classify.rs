@@ -84,7 +84,7 @@ pub fn classify(bytes: &[u8]) -> Result<Classification, DetectError> {
 
     let manifest_xml = read_named_member(&mut archive, &members, "META-INF/manifest.xml")?
         .ok_or(DetectError::MissingManifest)?;
-    let bags = parse_manifest(&manifest_xml)?;
+    let bags = parse_manifest(&manifest_xml);
     let mimetype = read_mimetype(&mut archive, &members, &tree)?;
     let class = stage_b(bags, &mut tree, zip_has_encrypted_package, mimetype)?;
     check_stored_data_descriptors(&members, &class)?;

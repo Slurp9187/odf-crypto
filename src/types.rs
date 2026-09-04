@@ -152,7 +152,14 @@ pub struct Classification {
     pub mode: Mode,
     /// LibreOffice `HasEncryptedEntries` — the latch, not “any encryption-data”.
     pub package_encrypted: bool,
-    /// Root-folder version after the `/` row and mimetype fallback.
+    /// The package's ODF version, from the root folder — the first non-empty
+    /// `manifest:version` in the manifest, falling back to the one implied by
+    /// the `mimetype` member.
+    ///
+    /// `None` when no row declares one, which is normal for older packages.
+    /// Compared **byte-lexicographically**, not numerically, when deciding
+    /// [`Classification::odf12_fatal`] — so `"1.10"` sorts below `"1.2"`, as it
+    /// does in LibreOffice.
     pub odf_version: Option<String>,
     /// Root **entry** named `encrypted-package` in the zip's folder tree, not an
     /// XML-only path — a member path such as `encrypted-package/x` synthesizes
@@ -161,7 +168,20 @@ pub struct Classification {
     pub zip_has_encrypted_package: bool,
     /// Root-folder `manifest:media-type`, the document's MIME type.
     pub media_type: Option<String>,
-    /// First-wins latch member.
+    /// The row that decided the package is encrypted, and the one to read when
+    /// you want the package's encryption parameters without walking
+    /// [`Classification::encrypted_entries`].
+    ///
+    /// It is the first accepted row resolving to `content.xml` or
+    /// `encrypted-package` — the same row that sets
+    /// [`Classification::package_encrypted`], so the two are `Some`/`true`
+    /// together. A clone, not a borrow: the same entry also appears in
+    /// `encrypted_entries`.
+    ///
+    /// `None` for a [`Mode::Plain`] package, and also for one whose only
+    /// complete rows sit on other members — encrypted entries can exist with no
+    /// latch row, which is why `package_encrypted` is not
+    /// `!encrypted_entries.is_empty()`.
     pub common: Option<EntryEncryption>,
     /// Every member that resolved to a complete `encryption-data` row, in
     /// manifest order.

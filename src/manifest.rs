@@ -7,7 +7,6 @@ use quick_xml::Reader;
 
 use crate::types::{EncryptedKey, KdfId, KeyInfo, PropertyBag};
 use crate::uris;
-use crate::DetectError;
 
 struct StackFrame {
     converted_name: String,
@@ -674,10 +673,15 @@ fn normalize_attr_value(raw: &str) -> String {
 
 /// Parse `META-INF/manifest.xml` into ordered Stage A bags.
 ///
-/// XML / encoding errors discard every row (`ManifestReader.cxx` 46–75): LO
-/// still opens the package, so this function has no error path — every
-/// failure returns an empty row list.
-pub(crate) fn parse_manifest(xml: &[u8]) -> Result<Vec<PropertyBag>, DetectError> {
+/// Infallible by construction, and the signature says so.
+///
+/// XML / encoding errors discard every row (`ManifestReader.cxx` 46–75) rather
+/// than failing: LibreOffice still opens such a package, and this crate
+/// classifies it [`crate::Mode::Plain`]. Every former error path returns an
+/// empty row list, so there was never an `Err` to construct — the `Result` this
+/// used to return was answered only by `DetectError::Manifest`, which no code
+/// ever built and which is now deleted.
+pub(crate) fn parse_manifest(xml: &[u8]) -> Vec<PropertyBag> {
     let mut reader = Reader::from_reader(xml);
     let config = reader.config_mut();
     config.expand_empty_elements = true;
@@ -692,12 +696,12 @@ pub(crate) fn parse_manifest(xml: &[u8]) -> Result<Vec<PropertyBag>, DetectError
                 let mut attrs = Vec::new();
                 for attr in e.attributes() {
                     let Ok(attr) = attr else {
-                        return Ok(Vec::new());
+                        return Vec::new();
                     };
                     let key = qname_to_string(attr.key.as_ref());
                     let raw = match std::str::from_utf8(attr.value.as_ref()) {
                         Ok(s) => s,
-                        Err(_) => return Ok(Vec::new()),
+                        Err(_) => return Vec::new(),
                     };
                     attrs.push((key, normalize_attr_value(raw)));
                 }
@@ -709,28 +713,28 @@ pub(crate) fn parse_manifest(xml: &[u8]) -> Result<Vec<PropertyBag>, DetectError
             }
             Ok(Event::Text(t)) => match t.decode() {
                 Ok(text) => import.characters(&text),
-                Err(_) => return Ok(Vec::new()),
+                Err(_) => return Vec::new(),
             },
             Ok(Event::CData(t)) => match t.decode() {
                 Ok(text) => import.characters(&text),
-                Err(_) => return Ok(Vec::new()),
+                Err(_) => return Vec::new(),
             },
             Ok(Event::GeneralRef(r)) => match r.decode() {
                 Ok(name) => import.characters(&expand_ref(&name)),
-                Err(_) => return Ok(Vec::new()),
+                Err(_) => return Vec::new(),
             },
             Ok(Event::Eof) => {
                 if !import.stack.is_empty() {
-                    return Ok(Vec::new());
+                    return Vec::new();
                 }
                 break;
             }
-            Err(_) => return Ok(Vec::new()),
+            Err(_) => return Vec::new(),
             _ => {}
         }
         buf.clear();
     }
-    Ok(import.bags)
+    import.bags
 }
 
 fn qname_to_string(bytes: &[u8]) -> String {
@@ -739,7 +743,7 @@ fn qname_to_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 pub(crate) fn parse_manifest_for_test(xml: &str) -> Vec<PropertyBag> {
-    parse_manifest(xml.as_bytes()).expect("manifest should parse")
+    parse_manifest(xml.as_bytes())
 }
 
 #[cfg(test)]
@@ -799,7 +803,7 @@ mod tests {
         let truncated = br#"<?xml version="1.0"?>
 <manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
  <manifest:file-entry manifest:full-path="content.xml""#;
-        assert!(parse_manifest(truncated).unwrap().is_empty());
-        assert!(parse_manifest(b"<not-even-xml").unwrap().is_empty());
+        assert!(parse_manifest(truncated).is_empty());
+        assert!(parse_manifest(b"<not-even-xml").is_empty());
     }
 }
