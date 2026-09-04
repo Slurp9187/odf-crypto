@@ -1,7 +1,9 @@
-//! Read-side URI aliases from LibreOffice `ManifestDefines.hxx`.
+//! URI and name aliases from LibreOffice `ManifestDefines.hxx` — the strings
+//! `ManifestImport` accepts on the read side, and the ones the manifest writer
+//! emits on the write side.
 //!
-//! These are the strings `ManifestImport` accepts. odfdecrypt-only URLs are
-//! not mapped — LO would set `bIgnoreEncryptData` for those.
+//! odfdecrypt-only URLs are not mapped — LO would set `bIgnoreEncryptData` for
+//! those.
 
 /// `http://openoffice.org/2001/manifest`
 pub const MANIFEST_NS_OOO: &str = "http://openoffice.org/2001/manifest";
@@ -13,10 +15,8 @@ pub const MANIFEST_NS_OASIS: &str = "urn:oasis:names:tc:opendocument:xmlns:manif
 /// name constants below, not through this URI -- so the only real consumer is
 /// `encrypt.rs`'s manifest writer (`xmlns:loext`).
 ///
-/// Gated rather than allowed: a detection-only build genuinely has no caller,
-/// and `cfg` says that where `allow(dead_code)` would only silence it. `test` is
-/// in the gate because the negative assertion in this module's own tests
-/// compiles in every configuration.
+/// `test` is in the gate because the negative assertion in this module's own
+/// tests compiles in every configuration.
 #[cfg(any(feature = "crypto-ops", test))]
 pub const MANIFEST_NS_LOEXT: &str =
     "urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0";

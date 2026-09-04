@@ -59,7 +59,8 @@ pub(crate) fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
 ///
 /// Returns a plain `String` error rather than either caller's own error type:
 /// decrypt maps it to `DecryptError::BadParameters`; encrypt only ever passes
-/// its own fixed constants and treats it as unreachable.
+/// its own compile-time constants, so it maps a failure to
+/// `EncryptError::Internal` rather than treating it as unreachable.
 ///
 /// Both slices are already inside their callers' `with_secret`/
 /// `with_secret_mut` closures, so this takes bare slices and never holds

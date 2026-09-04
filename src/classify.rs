@@ -25,6 +25,56 @@ struct ZipMember {
 }
 
 /// Classify an ODF package's encryption. Does not derive keys or decrypt.
+///
+/// Answers whether `bytes` is an ODF package, whether it is encrypted, in which
+/// zip shape, and with which algorithm tuple — by running LibreOffice's own two
+/// stages, `ManifestImport` then `ZipPackage::parseManifest`, rather than
+/// evaluating manifest rows independently. State leaks across rows upstream in
+/// ways a per-row implementation gets wrong on constructible input.
+///
+/// Needs no cryptographic dependency, and is available in the default build.
+///
+/// # Errors
+///
+/// [`DetectError::NotZip`] if the bytes are not a zip archive;
+/// [`DetectError::MissingManifest`] if they are a zip with no
+/// `META-INF/manifest.xml`; [`DetectError::Zip`] if an entry cannot be read;
+/// and [`DetectError::Inconsistent`] for an archive LibreOffice itself would
+/// refuse to open — a duplicate or invalid entry name, or a stream/folder
+/// collision.
+///
+/// A malformed `META-INF/manifest.xml` is **not** an error: LibreOffice
+/// discards every row and still opens the package, so the result is
+/// [`Mode::Plain`].
+///
+/// [`DetectError`] is `#[non_exhaustive]` and does not implement `PartialEq`;
+/// match with a `_` arm and [`matches!`].
+///
+/// # Examples
+///
+/// ```
+/// use odf_crypto::{classify, DetectError};
+///
+/// let err = classify(b"this is not a zip file").unwrap_err();
+/// assert!(matches!(err, DetectError::NotZip));
+/// ```
+///
+/// A real LibreOffice document, encrypted with AES-GCM and Argon2id:
+///
+/// ```
+/// use odf_crypto::{classify, Cipher, Kdf, Mode};
+///
+/// let bytes = include_bytes!("../tests/goldens/lo-wholesome-gcm-argon2.odt");
+/// let class = classify(bytes)?;
+///
+/// assert_eq!(class.mode, Mode::Wholesome);
+/// assert!(class.package_encrypted);
+///
+/// let row = class.common.as_ref().expect("wholesome packages carry a latch row");
+/// assert_eq!(row.cipher, Cipher::AesGcmW3c);
+/// assert!(matches!(row.kdf, Kdf::Argon2id { .. }));
+/// # Ok::<(), odf_crypto::DetectError>(())
+/// ```
 pub fn classify(bytes: &[u8]) -> Result<Classification, DetectError> {
     let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| DetectError::NotZip)?;
     let members = collect_members(&mut archive)?;
