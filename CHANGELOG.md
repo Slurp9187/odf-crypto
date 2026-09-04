@@ -102,7 +102,7 @@ odf-crypto = { version = "0.1.0-rc.1", features = ["crypto-ops"] }
 ### Features
 
 Detection is the default build and carries no cryptographic dependency — 27 crates.
-`crypto-ops` adds `decrypt` and `encrypt`, and takes that to 62. Nobody pays for a
+`crypto-ops` adds `decrypt` and `encrypt`, and takes that to 61. Nobody pays for a
 cipher stack to ask whether a file is encrypted.
 
 ### Not supported
