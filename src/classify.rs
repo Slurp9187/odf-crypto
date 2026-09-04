@@ -25,6 +25,56 @@ struct ZipMember {
 }
 
 /// Classify an ODF package's encryption. Does not derive keys or decrypt.
+///
+/// Answers whether `bytes` is an ODF package, whether it is encrypted, in which
+/// zip shape, and with which algorithm tuple — by running LibreOffice's own two
+/// stages, `ManifestImport` then `ZipPackage::parseManifest`, rather than
+/// evaluating manifest rows independently. State leaks across rows upstream in
+/// ways a per-row implementation gets wrong on constructible input.
+///
+/// Needs no cryptographic dependency, and is available in the default build.
+///
+/// # Errors
+///
+/// [`DetectError::NotZip`] if the bytes are not a zip archive;
+/// [`DetectError::MissingManifest`] if they are a zip with no
+/// `META-INF/manifest.xml`; [`DetectError::Zip`] if an entry cannot be read;
+/// and [`DetectError::Inconsistent`] for an archive LibreOffice itself would
+/// refuse to open — a duplicate or invalid entry name, or a stream/folder
+/// collision.
+///
+/// A malformed `META-INF/manifest.xml` is **not** an error: LibreOffice
+/// discards every row and still opens the package, so the result is
+/// [`Mode::Plain`].
+///
+/// [`DetectError`] is `#[non_exhaustive]` and does not implement `PartialEq`;
+/// match with a `_` arm and [`matches!`].
+///
+/// # Examples
+///
+/// ```
+/// use odf_crypto::{classify, DetectError};
+///
+/// let err = classify(b"this is not a zip file").unwrap_err();
+/// assert!(matches!(err, DetectError::NotZip));
+/// ```
+///
+/// A real LibreOffice document, encrypted with AES-GCM and Argon2id:
+///
+/// ```
+/// use odf_crypto::{classify, Cipher, Kdf, Mode};
+///
+/// let bytes = include_bytes!("../tests/goldens/lo-wholesome-gcm-argon2.odt");
+/// let class = classify(bytes)?;
+///
+/// assert_eq!(class.mode, Mode::Wholesome);
+/// assert!(class.package_encrypted);
+///
+/// let row = class.common.as_ref().expect("wholesome packages carry a latch row");
+/// assert_eq!(row.cipher, Cipher::AesGcmW3c);
+/// assert!(matches!(row.kdf, Kdf::Argon2id { .. }));
+/// # Ok::<(), odf_crypto::DetectError>(())
+/// ```
 pub fn classify(bytes: &[u8]) -> Result<Classification, DetectError> {
     let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| DetectError::NotZip)?;
     let members = collect_members(&mut archive)?;
@@ -346,76 +396,77 @@ fn short_name(path: &str) -> &str {
 }
 
 fn accept_row(bag: &PropertyBag, key_info: bool, path: String) -> Option<EntryEncryption> {
-    if key_info && pgp_complete(bag) {
-        return Some(pgp_entry(bag, path));
-    }
-    if password_complete(bag) {
-        return Some(password_entry(bag, path));
-    }
-    None
-}
-
-fn pgp_complete(bag: &PropertyBag) -> bool {
-    bag.iv.is_some()
-        && bag.size.is_some()
-        && bag.enc_alg.is_some()
-        && bag.kdf == Some(KdfId::PgpRsaOaepMgf1p)
-        && (bag.enc_alg == Some(Cipher::AesGcmW3c)
-            || (bag.digest.is_some() && bag.digest_alg.is_some()))
-}
-
-fn password_complete(bag: &PropertyBag) -> bool {
-    bag.salt.is_some()
-        && bag.iv.is_some()
-        && bag.size.is_some()
-        && bag.enc_alg.is_some()
-        && match bag.kdf {
-            Some(KdfId::Pbkdf2) => true,
-            Some(KdfId::Argon2id) => bag.argon2_args.is_some(),
-            _ => false,
+    if key_info {
+        if let Some(row) = pgp_entry(bag, &path) {
+            return Some(row);
         }
-        && (bag.enc_alg == Some(Cipher::AesGcmW3c)
-            || (bag.digest.is_some() && bag.digest_alg.is_some()))
+    }
+    password_entry(bag, &path)
 }
 
-fn pgp_entry(bag: &PropertyBag, path: String) -> EntryEncryption {
-    let cipher = bag.enc_alg.expect("pgp_complete");
-    EntryEncryption {
-        path,
+/// Both builders were once a `*_complete(bag) -> bool` guard followed by a
+/// builder that re-read the same fields with `.expect("*_complete")`. Extracting
+/// with `?` here makes the completeness test and the extraction the same code,
+/// so they cannot drift and there is nothing left to unwrap: an incomplete bag
+/// is a rejected row, which is what the guard already meant.
+///
+/// The one condition that is a test rather than an extraction — GCM needs no
+/// checksum, everything else does — stays an explicit `if`.
+fn checksum_present_or_unneeded(bag: &PropertyBag, cipher: Cipher) -> bool {
+    cipher == Cipher::AesGcmW3c || (bag.digest.is_some() && bag.digest_alg.is_some())
+}
+
+fn pgp_entry(bag: &PropertyBag, path: &str) -> Option<EntryEncryption> {
+    if bag.kdf != Some(KdfId::PgpRsaOaepMgf1p) {
+        return None;
+    }
+    let cipher = bag.enc_alg?;
+    let size = bag.size?;
+    let iv = bag.iv.clone()?;
+    if !checksum_present_or_unneeded(bag, cipher) {
+        return None;
+    }
+    Some(EntryEncryption {
+        path: path.to_string(),
         cipher,
         kdf: Kdf::PgpRsaOaepMgf1p,
         start_key: StartKeyAlg::Sha256,
         checksum: checksum_of(bag),
-        size: bag.size.expect("pgp_complete"),
-        iv: bag.iv.clone().unwrap_or_default(),
+        size,
+        iv,
         derived_key_len: uris::default_derived_key_size(cipher),
-    }
+    })
 }
 
-fn password_entry(bag: &PropertyBag, path: String) -> EntryEncryption {
-    let cipher = bag.enc_alg.expect("password_complete");
-    let salt = bag.salt.clone().unwrap_or_default();
+fn password_entry(bag: &PropertyBag, path: &str) -> Option<EntryEncryption> {
+    let cipher = bag.enc_alg?;
+    let size = bag.size?;
+    let iv = bag.iv.clone()?;
+    let salt = bag.salt.clone()?;
     let kdf = match bag.kdf {
         Some(KdfId::Pbkdf2) => Kdf::Pbkdf2 {
             iterations: bag.iteration_count.unwrap_or(0),
             salt,
         },
         Some(KdfId::Argon2id) => {
-            let (t, m, p) = bag.argon2_args.expect("password_complete");
+            let (t, m, p) = bag.argon2_args?;
             Kdf::Argon2id { t, m, p, salt }
         }
-        _ => unreachable!("password_complete"),
+        _ => return None,
     };
-    EntryEncryption {
-        path,
+    if !checksum_present_or_unneeded(bag, cipher) {
+        return None;
+    }
+    Some(EntryEncryption {
+        path: path.to_string(),
         cipher,
         kdf,
         start_key: bag.start_key_alg.unwrap_or(StartKeyAlg::Sha1),
         checksum: checksum_of(bag),
-        size: bag.size.expect("password_complete"),
-        iv: bag.iv.clone().unwrap_or_default(),
+        size,
+        iv,
         derived_key_len: bag.derived_key_size.unwrap_or(16),
-    }
+    })
 }
 
 fn checksum_of(bag: &PropertyBag) -> Checksum {

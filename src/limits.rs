@@ -14,8 +14,8 @@
 /// `META-INF/manifest.xml` read cap in [`crate::classify`].
 pub(crate) const MANIFEST_READ_CAP: usize = 8 * 1024 * 1024;
 
-/// Bytes of the `mimetype` member classify inspects, and the copy ceiling
-/// encrypt will carry into the outer zip.
+/// Bytes of the `mimetype` member classify inspects, and the ceiling above
+/// which encrypt refuses to carry that member into the outer zip.
 pub(crate) const MIMETYPE_CEILING: usize = 1024;
 
 #[cfg(feature = "crypto-ops")]
@@ -66,8 +66,8 @@ mod crypto {
     pub(crate) const CIPHERTEXT_READ_CEILING: usize = PAYLOAD_CEILING;
     pub(crate) const DEFLATE_CEILING: usize = PAYLOAD_CEILING;
 
-    /// `AES_GCM_IV_LEN` is also encrypt's nonce length; `encrypt` implies
-    /// `decrypt`, so the module gate already covers that caller.
+    /// `AES_GCM_IV_LEN` is also encrypt's nonce length; `encrypt.rs`
+    /// const-asserts that the two agree.
     pub(crate) const AES_GCM_IV_LEN: usize = 12;
     pub(crate) const AES_GCM_TAG_LEN: usize = 16;
     pub(crate) const AES_CBC_IV_LEN: usize = 16;

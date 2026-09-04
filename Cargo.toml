@@ -51,18 +51,30 @@ include = [
 # and `encrypt` entirely.
 [package.metadata.docs.rs]
 all-features = true
+# Enables the `docsrs` cfg so `doc_auto_cfg` marks `decrypt` / `encrypt` /
+# `DecryptError` / `EncryptError` as "Available on crate feature `crypto-ops`".
+# Inert on stable, so the MSRV job is unaffected.
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-# Detection only. `classify` needs no cipher, KDF or inflate dependency, so the
-# default build pulls 27 crates where a cryptographic one pulls 62. Nobody pays
-# for a cipher stack to ask whether a file is encrypted.
+# Detection only. `classify` needs no cryptographic dependency, so the default
+# build pulls 27 crates where a cryptographic one pulls 61. Nobody pays for a
+# cipher stack to ask whether a file is encrypted.
+#
+# It does still pull an inflate implementation -- zip -> flate2 -> miniz_oxide,
+# unconditional -- because every LibreOffice golden stores META-INF/manifest.xml
+# DEFLATED and `classify` has to read it. "No cryptographic dependency" is the
+# accurate claim; "no inflate dependency" was not.
+#
+# Reproduce both figures with:
+#   cargo tree --locked -e no-dev --prefix none [--features crypto-ops] \n#     | grep -v '(\*)' | sort -u | wc -l
 default = []
 
 # Everything past detection: `decrypt` and `encrypt`.
 #
 # This was two features, `decrypt` and `encrypt` with `encrypt = ["decrypt"]`.
 # They were collapsed because the split earned nothing it cost. Both pulled an
-# identical dependency graph -- the 35-crate saving is this feature versus the
+# identical dependency graph -- the 34-crate saving is this feature versus the
 # default, never one direction versus the other -- and a consumer that never
 # calls `encrypt` has it eliminated at link time regardless. What the split did
 # produce was a third build configuration in which a bound could be dead in
@@ -144,3 +156,32 @@ opt-level = 3
 [[example]]
 name = "encrypt_for_validation"
 required-features = ["crypto-ops"]
+
+# Enforcement lives here rather than in RUSTFLAGS: a lint set in RUSTFLAGS
+# applies to every crate Cargo compiles, dependencies included, so a new warning
+# in quick-xml would fail the build over code nobody here can edit. The [lints]
+# table applies to this package alone.
+#
+# All `warn`, never `deny`. CI already escalates -- `cargo clippy ... -- -D
+# warnings` and RUSTDOCFLAGS: -D warnings -- so these are hard failures there
+# while a work-in-progress `cargo check` stays usable locally.
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }
+
+[lints.rustdoc]
+broken_intra_doc_links = "warn"
+private_intra_doc_links = "warn"
+invalid_codeblock_attributes = "warn"
+invalid_rust_codeblocks = "warn"
+bare_urls = "warn"
+unescaped_backticks = "warn"
+private_doc_tests = "warn"
+
+[lints.clippy]
+# Named individually, not via `pedantic = "warn"`: that group drags in
+# doc_markdown, whose 21 hits here are mostly the prose word "LibreOffice".
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+too_long_first_doc_paragraph = "warn"

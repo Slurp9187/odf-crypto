@@ -675,8 +675,8 @@ fn normalize_attr_value(raw: &str) -> String {
 /// Parse `META-INF/manifest.xml` into ordered Stage A bags.
 ///
 /// XML / encoding errors discard every row (`ManifestReader.cxx` 46–75): LO
-/// still opens the package. `DetectError::Manifest` is reserved for non-XML
-/// failures.
+/// still opens the package, so this function has no error path — every
+/// failure returns an empty row list.
 pub(crate) fn parse_manifest(xml: &[u8]) -> Result<Vec<PropertyBag>, DetectError> {
     let mut reader = Reader::from_reader(xml);
     let config = reader.config_mut();

@@ -43,12 +43,23 @@ const MANIFEST_PATH: &str = "META-INF/manifest.xml";
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecryptError {
+    /// [`classify`] refused the package before decryption began.
     #[error("classification failed: {0}")]
     Classify(#[from] DetectError),
+    /// The package classified as [`Mode::Plain`] — there is nothing to decrypt.
+    ///
+    /// A malformed `META-INF/manifest.xml` also arrives here rather than as a
+    /// parse error: LibreOffice discards every row on an XML failure and still
+    /// opens the package, so this crate classifies it plain.
     #[error("package is not encrypted")]
     NotEncrypted,
+    /// The password was empty. Checked before [`classify`] runs, so it implies
+    /// nothing about whether `bytes` is a valid or encrypted package.
     #[error("password is empty")]
     EmptyPassword,
+    /// The package is PGP-wrapped. Screened across every encrypted row, not
+    /// only the latch row. The wrapped key material is available from
+    /// [`crate::Classification::pgp_keys`] for handing to an OpenPGP implementation.
     #[error("PGP-encrypted packages are not supported")]
     UnsupportedPgp,
     /// LibreOffice `LookForUnexpectedODF12Streams` plus a root version `>= 1.2`.
@@ -56,8 +67,18 @@ pub enum DecryptError {
     /// not return a zip LO would not open.
     #[error("LibreOffice would refuse this package: unexpected ODF 1.2 streams")]
     Odf12Fatal,
+    /// The key did not open the package.
+    ///
+    /// Cannot distinguish a wrong password from corrupted ciphertext. On
+    /// AES-CBC and Blowfish it is decided by a checksum over only the first
+    /// 1 KiB of the decrypted stream, so damage past that window surfaces as
+    /// [`DecryptError::Inflate`] instead.
     #[error("wrong password")]
     WrongPassword,
+    /// A manifest field is outside the range this crate will act on — an
+    /// iteration count, Argon2 cost or key size beyond its floor or ceiling, or
+    /// more encrypted rows than will be processed. The string is a diagnostic;
+    /// do not match on its content.
     #[error("invalid encryption parameters: {0}")]
     BadParameters(String),
     /// Deliberately NOT the `BadParameters` analogue: that reports a hostile
@@ -67,17 +88,66 @@ pub enum DecryptError {
     ///
     /// It exists for the same reason `EncryptError::Internal` does: a library
     /// must not abort its caller's process to report a condition it could
-    /// return. `encrypt` gained this in #24; `decrypt` kept an `unreachable!`
-    /// until the secure-gate sweep noticed the asymmetry.
+    /// return.
     #[error("internal invariant violated: {0}")]
     Internal(String),
+    /// The decrypted stream was not valid DEFLATE, or did not inflate to the
+    /// length `manifest:size` promised.
+    ///
+    /// Never means "wrong password": it is reached only after a GCM tag or a
+    /// checksum has already accepted the key. It means the ciphertext is
+    /// damaged past the point those checks cover.
     #[error("inflate failed: {0}")]
     Inflate(String),
+    /// A zip failure, either reading the input or writing the rebuilt package.
+    /// Despite the name it also carries every quick-xml failure from the
+    /// manifest rewrite. The string is a diagnostic; do not match on it.
     #[error("zip error: {0}")]
     Zip(String),
 }
 
-/// Decrypt an LO-encrypted ODF package to a plaintext ODF zip.
+/// Decrypt an LO-encrypted ODF package to the plaintext ODF zip LibreOffice
+/// would open after a correct password.
+///
+/// The two modes have different contracts:
+///
+/// - [`Mode::Wholesome`] — the inner `encrypted-package` member is decrypted and
+///   inflated, and returned verbatim. Nothing is stripped or recompressed.
+/// - [`Mode::PerEntry`] — the package is rebuilt: `encryption-data` elements are
+///   stripped from `META-INF/manifest.xml` and `manifest:size` is dropped from
+///   its `file-entry` elements. The rewritten manifest and each decrypted member
+///   are written DEFLATED; every other member is copied through with its
+///   original compression method, so a STORED member stays STORED.
+///
+/// # Errors
+///
+/// Refused before any key derivation, in this order, so no caller pays for
+/// PBKDF2 or a 64 MiB Argon2id to learn the input was never eligible:
+/// [`DecryptError::EmptyPassword`], [`DecryptError::Classify`],
+/// [`DecryptError::NotEncrypted`], [`DecryptError::Odf12Fatal`],
+/// [`DecryptError::UnsupportedPgp`], then [`DecryptError::BadParameters`] if the
+/// package declares more encrypted rows than will be processed.
+///
+/// After derivation: [`DecryptError::WrongPassword`],
+/// [`DecryptError::BadParameters`] for a hostile KDF or key-size field,
+/// [`DecryptError::Inflate`], [`DecryptError::Zip`], and
+/// [`DecryptError::Internal`].
+///
+/// [`DecryptError`] is `#[non_exhaustive]` and does not implement `PartialEq`;
+/// match with a `_` arm and [`matches!`].
+///
+/// # Examples
+///
+/// ```
+/// use odf_crypto::{classify, decrypt, Mode};
+///
+/// let sealed = include_bytes!("../tests/goldens/lo-wholesome-gcm-argon2.odt");
+/// assert_eq!(classify(sealed)?.mode, Mode::Wholesome);
+///
+/// let plain = decrypt(sealed, "password")?;
+/// assert_eq!(classify(&plain)?.mode, Mode::Plain);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     if password.is_empty() {
         return Err(DecryptError::EmptyPassword);

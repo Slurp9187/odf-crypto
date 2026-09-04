@@ -21,7 +21,7 @@ open.
 
 ```toml
 [dependencies]
-# Detection only — no cipher, KDF or inflate dependency.
+# Detection only — no cryptographic dependency.
 odf-crypto = "0.1.0-rc.1"
 
 # Detection, reading and writing.
@@ -41,18 +41,22 @@ encrypted, in which zip shape, and with which algorithm tuple.
 ```rust
 use odf_crypto::{classify, Mode};
 
-let c = classify(&bytes)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read("document.odt")?;
+    let c = classify(&bytes)?;
 
-if c.odf12_fatal {
-    // Unexpected ODF 1.2 streams. LibreOffice throws rather than opening these,
-    // so decrypt and encrypt refuse them too.
-    return Err("LibreOffice would not open this package".into());
-}
+    if c.odf12_fatal {
+        // Unexpected ODF 1.2 streams. LibreOffice throws rather than opening
+        // these, so decrypt and encrypt refuse them too.
+        return Err("LibreOffice would not open this package".into());
+    }
 
-match c.mode {
-    Mode::Plain     => println!("not encrypted"),
-    Mode::PerEntry  => println!("per-entry encryption, {} entries", c.encrypted_entries.len()),
-    Mode::Wholesome => println!("single encrypted-package member"),
+    match c.mode {
+        Mode::Plain => println!("not encrypted"),
+        Mode::PerEntry => println!("per-entry, {} entries", c.encrypted_entries.len()),
+        Mode::Wholesome => println!("single encrypted-package member"),
+    }
+    Ok(())
 }
 ```
 
@@ -65,8 +69,13 @@ match c.mode {
 ```rust
 use odf_crypto::decrypt;
 
-// Returns the plaintext ODF zip LibreOffice would open after a correct password.
-let plain: Vec<u8> = decrypt(&encrypted_bytes, "correct horse battery staple")?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let sealed = std::fs::read("locked.odt")?;
+    // The plaintext ODF zip LibreOffice would open after a correct password.
+    let plain: Vec<u8> = decrypt(&sealed, "correct horse battery staple")?;
+    std::fs::write("unlocked.odt", plain)?;
+    Ok(())
+}
 ```
 
 `DecryptError` distinguishes the cases worth handling separately — `WrongPassword`,
@@ -78,9 +87,13 @@ so a caller can tell "bad password" from "we will not touch this package".
 ```rust
 use odf_crypto::encrypt;
 
-// Turns a plaintext (Mode::Plain) package into what current LibreOffice
-// writes for that input under a password.
-let sealed: Vec<u8> = encrypt(&plain_bytes, "correct horse battery staple")?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let plain = std::fs::read("document.odt")?;
+    // What current LibreOffice writes for that input under that password.
+    let sealed: Vec<u8> = encrypt(&plain, "correct horse battery staple")?;
+    std::fs::write("locked.odt", sealed)?;
+    Ok(())
+}
 ```
 
 Output is validated against a real LibreOffice: the repository carries a golden
@@ -117,7 +130,7 @@ simply the smaller one.
 | Build | How | What you get |
 | --- | --- | --- |
 | **Detection-only** | `odf-crypto = "0.1.0-rc.1"` | `classify` alone. No cryptographic dependency. **27 crates.** |
-| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **62 crates.** |
+| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **61 crates.** |
 
 **Detection is the default because it is cheap.** `classify` parses
 `META-INF/manifest.xml` and the zip central directory; it never derives a key or

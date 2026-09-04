@@ -85,7 +85,7 @@ pub enum EncryptError {
     /// rather than wrapping a document LO rejects.
     #[error("LibreOffice would refuse this package: unexpected ODF 1.2 streams")]
     Odf12Fatal,
-    /// Mirrors `decrypt::DecryptError::EmptyPassword` /
+    /// Mirrors [`crate::DecryptError::EmptyPassword`] /
     /// `CreatePackageEncryptionData`'s empty sequence.
     #[error("password is empty")]
     EmptyPassword,
@@ -113,7 +113,8 @@ pub enum EncryptError {
     /// will not open.
     #[error("unusable mimetype member: {0}")]
     Mimetype(String),
-    /// Building the outer zip container failed.
+    /// A zip failure on either side: reading the input's own `mimetype`
+    /// member, or building the outer container `encrypt` writes.
     #[error("zip error: {0}")]
     Zip(String),
     /// A crypto primitive rejected parameters `encrypt` chose *itself* -- the
@@ -122,28 +123,62 @@ pub enum EncryptError {
     /// guarded by `const` asserts beside the profile, which is why this
     /// carries no recovery advice.
     ///
-    /// It exists because the alternative is a panic in a library. The plan
-    /// (§4) rules out a `BadParameters` analogue, and this is not one: that
-    /// variant would report an *untrusted manifest field*, which `encrypt`
-    /// never reads. This reports an internal invariant a dependency bump could
-    /// invalidate under us -- if `argon2` or `aes-gcm` ever narrows what it
-    /// accepts, the failure surfaces as an `Err` a caller can handle rather
-    /// than an abort it cannot.
+    /// Also covers a supposedly infallible write failing: `io::Write for
+    /// Vec<u8>` through quick-xml, when building the manifest.
+    ///
+    /// It exists because the alternative is a panic in a library. This is
+    /// deliberately not a `BadParameters` analogue: that variant would report
+    /// an *untrusted manifest field*, which `encrypt` never reads. This
+    /// reports an internal invariant a dependency bump could invalidate under
+    /// us -- if `argon2` or `aes-gcm` ever narrows what it accepts, the
+    /// failure surfaces as an `Err` a caller can handle rather than an abort
+    /// it cannot.
     #[error("internal invariant violated: {0}")]
     Internal(String),
 }
 
 /// Encrypt a plaintext ODF package with `password`, producing what current
-/// LibreOffice writes for that input under that password (plan §6): wholesome
-/// Argon2id-derived AES-256-GCM, one `encrypted-package` member, no checksum.
+/// LibreOffice writes for that input under that password.
 ///
-/// Refuses before any crypto runs: an empty password is rejected first
-/// (mirroring `decrypt`'s own ordering), then anything `classify` does not
-/// report as [`Mode::Plain`] (already encrypted, in any of the three `Mode`s
-/// classify can report), then a package LibreOffice itself would refuse
-/// (`Classification::odf12_fatal`), then an unusable `mimetype` member -- so
-/// no caller pays for a 64 MiB Argon2id before learning the input was never
-/// eligible.
+/// One profile only: wholesome Argon2id-derived AES-256-GCM, a single
+/// `encrypted-package` member, no checksum. The salt and IV are fresh per call,
+/// so two calls on the same input never produce the same bytes — assert on a
+/// round trip, never on the output.
+///
+/// # Errors
+///
+/// Refused before any crypto runs, in this order, so no caller pays for a
+/// 64 MiB Argon2id before learning the input was never eligible:
+/// [`EncryptError::EmptyPassword`] (mirroring [`crate::decrypt`]'s own ordering),
+/// [`EncryptError::AlreadyEncrypted`] for anything [`classify`] does not report
+/// as [`Mode::Plain`], [`EncryptError::Classify`] if classification itself
+/// fails, [`EncryptError::Odf12Fatal`] for a package LibreOffice would refuse,
+/// and [`EncryptError::Mimetype`] for a `mimetype` member that cannot be
+/// carried into the output.
+///
+/// Then [`EncryptError::Deflate`] (in practice, an input over 1 GiB),
+/// [`EncryptError::Random`], [`EncryptError::Zip`] and
+/// [`EncryptError::Internal`].
+///
+/// [`EncryptError`] is `#[non_exhaustive]` and does not implement `PartialEq`;
+/// match with a `_` arm and [`matches!`].
+///
+/// # Examples
+///
+/// ```
+/// use odf_crypto::{classify, decrypt, encrypt, Mode};
+///
+/// let plain = include_bytes!("../tests/goldens/lo-unencrypted.odt");
+/// assert_eq!(classify(plain)?.mode, Mode::Plain);
+///
+/// let sealed = encrypt(plain, "correct horse battery staple")?;
+/// assert_eq!(classify(&sealed)?.mode, Mode::Wholesome);
+///
+/// // Round trips byte for byte.
+/// let back = decrypt(&sealed, "correct horse battery staple")?;
+/// assert_eq!(back, plain.as_slice());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     if password.is_empty() {
         return Err(EncryptError::EmptyPassword);
