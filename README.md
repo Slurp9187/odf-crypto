@@ -1,5 +1,9 @@
 # odf-crypto
 
+[![crates.io](https://img.shields.io/crates/v/odf-crypto.svg?include_prereleases)](https://crates.io/crates/odf-crypto)
+[![docs.rs](https://img.shields.io/docsrs/odf-crypto)](https://docs.rs/odf-crypto)
+[![CI](https://github.com/Slurp9187/odf-crypto/actions/workflows/ci.yml/badge.svg)](https://github.com/Slurp9187/odf-crypto/actions/workflows/ci.yml)
+[![MSRV](https://img.shields.io/crates/msrv/odf-crypto)](https://github.com/Slurp9187/odf-crypto#msrv)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 LibreOffice-faithful ODF package encryption: detect it, decrypt it, write it.

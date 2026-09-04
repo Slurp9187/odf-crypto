@@ -10,6 +10,10 @@ rust-version = "1.85"
 autobins = false
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Slurp9187/odf-crypto"
+# Without this, crates.io only links to docs.rs once docs.rs reports a
+# successful build -- which is exactly what was broken for rc.1. Explicit is
+# one less thing depending on a build that might fail.
+documentation = "https://docs.rs/odf-crypto"
 readme = "README.md"
 keywords = ["odf", "libreoffice", "opendocument", "encryption", "decrypt"]
 categories = ["cryptography", "parser-implementations"]
