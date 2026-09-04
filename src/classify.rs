@@ -7,6 +7,7 @@ use zip::read::HasZipMetadata;
 use zip::CompressionMethod;
 use zip::ZipArchive;
 
+use crate::limits::{MANIFEST_READ_CAP, MIMETYPE_CEILING};
 use crate::manifest::parse_manifest;
 use crate::types::{
     Checksum, ChecksumAlg, Classification, EncryptedKey, EntryEncryption, Kdf, KdfId, PropertyBag,
@@ -15,8 +16,6 @@ use crate::types::{
 use crate::uris;
 use crate::zip_tree::{FolderTree, ResolvedKind, StreamAsFolder};
 use crate::{Cipher, DetectError, Mode};
-
-const MANIFEST_READ_CAP: usize = 8 * 1024 * 1024;
 
 struct ZipMember {
     name: String,
@@ -52,12 +51,12 @@ fn collect_members(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<ZipMem
             .map_err(|err| DetectError::Zip(err.to_string()))?;
         let meta = file.get_metadata();
         if meta.uncompressed_size == 0
-            && format!("{:?}", meta.system) == "Dos"
+            && u8::from(meta.system) == 0
             && meta.external_attributes & 0x10 != 0
         {
             continue;
         }
-        let name = String::from_utf8_lossy(file.name_raw()).into_owned();
+        let name = zip_entry_name(file.name_raw());
         if !is_valid_zip_entry_file_name(&name) {
             return Err(DetectError::Zip("Zip entry has an invalid name.".into()));
         }
@@ -130,6 +129,12 @@ fn read_named_member(
     Ok(Some(buf))
 }
 
+/// Namelist key `classify` uses: UTF-8 lossy raw CEN bytes, not `ZipFile::name()`'s
+/// CP437 decode when the general-purpose UTF-8 flag is unset.
+pub(crate) fn zip_entry_name(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw).into_owned()
+}
+
 pub(crate) fn member_matches_path(zip_name: &str, want: &str) -> bool {
     if zip_name == want {
         return true;
@@ -173,7 +178,7 @@ fn read_mimetype(
     let mut file = archive
         .by_index(member.index)
         .map_err(|err| DetectError::Zip(err.to_string()))?;
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; MIMETYPE_CEILING];
     let n = file
         .read(&mut buf)
         .map_err(|err| DetectError::Zip(err.to_string()))?;

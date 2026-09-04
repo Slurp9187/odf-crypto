@@ -85,6 +85,8 @@ pub struct Classification {
     /// `LookForUnexpectedODF12Streams`. Always computed.
     pub has_unexpected_streams: bool,
     /// `has_unexpected_streams && root version >= "1.2"` (byte-lexicographic).
+    /// LibreOffice throws rather than opening; `decrypt` and `encrypt` refuse
+    /// the same packages so they do not unwrap or wrap something LO would reject.
     pub odf12_fatal: bool,
     /// PGP `encrypted-key` material from the first file-entry's KeyInfo, if any.
     pub pgp_keys: Vec<EncryptedKey>,

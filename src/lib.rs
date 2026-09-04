@@ -5,7 +5,9 @@
 //! LibreOffice `package/` accept predicates, not Horsmann's origin detector.
 //!
 //! With the `decrypt` feature enabled, `decrypt` turns an LO-encrypted
-//! package into the plaintext ODF zip LibreOffice would open after a correct password.
+//! package into the plaintext ODF zip LibreOffice would open after a correct
+//! password. Packages `classify` reports as `odf12_fatal` are refused: LO
+//! would not open them, so neither does this crate.
 //!
 //! With the default `encrypt` feature enabled (it implies `decrypt`), `encrypt`
 //! is the reverse: it turns a plaintext (`Mode::Plain`) ODF package into what
@@ -16,6 +18,7 @@
 //! feature-gated item is a `broken_intra_doc_links` warning there.)
 
 mod classify;
+mod limits;
 mod manifest;
 mod types;
 mod uris;

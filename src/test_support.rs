@@ -105,6 +105,33 @@ pub(crate) fn zip_with_methods(files: &[(&str, &[u8], CompressionMethod)]) -> Ve
     zip.finish().unwrap().into_inner()
 }
 
+/// Copy `zip` and append one STORED member. Used to plant an unlisted root
+/// stream so `classify` can report `odf12_fatal` without rebuilding a golden.
+pub(crate) fn append_stored_member(zip: &[u8], name: &str, body: &[u8]) -> Vec<u8> {
+    let mut src = ZipArchive::new(Cursor::new(zip)).unwrap();
+    let mut out = ZipWriter::new(Cursor::new(Vec::new()));
+    for i in 0..src.len() {
+        let mut file = src.by_index(i).unwrap();
+        let file_name = file.name().to_string();
+        let method = file.compression();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).unwrap();
+        out.start_file(
+            &file_name,
+            SimpleFileOptions::default().compression_method(method),
+        )
+        .unwrap();
+        out.write_all(&buf).unwrap();
+    }
+    out.start_file(
+        name,
+        SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+    )
+    .unwrap();
+    out.write_all(body).unwrap();
+    out.finish().unwrap().into_inner()
+}
+
 /// A two-row PGP-encrypted package: `content.xml` carries the `KeyInfo`, and
 /// both rows name `PGP` as their key derivation. `classify` reports
 /// `Mode::PerEntry` with `Kdf::PgpRsaOaepMgf1p` rows, which `decrypt` refuses

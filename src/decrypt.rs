@@ -27,20 +27,17 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
     key.ends_with(b":size") || key == b"size"
 }
 
-use crate::classify::{classify, member_matches_path};
+use crate::classify::{classify, member_matches_path, zip_entry_name};
+use crate::limits::{
+    AES_BLOCK_LEN, AES_CBC_IV_LEN, AES_GCM_IV_LEN, AES_GCM_TAG_LEN, BLOWFISH_IV_LEN,
+    CHECKSUM_WINDOW, CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN, DERIVED_KEY_MIN_LEN,
+    INFLATE_CEILING, MAX_ENCRYPTED_ENTRIES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
+};
 use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext};
 use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode};
 use crate::DetectError;
 
-const INFLATE_CEILING: usize = 1 << 30;
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
-/// Upper bound on `manifest:key-size`, checked before the derived-key buffer is
-/// allocated. AES-256 needs 32 bytes and Blowfish accepts at most 56, so anything
-/// larger is a hostile or corrupt manifest. Without the bound a value near
-/// `i32::MAX` allocates ~2 GiB and then runs PBKDF2 over all of it — hundreds of
-/// millions of blocks at the manifest's iteration count — before any cipher gets
-/// to reject the length. Refuse it up front instead.
-const MAX_DERIVED_KEY_LEN: i32 = 64;
 
 /// Failures from [`decrypt`].
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +51,11 @@ pub enum DecryptError {
     EmptyPassword,
     #[error("PGP-encrypted packages are not supported")]
     UnsupportedPgp,
+    /// LibreOffice `LookForUnexpectedODF12Streams` plus a root version `>= 1.2`.
+    /// `classify` reports the flag without failing; decrypt refuses so it does
+    /// not return a zip LO would not open.
+    #[error("LibreOffice would refuse this package: unexpected ODF 1.2 streams")]
+    Odf12Fatal,
     #[error("wrong password")]
     WrongPassword,
     #[error("invalid encryption parameters: {0}")]
@@ -73,6 +75,9 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     if class.mode == Mode::Plain {
         return Err(DecryptError::NotEncrypted);
     }
+    if class.odf12_fatal {
+        return Err(DecryptError::Odf12Fatal);
+    }
     if class
         .encrypted_entries
         .iter()
@@ -80,6 +85,7 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     {
         return Err(DecryptError::UnsupportedPgp);
     }
+    ensure_encrypted_entry_count(class.encrypted_entries.len(), MAX_ENCRYPTED_ENTRIES)?;
 
     let mut archive =
         ZipArchive::new(Cursor::new(bytes)).map_err(|e| DecryptError::Zip(e.to_string()))?;
@@ -120,16 +126,26 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     rebuild_zip(bytes, &manifest, &plain)
 }
 
+fn ensure_encrypted_entry_count(n: usize, cap: usize) -> Result<(), DecryptError> {
+    if n > cap {
+        return Err(DecryptError::BadParameters(format!(
+            "encrypted entry count {n} exceeds ceiling {cap}"
+        )));
+    }
+    Ok(())
+}
+
 fn read_member_by_path(
     archive: &mut ZipArchive<Cursor<&[u8]>>,
     want: &str,
 ) -> Result<Vec<u8>, DecryptError> {
     for i in 0..archive.len() {
-        let name = archive
-            .by_index(i)
-            .map_err(|e| DecryptError::Zip(e.to_string()))?
-            .name()
-            .to_string();
+        let name = {
+            let file = archive
+                .by_index(i)
+                .map_err(|e| DecryptError::Zip(e.to_string()))?;
+            zip_entry_name(file.name_raw())
+        };
         if member_matches_path(&name, want) {
             return read_member_at(archive, i);
         }
@@ -147,8 +163,15 @@ fn read_member_at(
         .by_index(index)
         .map_err(|e| DecryptError::Zip(e.to_string()))?;
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf)
+    file.by_ref()
+        .take(CIPHERTEXT_READ_CEILING as u64 + 1)
+        .read_to_end(&mut buf)
         .map_err(|e| DecryptError::Zip(e.to_string()))?;
+    if buf.len() > CIPHERTEXT_READ_CEILING {
+        return Err(DecryptError::BadParameters(format!(
+            "zip member exceeds ciphertext ceiling {CIPHERTEXT_READ_CEILING}"
+        )));
+    }
     Ok(buf)
 }
 
@@ -159,11 +182,10 @@ fn member_for_archive(
     path: &str,
 ) -> Result<(usize, String), DecryptError> {
     for i in 0..archive.len() {
-        let name = archive
+        let file = archive
             .by_index(i)
-            .map_err(|e| DecryptError::Zip(e.to_string()))?
-            .name()
-            .to_string();
+            .map_err(|e| DecryptError::Zip(e.to_string()))?;
+        let name = zip_entry_name(file.name_raw());
         if member_matches_path(&name, path) {
             return Ok((i, name));
         }
@@ -176,9 +198,9 @@ fn member_for_archive(
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
     let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
-    if n <= 0 || n > MAX_DERIVED_KEY_LEN {
+    if n < DERIVED_KEY_MIN_LEN || n > DERIVED_KEY_MAX_LEN {
         return Err(DecryptError::BadParameters(format!(
-            "derived_key_len {n} outside 1..={MAX_DERIVED_KEY_LEN}"
+            "derived_key_len {n} outside {DERIVED_KEY_MIN_LEN}..={DERIVED_KEY_MAX_LEN}"
         )));
     }
     let n = n as usize;
@@ -187,12 +209,15 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
         derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
             match &row.kdf {
                 Kdf::Pbkdf2 { iterations, salt } => {
-                    if *iterations <= 0 {
+                    let iters = u32::try_from(*iterations).map_err(|_| {
+                        DecryptError::BadParameters(format!("iterations {iterations}"))
+                    })?;
+                    if iters < PBKDF2_MIN_ITER || iters > PBKDF2_MAX_ITER {
                         return Err(DecryptError::BadParameters(format!(
-                            "iterations {iterations}"
+                            "iterations {iters} outside {PBKDF2_MIN_ITER}..={PBKDF2_MAX_ITER}"
                         )));
                     }
-                    pbkdf2_hmac::<Sha1>(sk_bytes, salt, *iterations as u32, derived_bytes);
+                    pbkdf2_hmac::<Sha1>(sk_bytes, salt, iters, derived_bytes);
                     Ok(())
                 }
                 Kdf::Argon2id { t, m, p, salt } => {
@@ -227,13 +252,13 @@ fn decrypt_aes_gcm(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
-    if row.iv.len() != 12 {
+    if row.iv.len() != AES_GCM_IV_LEN {
         return Err(DecryptError::BadParameters("GCM IV length".into()));
     }
-    if blob.len() <= 12 + 16 {
+    if blob.len() < AES_GCM_IV_LEN + AES_GCM_TAG_LEN {
         return Err(DecryptError::BadParameters("shorter than IV+tag".into()));
     }
-    if blob[..12] != row.iv[..] {
+    if blob[..AES_GCM_IV_LEN] != row.iv[..] {
         return Err(DecryptError::BadParameters("inconsistent IV".into()));
     }
     // NSS selects AES-128/192/256 from the derived key length, so the row's
@@ -241,7 +266,7 @@ fn decrypt_aes_gcm(
     // both in the accepted URI table, and an absent `manifest:key-size` derives 16.
     type Aes192Gcm = AesGcm<Aes192, U12>;
     let nonce = Nonce::from_slice(&row.iv);
-    let ct = &blob[12..];
+    let ct = &blob[AES_GCM_IV_LEN..];
     let out = match key.len() {
         16 => Aes128Gcm::new_from_slice(key)
             .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
@@ -269,10 +294,10 @@ fn decrypt_aes_cbc(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
-    if row.iv.len() != 16 {
+    if row.iv.len() != AES_CBC_IV_LEN {
         return Err(DecryptError::BadParameters("CBC IV length".into()));
     }
-    if blob.is_empty() || blob.len() % 16 != 0 {
+    if blob.is_empty() || blob.len() % AES_BLOCK_LEN != 0 {
         return Err(DecryptError::BadParameters("not a block multiple".into()));
     }
     // Decrypted in place, so the buffer is wrapped before the first block is
@@ -285,7 +310,7 @@ fn decrypt_aes_cbc(
             ($aes:ty) => {{
                 let mut cipher = Decryptor::<$aes>::new_from_slices(key, &row.iv)
                     .map_err(|_| DecryptError::BadParameters("AES-CBC key/IV".into()))?;
-                for chunk in b.chunks_mut(16) {
+                for chunk in b.chunks_mut(AES_BLOCK_LEN) {
                     cipher.decrypt_block_mut(cbc::cipher::Block::<$aes>::from_mut_slice(chunk));
                 }
             }};
@@ -304,7 +329,7 @@ fn decrypt_aes_cbc(
             return Err(DecryptError::WrongPassword);
         };
         let pad = pad as usize;
-        if !(1..=16).contains(&pad) || b.len() < pad {
+        if !(1..=AES_BLOCK_LEN).contains(&pad) || b.len() < pad {
             return Err(DecryptError::WrongPassword);
         }
         b.truncate(b.len() - pad);
@@ -318,7 +343,7 @@ fn decrypt_blowfish_cfb64(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
-    if row.iv.len() != 8 {
+    if row.iv.len() != BLOWFISH_IV_LEN {
         return Err(DecryptError::BadParameters("Blowfish IV length".into()));
     }
     type BfCfb64 = BufDecryptor<Blowfish>;
@@ -331,25 +356,36 @@ fn decrypt_blowfish_cfb64(
 }
 
 fn verify_checksum(row: &EntryEncryption, compressed_plain: &[u8]) -> Result<(), DecryptError> {
-    let window = &compressed_plain[..compressed_plain.len().min(1024)];
+    let window = &compressed_plain[..compressed_plain.len().min(CHECKSUM_WINDOW)];
     match &row.checksum {
         Checksum::Sha1_1K(want) => {
             let mut h = Sha1::new();
             h.update(window);
-            if h.finalize().as_slice() != want.as_slice() {
+            if !digest_eq(h.finalize().as_slice(), want) {
                 return Err(DecryptError::WrongPassword);
             }
         }
         Checksum::Sha256_1K(want) => {
             let mut h = Sha256::new();
             h.update(window);
-            if h.finalize().as_slice() != want.as_slice() {
+            if !digest_eq(h.finalize().as_slice(), want) {
                 return Err(DecryptError::WrongPassword);
             }
         }
         Checksum::None => {}
     }
     Ok(())
+}
+
+fn digest_eq(got: &[u8], want: &[u8]) -> bool {
+    if got.len() != want.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&a, &b) in got.iter().zip(want.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
 }
 
 /// Raw DEFLATE, then plan section 2's two post-conditions. Both run only after the
@@ -458,11 +494,18 @@ fn rebuild_zip(
         let mut file = src
             .by_index(i)
             .map_err(|e| DecryptError::Zip(e.to_string()))?;
-        let name = file.name().to_string();
+        let name = zip_entry_name(file.name_raw());
         let method = file.compression();
         let mut body = Vec::new();
-        file.read_to_end(&mut body)
+        file.by_ref()
+            .take(CIPHERTEXT_READ_CEILING as u64 + 1)
+            .read_to_end(&mut body)
             .map_err(|e| DecryptError::Zip(e.to_string()))?;
+        if body.len() > CIPHERTEXT_READ_CEILING {
+            return Err(DecryptError::BadParameters(format!(
+                "zip member exceeds ciphertext ceiling {CIPHERTEXT_READ_CEILING}"
+            )));
+        }
 
         // Each replaced member is written straight from its wrapper into the
         // zip writer - no unwrapped clone of the plaintext along the way.
