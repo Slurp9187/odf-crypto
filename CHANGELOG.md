@@ -64,8 +64,13 @@ Writes go to a temporary in the destination directory and are renamed over the
 target, and never overwrite without `--force`: a decrypt that silently replaced
 the encrypted original would be unrecoverable.
 
-No `clap` and no `serde_json`. `--json` is hand-written through a tested
-`json_escape`, since quoting is the one real risk in doing it by hand.
+Argument parsing is `clap`'s builder API — not `derive`, which is 21 crates
+against the builder's 5 — and `--json` is built as a `serde_json::Value`. Both
+were hand-rolled first and both were changed after measuring: the hand-rolled
+parser rejected `--output=x.odt`, the GNU `--flag=value` form, and offered no
+suggestion on a near-miss like `--password-en`. The JSON had no defect; it was
+replaced so that a field added later without escaping cannot silently emit
+broken output.
 
 ## v0.1.0-rc.1 — 2026-09-04
 
