@@ -17,16 +17,31 @@ categories = ["cryptography", "parser-implementations"]
 # (they appear only in doc comments and one assertion message) and each needs a
 # local LibreOffice over UNO to do anything.
 #
-# Two entries are load-bearing rather than optional:
-#   - tests/goldens/*.odt -- `test_support::load_golden` reads these, so the
-#     published crate needs them for `cargo test` to pass.
-#   - examples/encrypt_for_validation.rs -- the [[example]] table below declares
-#     this target by name; cargo errors on a declared target whose path is absent.
+# Trimmed to what the tarball provably needs; each entry was tested by removing
+# it and packaging.
+#
+#   - src/**/*.rs must include the *_tests.rs files and test_support.rs. They are
+#     pulled in by `#[cfg(test)] #[path = "..."] mod tests;`, so without them the
+#     published crate fails `cargo test` with "couldn't read src/classify_tests.rs".
+#     Dropping those and the goldens takes the tarball from 350K to 180K and
+#     leaves a crate that distro packagers, `cargo vendor` audits and anyone
+#     checking the LibreOffice-fidelity claim cannot run. Not a trade worth 170K.
+#   - tests/goldens/*.odt are what `test_support::load_golden` reads, so they
+#     follow the tests.
+#   - LICENSE-* are not auto-included (that only happens for `license-file`, and
+#     this crate uses an SPDX `license` expression). Both licences require the
+#     text to travel with the copy: MIT's notice clause, Apache-2.0 section 4(a).
+#   - examples/encrypt_for_validation.rs is NOT load-bearing -- cargo warns and
+#     packages happily without it. Kept anyway: dropping it saves 8K of 350K and
+#     buys a warning on every publish, because the [[example]] table below would
+#     then declare a target the tarball does not contain.
+#
+# README.md is absent deliberately: `readme = "README.md"` above makes cargo
+# include it regardless, so listing it here was redundant.
 include = [
     "src/**/*.rs",
     "examples/encrypt_for_validation.rs",
     "tests/goldens/*.odt",
-    "README.md",
     "LICENSE-MIT",
     "LICENSE-APACHE",
 ]
