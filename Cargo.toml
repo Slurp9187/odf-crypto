@@ -1,9 +1,35 @@
 [package]
 name = "odf-crypto"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition = "2021"
 description = "LibreOffice-faithful ODF package encryption detection, decryption and encryption"
 rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Slurp9187/odf-crypto"
+readme = "README.md"
+keywords = ["odf", "libreoffice", "opendocument", "encryption", "decrypt"]
+categories = ["cryptography", "parser-implementations"]
+# Allowlist -- everything not named here stays out of the tarball uploaded to
+# crates.io. It does NOT affect git: docs/, .claude/, CHANGELOG.md and the
+# Python helpers under tests/goldens/ all remain in the repository and on GitHub.
+#
+# Those helpers are developer tooling, not test inputs: no Rust code invokes them
+# (they appear only in doc comments and one assertion message) and each needs a
+# local LibreOffice over UNO to do anything.
+#
+# Two entries are load-bearing rather than optional:
+#   - tests/goldens/*.odt -- `test_support::load_golden` reads these, so the
+#     published crate needs them for `cargo test` to pass.
+#   - examples/encrypt_for_validation.rs -- the [[example]] table below declares
+#     this target by name; cargo errors on a declared target whose path is absent.
+include = [
+    "src/**/*.rs",
+    "examples/encrypt_for_validation.rs",
+    "tests/goldens/*.odt",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
 
 [features]
 default = ["encrypt"]
