@@ -17,38 +17,44 @@
 //! beside. The plaintext the caller hands `encrypt()` stays plain for the
 //! same reason `password: &str` does — the caller already owns it.
 
-use secure_gate::dynamic_alias;
+//! # These four are names, not types
+//!
+//! All four are `Dynamic<Vec<u8>>`, so they are the *same* nominal type and are
+//! freely substitutable: passing a [`PasswordDigest`] where a [`DerivedKey`] is
+//! expected compiles. What they buy is a greppable name and zeroize-on-drop, not
+//! type safety.
+//!
+//! `secure-gate` deleted its `dynamic_alias!` macro in 0.9.0-rc.9 over exactly
+//! this reading — a macro from a crate whose pitch is "accidents must not
+//! compile" looked like it guaranteed a type when it only ever emitted a `type`
+//! line. The replacement is [`dynamic_newtype!`], which emits a `struct` and
+//! would make the four distinct. Adopting it is deliberately deferred: it is a
+//! separate design change, and rc.11 is still actively moving that macro's
+//! `derive:` surface. Stated here rather than left to be rediscovered.
+//!
+//! [`dynamic_newtype!`]: https://docs.rs/secure-gate/latest/secure_gate/macro.dynamic_newtype.html
 
-dynamic_alias!(
-    pub(crate) PasswordDigest,
-    Vec<u8>,
-    "SHA-1 or SHA-256 digest of the user's password (`start_key`'s output), \
-     before KDF stretching. Length depends on the digest algorithm (20 or 32 \
-     bytes), so this wraps `Vec<u8>`, not a fixed-size array."
-);
+use secure_gate::Dynamic;
 
-dynamic_alias!(
-    pub(crate) DerivedKey,
-    Vec<u8>,
-    "PBKDF2/Argon2id-derived cipher key. On the read side its length (16/24/32 bytes) \
-     follows `EntryEncryption::derived_key_len`, so this wraps `Vec<u8>`, not a \
-     fixed-size array; `encrypt` reuses it at its own fixed 32, since both directions \
-     fill it through the same `crate::kdf` helpers."
-);
+/// SHA-1 or SHA-256 digest of the user's password (`start_key`'s output),
+/// before KDF stretching. Length depends on the digest algorithm (20 or 32
+/// bytes), so this wraps `Vec<u8>`, not a fixed-size array.
+pub(crate) type PasswordDigest = Dynamic<Vec<u8>>;
 
-dynamic_alias!(
-    pub(crate) DeflatedPlaintext,
-    Vec<u8>,
-    "Package plaintext in its raw-DEFLATE form, on either side of a cipher. Decrypting, \
-     it is what the cipher emits and lives until `raw_inflate`; encrypting, it is the \
-     deflated input, wrapped before the cipher runs and sealed in place, so the crate's \
-     own copy of the caller's document is zeroized on drop rather than left in a plain \
-     buffer."
-);
+/// PBKDF2/Argon2id-derived cipher key. On the read side its length (16/24/32
+/// bytes) follows `EntryEncryption::derived_key_len`, so this wraps `Vec<u8>`,
+/// not a fixed-size array; `encrypt` reuses it at its own fixed 32, since both
+/// directions fill it through the same `crate::kdf` helpers.
+pub(crate) type DerivedKey = Dynamic<Vec<u8>>;
 
-dynamic_alias!(
-    pub(crate) MemberPlaintext,
-    Vec<u8>,
-    "An inflated package member, held only until it is written into the rebuilt \
-     plaintext zip. That zip is the public return value and stays a plain `Vec<u8>`."
-);
+/// Package plaintext in its raw-DEFLATE form, on either side of a cipher.
+/// Decrypting, it is what the cipher emits and lives until `raw_inflate`;
+/// encrypting, it is the deflated input, wrapped before the cipher runs and
+/// sealed in place, so the crate's own copy of the caller's document is
+/// zeroized on drop rather than left in a plain buffer.
+pub(crate) type DeflatedPlaintext = Dynamic<Vec<u8>>;
+
+/// An inflated package member, held only until it is written into the rebuilt
+/// plaintext zip. That zip is the public return value and stays a plain
+/// `Vec<u8>`.
+pub(crate) type MemberPlaintext = Dynamic<Vec<u8>>;
