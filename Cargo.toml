@@ -72,7 +72,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Detection only. `classify` needs no cryptographic dependency, so the default
-# build pulls 27 crates where a cryptographic one pulls 61. Nobody pays for a
+# build pulls 25 crates where a cryptographic one pulls 59. Nobody pays for a
 # cipher stack to ask whether a file is encrypted.
 #
 # It does still pull an inflate implementation -- zip -> flate2 -> miniz_oxide,
@@ -181,7 +181,7 @@ rpassword = { version = "7", optional = true }
 # builder+suggestions is 5, adding wrap_help is 8. Five is worth it for
 # `--flag=value`, "did you mean --password-env", and help that cannot drift from
 # the definitions it documents. None of it reaches a library consumer: `cli` is
-# opt-in, and the default build still resolves 27 crates.
+# opt-in, and the default build still resolves 25 crates.
 clap = { version = "4", optional = true, default-features = false, features = [
     "std",
     "help",

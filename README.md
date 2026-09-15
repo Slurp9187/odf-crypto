@@ -211,8 +211,8 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0-rc.2"` | `classify` alone. No cryptographic dependency. **27 crates.** |
-| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **61 crates.** |
+| **Detection-only** | `odf-crypto = "0.1.0-rc.2"` | `classify` alone. No cryptographic dependency. **25 crates.** |
+| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **59 crates.** |
 | **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `rpassword` for the prompt. |
 
 **Detection is the default because it is cheap.** `classify` parses
