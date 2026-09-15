@@ -139,7 +139,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # `dynamic_alias!` macro `src/sensitive.rs` was built on. The lockfile was the
 # only thing holding rc.7 in place. `=` makes the next move an edit somebody
 # reads. Drop the `=` when secure-gate reaches a stable 0.9.0.
-secure-gate = { version = "=0.9.0-rc.11", default-features = false, features = [
+secure-gate = { version = "=0.9.0-rc.12", default-features = false, features = [
     "alloc",
 ] }
 

@@ -530,9 +530,9 @@ dependencies = [
 
 [[package]]
 name = "secure-gate"
-version = "0.9.0-rc.11"
+version = "0.9.0-rc.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "302f5160de18d6b02aa51f8b78792181b38865b78a0b34c5ad783f4994ce579c"
+checksum = "39effc758e162c68cf2e0c3a5df58f137d7ee161560eba4c0b2e6cad81749379"
 dependencies = [
  "base16ct",
  "base32ct",

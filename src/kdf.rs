@@ -35,13 +35,16 @@ use crate::types::StartKeyAlg;
 /// `compress` spills its message schedule on the stack; the 0.10 digest /
 /// sha1 / sha2 crates offer no zeroize feature for either. That residual is
 /// inherent to the hash crates at this version -- see the secure-gate skill.
+///
+/// The slot is exactly `output_size()` bytes, so `from_mut_slice` cannot
+/// mismatch: both read the same associated constant. secure-gate zeroes the
+/// slot before the closure runs, and `finalize_into` overwrites all of it.
 pub(crate) fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
     fn digest_into<D: Digest>(password: &str) -> PasswordDigest {
         let mut h = D::new();
         h.update(password.as_bytes());
-        PasswordDigest::new_with(|v| {
-            v.resize(<D as Digest>::output_size(), 0);
-            h.finalize_into(Output::<D>::from_mut_slice(v));
+        PasswordDigest::new_with(<D as Digest>::output_size(), |slot| {
+            h.finalize_into(Output::<D>::from_mut_slice(slot));
         })
     }
     match alg {
