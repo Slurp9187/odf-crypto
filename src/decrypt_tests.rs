@@ -521,22 +521,99 @@ fn s2_manifest_size_stripped_from_self_closing_entry() {
 
 /// Plan section 2 wants two post-conditions after inflate: the stream reaches its end
 /// marker, and the length equals `manifest:size`. The length check is explicit in
-/// `raw_inflate`; this pins the other one, which is a property of the inflater rather
+/// `inflate_into`; this pins the other one, which is a property of the inflater rather
 /// than of our code, so a dependency swap cannot quietly remove it.
+///
+/// Pinned against `decompress_slice_iter_to_slice`, which is the function the decrypt
+/// path actually calls. That matters more than it used to: the slice API is documented
+/// to leave whatever it managed to write *in the caller's buffer* when it fails, so
+/// this test also records why the per-entry caller builds through `try_new_with` --
+/// the wrapper is live for the whole fill and zeroizes that partial document on `Err`.
 #[test]
 fn truncated_deflate_stream_errors_rather_than_returning_partial_output() {
+    use miniz_oxide::inflate::decompress_slice_iter_to_slice;
+
     let data: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
     let compressed = miniz_oxide::deflate::compress_to_vec(&data, 6);
+
+    let mut slot = vec![0u8; data.len()];
     assert_eq!(
-        miniz_oxide::inflate::decompress_to_vec_with_limit(&compressed, 1 << 20).unwrap(),
-        data
+        decompress_slice_iter_to_slice(&mut slot, std::iter::once(&compressed[..]), false, true)
+            .unwrap(),
+        data.len()
     );
+    assert_eq!(slot, data);
+
     for cut in [1usize, 4, 16] {
         let truncated = &compressed[..compressed.len() - cut];
+        let mut slot = vec![0u8; data.len()];
         assert!(
-            miniz_oxide::inflate::decompress_to_vec_with_limit(truncated, 1 << 20).is_err(),
-            "a stream truncated by {cut} B must be an error, not partial output"
+            decompress_slice_iter_to_slice(&mut slot, std::iter::once(truncated), false, true)
+                .is_err(),
+            "a stream truncated by {cut} B must be an error, not a short success"
         );
+    }
+}
+
+fn rewrite_manifest_size(xml: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let before = format!("manifest:size=\"{from}\"");
+    let after = format!("manifest:size=\"{to}\"");
+    let s = String::from_utf8_lossy(xml);
+    assert!(s.contains(&before), "fixture must carry {before}");
+    s.replace(&before, &after).into_bytes()
+}
+
+/// `manifest:size` became an allocation length when the inflate moved into a sized
+/// slot, so it needs the same treatment `manifest:key-size` already had. It is an
+/// `i64` the manifest controls, and `vec![0u8; 9_000_000_000]` is a 9 GB allocation
+/// -- or on a 32-bit target a capacity-overflow panic -- reached before any cipher
+/// could object. Under the old grown-`Vec` inflate this was the decompressor's
+/// ceiling to enforce; now it is ours, and it is enforced before key derivation so a
+/// hostile row costs a comparison rather than a 64 MiB Argon2id.
+#[test]
+fn hostile_manifest_size_is_refused_before_allocating() {
+    let bytes = mutate_zip(
+        "lo-wholesome-gcm-argon2.odt",
+        None,
+        None,
+        Some(|xml| rewrite_manifest_size(xml, "6977", "9000000000")),
+    );
+    let class = classify(&bytes).expect("classify passes manifest:size through");
+    assert!(
+        class
+            .encrypted_entries
+            .iter()
+            .any(|e| e.size == 9_000_000_000),
+        "fixture must carry the hostile size"
+    );
+    match decrypt(&bytes, PASSWORD) {
+        Err(DecryptError::BadParameters(msg)) => {
+            assert!(msg.contains("manifest:size"), "unexpected message: {msg}")
+        }
+        other => panic!("expected BadParameters, got {other:?}"),
+    }
+}
+
+/// The hazard the sized slot introduces, and the reason the length check is
+/// load-bearing rather than belt-and-braces. A slot is zero-filled before the
+/// closure runs, so a manifest that OVERSTATES `size` inflates fewer bytes than the
+/// slot holds and the decoder still reports success -- the difference is a tail of
+/// zeros. Without comparing the written count to the slot length, a truncated
+/// document would be accepted as a whole one and handed to the caller padded.
+#[test]
+fn overstated_manifest_size_is_rejected_rather_than_zero_padded() {
+    let bytes = mutate_zip(
+        "lo-wholesome-gcm-argon2.odt",
+        None,
+        None,
+        Some(|xml| rewrite_manifest_size(xml, "6977", "7000")),
+    );
+    match decrypt(&bytes, PASSWORD) {
+        Err(DecryptError::Inflate(msg)) => assert!(
+            msg.contains("6977") && msg.contains("7000"),
+            "message should name both lengths: {msg}"
+        ),
+        other => panic!("expected Inflate, got {other:?}"),
     }
 }
 
