@@ -38,6 +38,32 @@ manifest edit, no review — would have broken the build. The four wrappers are
 now plain `type` aliases, which is exactly what the macro expanded to, so no
 call site moved.
 
+The pin earned itself the same day: rc.12 published hours later and changed
+`Dynamic::new_with` from `(f)` to `(len, f)`. The crate is now on
+**`=0.9.0-rc.12`**, and the graph is unchanged by that move.
+
+### Fixed
+
+**Decrypting no longer leaves copies of the document on the heap.** ODF is
+deflate-then-encrypt, so every decrypted member is inflated on its way out. That
+inflate grew its output buffer as it decoded, and a `Vec` that reallocates frees
+the old block *without wiping it* — so each decrypt abandoned partial copies of
+the plaintext outside any wrapper, before there was a wrapper to put them in.
+Moving the finished buffer into a zeroizing wrapper never addressed it: the
+reallocations had already happened.
+
+`manifest:size` declares the inflated length, so the destination can now be
+sized before the decode rather than discovered by growing into it, and the
+inflate writes directly into the wrapper's own storage. The plaintext never
+exists in an unwrapped buffer, and a failed inflate is wiped rather than left
+behind.
+
+Two guards came with it, because a sized destination makes `manifest:size` an
+allocation length rather than a value checked afterwards. A hostile size is now
+refused before any key derivation, and a size that *overstates* the real length
+is rejected rather than accepted as a document with a tail of zeros — which is
+what a zero-filled destination would otherwise hand back. Suite 107 → 109.
+
 ## v0.1.0-rc.2 — 2026-09-04
 
 Adds a command-line front end, and fixes the docs.rs build — which was broken in

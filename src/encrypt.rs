@@ -272,8 +272,9 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     )
 }
 
-/// Raw DEFLATE of the whole input buffer (mirrors `decrypt::raw_inflate`'s
-/// shape in the opposite direction). No zlib wrapper -- LO's own
+/// Raw DEFLATE of the whole input buffer (the opposite direction to
+/// `decrypt::inflate_into`, though not its shape: deflate has no declared
+/// output length to size a slot from, so this still returns a grown `Vec`). No zlib wrapper -- LO's own
 /// `ZipOutputEntryBase` deflates raw too (`ZipOutputEntry.cxx`).
 fn raw_deflate(bytes: &[u8]) -> Result<Vec<u8>, EncryptError> {
     raw_deflate_with_ceiling(bytes, DEFLATE_CEILING)

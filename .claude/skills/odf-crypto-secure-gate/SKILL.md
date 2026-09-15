@@ -19,9 +19,9 @@ bare `Zeroizing` left anywhere in `src/`, and no "this one's local so plain
 `Zeroizing` is enough" exception. Direct `zeroize` is gone from `Cargo.toml` —
 secure-gate depends on it internally, so wrapping subsumes it.
 
-**Dependency:** `secure-gate = "=0.9.0-rc.11"` (`Cargo.toml`),
+**Dependency:** `secure-gate = "=0.9.0-rc.12"` (`Cargo.toml`),
 `default-features = false, features = ["alloc"]` only — no `rand`, `ct-eq`, or
-`encoding`. (All three still exist under those names in rc.11; the list is a
+`encoding`. (All three still exist under those names in rc.12; the list is a
 statement about what is off, not about what was renamed.) This crate never
 generates a random *secret* (keys come from a user-supplied password;
 `encrypt`'s salt and IV are public and use `aes-gcm`'s `OsRng`) and never
@@ -39,7 +39,9 @@ and a release candidate makes no compatibility promise. The old
 `"0.9.0-rc.7"` already resolved to rc.11 — measured with
 `cargo update --dry-run`, not inferred — so `Cargo.lock` was the only thing
 holding the old version in place, and a bare `cargo update` would have deleted
-four macros out from under `sensitive.rs` with no warning. Drop the `=` when
+four macros out from under `sensitive.rs` with no warning. The pin then earned
+itself within hours: rc.12 published the same day and changed
+`Dynamic::new_with`'s signature. Drop the `=` when
 secure-gate reaches a stable `0.9.0`; until then, moving version is an edit
 somebody reads.
 
@@ -68,10 +70,10 @@ derived key, each decrypted member in both its deflated and inflated forms.
 
 | Alias | Inner | Declared | Status |
 |---|---|---|---|
-| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`kdf.rs:38`), written in place by `finalize_into` (`kdf.rs:44`), consumed by `derive_key` (`decrypt.rs:281`). |
-| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:281`), allocated at `:290`, consumed in `decrypt_member` (`:327`). Also `encrypt`'s wholesome key (`encrypt.rs:216`). |
-| `DeflatedPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — returned by `decrypt_aes_gcm` (`:340`, moved in at `:374`), `decrypt_aes_cbc` (`:378`, wrapped at `:392`), `decrypt_blowfish_cfb64` (`:423`, wrapped at `:434`) and `decrypt_member` (`:327`); inflated inside `with_secret` (`:205`). Also `encrypt`'s deflated-then-sealed payload (`encrypt.rs:204`). |
-| `MemberPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — the values of the `plain` map in `decrypt` (`:193`); `rebuild_zip` (`:564`) writes each straight from the wrapper into the zip writer (`:602`). |
+| `PasswordDigest` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `start_key`'s return type (`kdf.rs:42`), written in place by `finalize_into` (`kdf.rs:47`), consumed by `derive_key` (`decrypt.rs:296`). |
+| `DerivedKey` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — `derive_key`'s return type (`decrypt.rs:296`), allocated at `:305`, consumed in `decrypt_member` (`:342`). Also `encrypt`'s wholesome key (`encrypt.rs:216`). |
+| `DeflatedPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — returned by `decrypt_aes_gcm` (`:355`, moved in at `:389`), `decrypt_aes_cbc` (`:393`, wrapped at `:407`), `decrypt_blowfish_cfb64` (`:438`, wrapped at `:449`) and `decrypt_member` (`:342`); read inside `with_secret` to fill the next wrapper (`:220`). Also `encrypt`'s deflated-then-sealed payload (`encrypt.rs:204`). |
+| `MemberPlaintext` | `Dynamic<Vec<u8>>` | `src/sensitive.rs`, `pub(crate)` | **Live** — the values of the `plain` map in `decrypt` (`:205`), built by `try_new_with` so the inflate writes into the wrapper's own slot (`:220`); `rebuild_zip` (`:618`) writes each straight from the wrapper into the zip writer (`:656`). |
 
 > These `file:line` citations have now drifted three times and been repaired
 > three times (`CHANGELOG.md` records two of them). If they drift a fourth,
@@ -136,32 +138,47 @@ microseconds. Don't reimplement SHA here to close it.
 
 `Dynamic<Vec<u8>>` zeroizes what it holds, including spare capacity, **but a
 `Vec` that reallocates frees its old block unwiped**, and that block is outside
-the wrapper's reach. rc.11's own module doc says so in a table: for a growable
-`Dynamic<Vec<u8>>`, "each realloc leaves the old buffer unzeroed".
+the wrapper's reach. secure-gate's own module doc says so in a table: for a
+growable `Dynamic<Vec<u8>>`, "each realloc leaves the old buffer unzeroed".
 
-Nothing in this crate currently grows a wrapped buffer:
+Since rc.12, `Dynamic::new_with(len, f)` hands the closure a pre-zeroed
+`&mut [u8]` of exactly `len` bytes, so growth is not expressible and the hazard
+is gone *for values built through it*. **That is not the same as gone.** A value
+grown somewhere else and then moved in with `new(owned)` has already
+reallocated; `new` moves rather than copies, exactly as documented, but the
+damage predates the wrapper. Both shapes exist here:
 
-- `DerivedKey::new(vec![0u8; n])` (`decrypt.rs:290`) allocates the final length
-  up front and `with_secret_mut` writes into it.
+- `PasswordDigest::new_with(output_size(), |slot| ..)` (`kdf.rs:46`) — the slot
+  is the wrapper's own storage and `finalize_into` fills it once.
+- `MemberPlaintext::try_new_with(n, |slot| inflate_into(c, slot))`
+  (`decrypt.rs:220`) — the inflate writes *into* the wrapper. This is the fix
+  for a real leak: `decompress_to_vec_with_limit` grew its output as it decoded,
+  so every decrypt abandoned partial copies of the user's document on the heap.
+- `DerivedKey::new(vec![0u8; n])` (`decrypt.rs:305`) allocates the final length
+  up front and `with_secret_mut` writes into it — no growth, so `new` is right.
 - `DeflatedPlaintext::new(blob.to_vec())` allocates once at the ciphertext's
   length and decrypts in place; the CBC padding strip is a `truncate`, which
   never reallocates.
-- `PasswordDigest::new_with` (`kdf.rs:42-45`) calls `v.resize(N, 0)` on a fresh
-  empty buffer — one allocation, nothing to copy forward — and only then does
-  `finalize_into` write.
+- **Still unfixed, and known:** `DeflatedPlaintext::new(raw_deflate(bytes)?)`
+  (`encrypt.rs:204`) wraps a buffer `miniz_oxide::deflate::compress_to_vec`
+  grew. Deflate has no declared output length to size a slot from — that is
+  what `manifest:size` gives the decrypt direction and nothing gives this one —
+  so closing it needs an upper bound and a truncate, not a slot. Left as is
+  rather than papered over.
 
-**Keep it that way.** If a new wrapper ever needs to grow, `reserve_exact` the
-final size before the first write. A `new_with` closure that builds up its
-value with `extend_from_slice` or repeated `push` is a real leak with no
-symptom and no test that can catch it — this is the defect the msoffice-crypto
-crate found in its own RC4 key construction, where the wrapper was doing its
-job and a copy of the key was sitting outside it.
+**The rule for a new wrapper.** If the producer writes into a buffer you supply,
+use `new_with`/`try_new_with` and give it the wrapper's slot. If it returns an
+owned value, `new` is a move and is correct. A closure that builds up its value
+with `extend_from_slice` or repeated `push` is a leak with no symptom and no
+test that can catch it — the defect msoffice-crypto found in its own RC4 key
+construction, where the wrapper was doing its job and a copy of the key was
+sitting outside it.
 
 ## Guards that sit next to the wrapping
 
 `DERIVED_KEY_MIN_LEN = 1` / `DERIVED_KEY_MAX_LEN = 64` (`limits.rs:50-51`,
 inside the `crypto-ops`-gated `crypto` submodule) bound `manifest:key-size`
-*before* `derive_key` allocates the key buffer (`decrypt.rs:290`).
+*before* `derive_key` allocates the key buffer (`decrypt.rs:305`).
 `derived_key_len` is an `i32` the manifest controls; without the bound a value
 near `i32::MAX` allocates ~2 GiB and then runs PBKDF2 over all of it — a hang no
 `Result` can report — before any cipher gets to reject the length. AES-256 needs
@@ -170,10 +187,25 @@ near `i32::MAX` allocates ~2 GiB and then runs PBKDF2 over all of it — a hang 
 checks that `classify` passes the hostile value through unchanged, so the
 guard — not the parser — is what the test exercises.
 
+`inflated_len` (`decrypt.rs:534`) is the same shape for `manifest:size`, and it
+exists *because* the inflate moved into a sized slot. Under the old grown-`Vec`
+inflate, `INFLATE_CEILING` was the decompressor's ceiling and a hostile `size`
+merely failed a comparison afterwards; now `size` **is** the allocation length,
+and `vec![0u8; 9_000_000_000]` does not fail a comparison. Checked before
+`decrypt_member`, so a hostile row costs a comparison rather than a 64 MiB
+Argon2id — which puts it with the other pre-derivation screens `decrypt`'s
+rustdoc lists. Two tests pin it, both verified by breaking what they guard:
+`hostile_manifest_size_is_refused_before_allocating`, and
+`overstated_manifest_size_is_rejected_rather_than_zero_padded` for the subtler
+half — a slot is zero-filled, so an overstated `size` inflates short and the
+decoder still reports success, leaving a tail of zeros that only the
+written-vs-slot-length comparison catches.
+
 ## The pattern
 
 > Not a doctest — nothing compiles this block, so it is verified by reading it
-> against the source. Last checked against `296fa85` + the rc.11 upgrade.
+> against the source. Last checked against the rc.12 upgrade and the
+> inflate-into-slot change.
 
 ```rust
 // kdf.rs — start_key: the digest lands in the wrapper's own buffer. Shared
@@ -223,11 +255,13 @@ fn decrypt_member(row: &EntryEncryption, password: &str, blob: &[u8])
     })
 }
 
-// decrypt: inflate inside with_secret; the wholesome path returns the inflated
-// package directly (that IS the public return), the per-entry path wraps each
-// member until rebuild_zip writes it.
-let inflated = compressed.with_secret(|c| raw_inflate(c, row.size))?;
-plain.insert(member, MemberPlaintext::new(inflated));
+// decrypt: the inflate writes INTO the next wrapper's slot, so the plaintext
+// never exists in an unwrapped buffer. `manifest:size` is bounded first --
+// it is now an allocation length, not a value checked after the fact.
+let n = inflated_len(row.size)?;
+let inflated = compressed
+    .with_secret(|c| MemberPlaintext::try_new_with(n, |slot| inflate_into(c, slot)))?;
+plain.insert(member, inflated);
 // ... in rebuild_zip:
 pt.with_secret(|p| out.write_all(p))?;
 ```
@@ -248,38 +282,45 @@ Three shapes worth naming:
   `pt.with_secret(|p| out.write_all(p))` — no unwrapped clone of any plaintext
   along the way.
 
-`pbkdf2_hmac`, `hash_password_into`, the cipher constructors and `raw_inflate`
-all still take plain `&[u8]`/`&mut [u8]`. Rust's auto-deref (`&Vec<u8>` /
-`&mut Vec<u8>` closure parameters coerce at the call site) means none of them
-needed a signature change.
+`pbkdf2_hmac`, `hash_password_into`, the cipher constructors and `inflate_into`
+all take plain `&[u8]`/`&mut [u8]`, which is what lets a third-party decoder
+write straight into a wrapper's slot: `inflate_into` hands miniz_oxide's
+`decompress_slice_iter_to_slice` the `&mut [u8]` `try_new_with` gave it, and
+nothing in between sees a `Vec`.
 
 ## Construction
 
 ```rust
-PasswordDigest::new_with(|v| { v.resize(N, 0); h.finalize_into(Output::<D>::from_mut_slice(v)); })
-DerivedKey::new(vec![0u8; n])
+PasswordDigest::new_with(N, |slot| h.finalize_into(Output::<D>::from_mut_slice(slot)))
+MemberPlaintext::try_new_with(n, |slot| inflate_into(c, slot))   // fallible fill
+DerivedKey::new(vec![0u8; n])              // sized up front, filled via with_secret_mut
 DeflatedPlaintext::new(blob.to_vec())      // in-place ciphers, before decrypting
 out.map(DeflatedPlaintext::new)            // producing ciphers, a move
-MemberPlaintext::new(inflated)             // a move
 ```
 
-Per secure-gate's own docs (`src/dynamic.rs:47`, verbatim in rc.11),
-`Dynamic::new_with` exists "for consistent API idiom, not for stack-residue
-avoidance" — the wrapper's allocation is heap either way. It earns its keep in
-`start_key` for a different reason: it gives `finalize_into` a buffer to write
+Per secure-gate's own docs (`src/dynamic.rs:47`), `Dynamic::new_with` exists
+"for consistent API idiom, not for stack-residue avoidance" — the wrapper's
+allocation is heap either way. It earns its keep in `start_key` for a different
+reason: it gives `finalize_into` a buffer to write
 *into*, so the digest never exists as a returned `GenericArray` on the stack
 (which `finalize().to_vec()` would produce).
 
-**Do not convert the `new(...)` sites to `new_with(...)`.** The discriminator is
-whether the producer *writes into a caller-provided buffer* or *returns an owned
-value*. An owned return means `new` is already a move, and `new_with` would wrap
-a closure around a copy from a source that stays unprotected — strictly worse,
-and against the reallocation-residue guidance above, since `new_with` hands the
-closure an *empty* buffer. `out.map(DeflatedPlaintext::new)` and
-`MemberPlaintext::new(inflated)` take owned `Vec`s and are correct as they
-stand. (The msoffice-crypto crate had broader `new_with` adoption as an approved
-plan item, checked every candidate against this rule, and cancelled the item
-without converting anything.)
+**Do not convert the remaining `new(...)` sites to `new_with(...)`.** The
+discriminator is whether the producer *writes into a caller-provided buffer* or
+*returns an owned value*. An owned return means `new` is already a move, and
+`new_with` would wrap a closure around a copy from a source that stays
+unprotected — strictly worse. `out.map(DeflatedPlaintext::new)` takes an owned
+`Vec` from `aead`'s decrypt and is correct as it stands. (The msoffice-crypto
+crate had broader `new_with` adoption as an approved plan item, checked every
+candidate against this rule, and cancelled the item without converting
+anything.)
+
+The inflate went the other way for exactly this reason, and it is worth seeing
+why it is not a counter-example: `MemberPlaintext` stopped using `new` not
+because `new` was wrong for an owned `Vec`, but because the *producer* was
+changed. miniz_oxide can write into a caller slice, so there is no longer an
+owned `Vec` to move — the question is always what the producer does, never
+which constructor reads better.
 
 The rule for a new wrapper: **the function that creates sensitive material hands
 back the wrapper** — `start_key`, `derive_key` and every cipher fn do — rather
@@ -344,10 +385,15 @@ It tracks release candidates and they carry breaking changes. Before bumping:
    `SecretLen` split out of `RevealSecret` in rc.8, so those need
    `use secure_gate::SecretLen;`. This crate calls them only on revealed
    `&[u8]` slices, which are unaffected.
-3. Re-measure the crate counts (see "Verify") — secure-gate is unconditional, so
+3. `grep -rn "new_with" src/` — rc.12 changed `Dynamic::new_with` from `(f)` to
+   `(len, f)`, handing the closure a pre-zeroed `&mut [u8]` instead of a
+   zero-capacity `Vec`. That one is loud (`E0061`), so it needs no vigilance —
+   but read it as a prompt to check whether anything *else* should now be built
+   through a slot, which is how the inflate moved inside its wrapper.
+4. Re-measure the crate counts (see "Verify") — secure-gate is unconditional, so
    its graph moves the *detection-only* number, which is the crate's headline
-   claim.
-4. Read the upstream `CHANGELOG.md` inside the new tarball
+   claim. rc.11 → rc.12 moved nothing; rc.7 → rc.11 moved both figures by two.
+5. Read the upstream `CHANGELOG.md` inside the new tarball
    (`~/.cargo/registry/src/*/secure-gate-<version>/CHANGELOG.md`) rather than
    docs.rs: the migration tables and `sed` scripts live there.
 
@@ -361,7 +407,7 @@ cargo build --no-default-features                     # secure-gate compiles eit
 cargo build --no-default-features --features crypto-ops
 cargo clippy --all-targets --no-default-features -- -D warnings
 cargo clippy --all-targets --no-default-features --features crypto-ops -- -D warnings
-cargo test  --no-default-features --features crypto-ops   # 107 tests, every golden KDF/cipher path
+cargo test  --no-default-features --features crypto-ops   # 109 tests, every golden KDF/cipher path
 cargo fmt --all --check
 ```
 
@@ -370,7 +416,7 @@ After a dependency change, also:
 ```bash
 cargo +1.85.0 build --locked --no-default-features --features crypto-ops   # MSRV; rc.11 is edition 2024, which needs exactly 1.85
 RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc --locked --all-features --no-deps
-cargo tree --locked -e no-dev --prefix none | grep -v '(\*)' | sort -u | wc -l   # 25 default, 59 crypto-ops
+cargo tree --locked -e no-dev --prefix none | grep -v '(\*)' | sort -u | wc -l   # 25 default, 59 crypto-ops (unchanged by rc.12)
 ```
 
 `cargo fmt --all --check` used to fail on `main` independently of secure-gate.

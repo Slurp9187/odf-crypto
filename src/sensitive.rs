@@ -48,7 +48,7 @@ pub(crate) type PasswordDigest = Dynamic<Vec<u8>>;
 pub(crate) type DerivedKey = Dynamic<Vec<u8>>;
 
 /// Package plaintext in its raw-DEFLATE form, on either side of a cipher.
-/// Decrypting, it is what the cipher emits and lives until `raw_inflate`;
+/// Decrypting, it is what the cipher emits and lives until `inflate_into`;
 /// encrypting, it is the deflated input, wrapped before the cipher runs and
 /// sealed in place, so the crate's own copy of the caller's document is
 /// zeroized on drop rather than left in a plain buffer.

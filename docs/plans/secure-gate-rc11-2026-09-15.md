@@ -1,4 +1,4 @@
-Status: **Shipped (2026-09-15)** — `secure-gate` 0.9.0-rc.7 → 0.9.0-rc.11; `dynamic_newtype!` adoption is a later arc · Authored 2026-09-15 against `296fa85` · Landed on `claude/secure-gate-rc11`: `7f47cd9` (upgrade and pin), `a92ee54` (crate counts), `a0b48f7` (skill rewrite), plus this commit (changelog and plan)
+Status: **Shipped (2026-09-15)** — `secure-gate` 0.9.0-rc.7 → 0.9.0-rc.12 (planned as rc.11; see §11); `dynamic_newtype!` adoption is a later arc · Authored 2026-09-15 against `296fa85` · Landed on `claude/secure-gate-rc11`: `7f47cd9` (upgrade and pin), `a92ee54` (crate counts), `a0b48f7` (skill rewrite), `d3db786` (changelog and plan), `2efa775` (rc.12), `6533809` (inflate into slot)
 
 # Upgrade `secure-gate` to 0.9.0-rc.11
 
@@ -494,3 +494,55 @@ through release candidates, pin it with `=` from the first commit.
 **Do not copy:** letting a `file:line` table drift three times. It has been
 fixed twice and is wrong again; the third repair should probably be the last
 before it becomes function names instead.
+
+## 11. Amendment — the arc extended to rc.12 and to the inflate path
+
+**Recorded rather than quietly folded in, because the plan above argued for a
+narrow scope and the work did not stay in it.**
+
+### What changed
+
+secure-gate `0.9.0-rc.12` published roughly four hours after rc.11, while this
+branch was finished and unpushed. It changes `Dynamic::new_with` from `(f)` to
+`(len, f)` — a sized, pre-zeroed `&mut [u8]` instead of a zero-capacity `Vec`.
+The user's call was to fold it in along with the inflate work rather than ship
+rc.11 and follow up.
+
+### Why the original reasoning did not survive
+
+§3 said "keep this arc to the mechanical move" and treated anything touching the
+decode path as a separate arc. That was right for `dynamic_newtype!`, which is
+still deferred, and wrong here — for a reason §4 of this plan half-saw and did
+not follow through.
+
+This plan's §3 recorded that `Dynamic::new_with` hands its closure an empty
+buffer, and the skill rewrite turned that into a warning: *do not write a
+`new_with` closure that grows.* Both stopped at the wrapper's own constructors.
+Neither asked the next question — **what about the buffers that were already
+grown before we wrapped them?** `MemberPlaintext::new(inflated)` moves an owned
+`Vec` that `decompress_to_vec_with_limit` reallocated several times while
+decoding, and each of those reallocations freed a block of the user's document
+unwiped. The residue rule was written down and then not applied to the largest
+secret this crate handles.
+
+What exposed it was not review of this plan but a question from the secure-gate
+maintainer, answered by reading the code: ODF is deflate-then-encrypt, so *every*
+decrypted member goes through a growing inflate. The fix needed `(len, f)`, which
+did not exist when this plan was written — so the omission was not avoidable at
+authoring time, but the reasoning that would have found it was already on the
+page.
+
+### What that is worth keeping
+
+**A hazard stated as a rule about one constructor is a hazard half-understood.**
+"Do not grow inside `new_with`" is true and was not the whole shape; the general
+form is *any* secret that reached its wrapper by growing. Written as the narrow
+rule, it passed review here twice.
+
+### Where the scope did hold
+
+`dynamic_newtype!` is still deferred, on the reasoning in §3 unchanged: it is a
+separate design question, and rc.12 has not settled the `derive:` surface. The
+encrypt-side deflate residue is also left open and named in the skill — deflate
+has no declared output length to size a slot from, so closing it needs a bound
+and a truncate rather than the same fix, and that is its own arc.

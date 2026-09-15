@@ -138,7 +138,10 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # the previous `"0.9.0-rc.7"` resolved straight to rc.11, which deleted the
 # `dynamic_alias!` macro `src/sensitive.rs` was built on. The lockfile was the
 # only thing holding rc.7 in place. `=` makes the next move an edit somebody
-# reads. Drop the `=` when secure-gate reaches a stable 0.9.0.
+# reads -- and it earned that within hours: rc.12 published the same day and
+# changed `Dynamic::new_with`'s signature, so the pin turned a silent build
+# break into a deliberate bump. Drop the `=` when secure-gate reaches a stable
+# 0.9.0.
 secure-gate = { version = "=0.9.0-rc.12", default-features = false, features = [
     "alloc",
 ] }
