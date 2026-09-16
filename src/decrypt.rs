@@ -12,7 +12,7 @@ use blowfish::Blowfish;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit as CbcKeyIvInit};
 use cbc::Decryptor;
 use cfb_mode::BufDecryptor;
-use miniz_oxide::inflate::decompress_to_vec_with_limit;
+use miniz_oxide::inflate::decompress_slice_iter_to_slice;
 use pbkdf2::pbkdf2_hmac;
 use secure_gate::{RevealSecret, RevealSecretMut};
 use sha1::{Digest, Sha1};
@@ -182,16 +182,31 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
                     "wholesome package missing encrypted-package row".into(),
                 )
             })?;
+        // Before `decrypt_member`, not after: `manifest:size` is attacker-controlled
+        // and needs no key to check, so refusing it here keeps it in the same class
+        // as the other pre-derivation screens -- nobody pays for a 64 MiB Argon2id
+        // to learn the manifest was never going to be acted on.
+        let n = inflated_len(row.size)?;
         let (index, _) = member_for_archive(&mut archive, &row.path)?;
         let ciphertext = read_member_at(&mut archive, index)?;
         let compressed = decrypt_member(row, password, &ciphertext)?;
         // The inflated package IS the public return value, so it leaves the
-        // wrapper here; only the deflated intermediate was ever wrapped.
-        return compressed.with_secret(|c| raw_inflate(c, row.size));
+        // wrapper here; only the deflated intermediate was ever wrapped. It is
+        // still sized up front rather than grown: the reallocation residue
+        // `inflate_into` exists to remove is the caller's document either way,
+        // and a plain `Vec` that is never resized abandons nothing.
+        return compressed.with_secret(|c| {
+            let mut out = vec![0u8; n];
+            inflate_into(c, &mut out)?;
+            Ok(out)
+        });
     }
 
     let mut plain: HashMap<String, MemberPlaintext> = HashMap::new();
     for row in &class.encrypted_entries {
+        // As in the wholesome arm: bound the manifest's length before deriving a
+        // key from it, so a hostile row costs a comparison rather than a KDF.
+        let n = inflated_len(row.size)?;
         let (index, member) = member_for_archive(&mut archive, &row.path)?;
         let ciphertext = read_member_at(&mut archive, index)?;
         let compressed = decrypt_member(row, password, &ciphertext)?;
@@ -201,8 +216,8 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
         // otherwise drop inflated member plaintext as a plain `Vec`. (The
         // wholesome path above is the exception on purpose -- there the
         // inflated package *is* the public return value.)
-        let inflated =
-            compressed.with_secret(|c| raw_inflate(c, row.size).map(MemberPlaintext::new))?;
+        let inflated = compressed
+            .with_secret(|c| MemberPlaintext::try_new_with(n, |slot| inflate_into(c, slot)))?;
         plain.insert(member, inflated);
     }
 
@@ -470,21 +485,60 @@ fn digest_eq(got: &[u8], want: &[u8]) -> bool {
     diff == 0
 }
 
-/// Raw DEFLATE, then plan section 2's two post-conditions. Both run only after the
-/// checksum or GCM tag has already passed, so neither is a password oracle.
-/// `decompress_to_vec_with_limit` fails an unterminated stream rather than
-/// returning the partial output it managed; the length check then pins the rest.
-fn raw_inflate(compressed: &[u8], expected_size: i64) -> Result<Vec<u8>, DecryptError> {
-    let out = decompress_to_vec_with_limit(compressed, INFLATE_CEILING)
-        .map_err(|e| DecryptError::Inflate(e.to_string()))?;
-    if out.len() as i64 != expected_size {
+/// Raw DEFLATE into a slot the caller sized from `manifest:size`, then plan
+/// section 2's two post-conditions. Both run only after the checksum or GCM tag
+/// has already passed, so neither is a password oracle.
+///
+/// The slot replaces a grown `Vec`, and that is a confidentiality fix rather
+/// than a tidy-up. `decompress_to_vec_with_limit` reallocates as it decodes,
+/// and a `Vec` realloc frees the old block *unwiped* -- abandoning copies of
+/// the plaintext document on the heap that no wrapper can reach, because the
+/// growth happened before anything wrapped it. One allocation, sized up front,
+/// removes the whole class.
+///
+/// Both post-conditions still hold, by different mechanisms than before:
+///
+/// - *The stream reaches its end marker.* An unterminated stream is an `Err`,
+///   not partial output. But `decompress_slice_iter_to_slice` does leave what
+///   it managed to write in the slot on failure -- its own docs say so -- which
+///   is why the per-entry caller builds through `try_new_with`, whose wrapper is
+///   live for the whole fill and zeroizes that partial document on `Err`.
+/// - *The length equals `manifest:size`.* Checked against the slot length rather
+///   than read off a returned `Vec`. This is load-bearing in a way it was not
+///   before: a manifest that overstates `size` now yields `Ok` with a zero-padded
+///   tail, so without this check a short inflate would pass as a whole document.
+fn inflate_into(compressed: &[u8], slot: &mut [u8]) -> Result<(), DecryptError> {
+    // `false`: ODF stores raw DEFLATE, with no zlib header. `true`: there is
+    // therefore no adler32 to verify either.
+    let written = decompress_slice_iter_to_slice(slot, core::iter::once(compressed), false, true)
+        .map_err(|e| DecryptError::Inflate(format!("{e:?}")))?;
+    if written != slot.len() {
         return Err(DecryptError::Inflate(format!(
-            "inflated {} != manifest:size {}",
-            out.len(),
-            expected_size
+            "inflated {written} != manifest:size {}",
+            slot.len()
         )));
     }
-    Ok(out)
+    Ok(())
+}
+
+/// Bound `manifest:size` before it becomes an allocation length.
+///
+/// Under the grown-`Vec` inflate this was the decompressor's job: `INFLATE_CEILING`
+/// capped its output, and a hostile `manifest:size` only ever failed the length
+/// comparison afterwards. A sized slot moves the allocation ahead of the decode,
+/// so the bound has to move with it -- `size` is an `i64` the manifest controls,
+/// and `vec![0u8; huge]` aborts the caller's process rather than returning an
+/// error, which a library must not do. Same shape as
+/// `DERIVED_KEY_MIN_LEN..=DERIVED_KEY_MAX_LEN` guarding `manifest:key-size` ahead
+/// of `derive_key`'s allocation.
+fn inflated_len(size: i64) -> Result<usize, DecryptError> {
+    if !(0..=INFLATE_CEILING as i64).contains(&size) {
+        return Err(DecryptError::BadParameters(format!(
+            "manifest:size {size} outside 0..={INFLATE_CEILING}"
+        )));
+    }
+    // Bounded above by INFLATE_CEILING, itself a `usize`, so this cannot truncate.
+    Ok(size as usize)
 }
 
 /// Rebuild a start tag without `manifest:size`, which an LO plaintext save never writes.

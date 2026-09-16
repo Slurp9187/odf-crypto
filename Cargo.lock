@@ -79,6 +79,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd307490d624467aa6f74b0eabb77633d1f758a7b25f12bceb0b22e08d9726f6"
 
 [[package]]
+name = "base32ct"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e27957ac55e90ce032f6736755cd74cea202e97e19f22e8ba2d0bc0413f99ec9"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -404,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "odf-crypto"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -524,14 +530,14 @@ dependencies = [
 
 [[package]]
 name = "secure-gate"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1edb4266eadc554e1ccdb7dfc566b8e5677309651e952b1d8594e875f5de7e54"
+checksum = "39effc758e162c68cf2e0c3a5df58f137d7ee161560eba4c0b2e6cad81749379"
 dependencies = [
  "base16ct",
+ "base32ct",
  "base64ct",
  "bech32",
- "thiserror",
  "zeroize",
 ]
 
@@ -713,20 +719,6 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
-dependencies = [
- "zeroize_derive",
-]
-
-[[package]]
-name = "zeroize_derive"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
 
 [[package]]
 name = "zip"

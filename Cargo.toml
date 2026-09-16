@@ -1,6 +1,6 @@
 [package]
 name = "odf-crypto"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 edition = "2021"
 description = "LibreOffice-faithful ODF package encryption detection, decryption and encryption"
 rust-version = "1.85"
@@ -72,7 +72,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Detection only. `classify` needs no cryptographic dependency, so the default
-# build pulls 27 crates where a cryptographic one pulls 61. Nobody pays for a
+# build pulls 25 crates where a cryptographic one pulls 59. Nobody pays for a
 # cipher stack to ask whether a file is encrypted.
 #
 # It does still pull an inflate implementation -- zip -> flate2 -> miniz_oxide,
@@ -130,7 +130,19 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # crate used to carry.
 # alloc only: this crate needs Dynamic<Vec<u8>> for password/key material, not
 # the encoding/rand/ct-eq extras EFV and DebitLeft pull in for their own use.
-secure-gate = { version = "0.9.0-rc.7", default-features = false, features = [
+#
+# Pinned with `=`, unlike every other dependency here, because a caret
+# requirement over a PRE-RELEASE matches later pre-releases of the same version
+# -- and those carry breaking changes, since a release candidate makes no
+# compatibility promise. This is not hypothetical: `cargo update --dry-run` on
+# the previous `"0.9.0-rc.7"` resolved straight to rc.11, which deleted the
+# `dynamic_alias!` macro `src/sensitive.rs` was built on. The lockfile was the
+# only thing holding rc.7 in place. `=` makes the next move an edit somebody
+# reads -- and it earned that within hours: rc.12 published the same day and
+# changed `Dynamic::new_with`'s signature, so the pin turned a silent build
+# break into a deliberate bump. Drop the `=` when secure-gate reaches a stable
+# 0.9.0.
+secure-gate = { version = "=0.9.0-rc.12", default-features = false, features = [
     "alloc",
 ] }
 
@@ -172,7 +184,7 @@ rpassword = { version = "7", optional = true }
 # builder+suggestions is 5, adding wrap_help is 8. Five is worth it for
 # `--flag=value`, "did you mean --password-env", and help that cannot drift from
 # the definitions it documents. None of it reaches a library consumer: `cli` is
-# opt-in, and the default build still resolves 27 crates.
+# opt-in, and the default build still resolves 25 crates.
 clap = { version = "4", optional = true, default-features = false, features = [
     "std",
     "help",

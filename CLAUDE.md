@@ -49,8 +49,8 @@ Three configurations, and every change must hold in all of them.
 
 | Feature | Default | What it adds |
 | --- | --- | --- |
-| *(none)* | **yes** | `classify` only. 27 crates, no cryptographic dependency. |
-| `crypto-ops` | opt-in | `decrypt` and `encrypt`. 61 crates. |
+| *(none)* | **yes** | `classify` only. 25 crates, no cryptographic dependency. |
+| `crypto-ops` | opt-in | `decrypt` and `encrypt`. 59 crates. |
 | `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`. |
 
 **Detection-only is the default on purpose.** Nobody should resolve a cipher

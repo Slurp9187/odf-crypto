@@ -11,6 +11,59 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.3] — Unreleased
+
+The release line is open; this is what has landed on it so far.
+
+### Changed
+
+**The dependency graph is two crates smaller in every configuration** —
+detection-only goes from 27 crates to **25**, and `crypto-ops` from 61 to
+**59**. `secure-gate` moved to `0.9.0-rc.11`, which stopped enabling `zeroize`'s
+`zeroize_derive` feature; the derive macro left the graph and took `syn 2` with
+it, having had no other reverse dependency that a non-dev build reaches. The
+34-crate gap between the two configurations is unchanged. Nothing on the public
+API moved: `decrypt` and `encrypt` have the same signatures, and the goldens
+decrypt to the same bytes — 107 library tests and 9 doctests pass at the
+identical count.
+
+**`secure-gate` is pinned with `=` rather than a caret range**, which is a
+departure from every other dependency here and is deliberate. A caret
+requirement over a *pre-release* matches later pre-releases of the same version,
+and a release candidate promises no compatibility: the previous
+`"0.9.0-rc.7"` already resolved to rc.11, so `Cargo.lock` was the only thing
+holding the old version in place. rc.9 deleted the `dynamic_alias!` macro this
+crate's `sensitive.rs` was built on, which means a bare `cargo update` — no
+manifest edit, no review — would have broken the build. The four wrappers are
+now plain `type` aliases, which is exactly what the macro expanded to, so no
+call site moved.
+
+The pin earned itself the same day: rc.12 published hours later and changed
+`Dynamic::new_with` from `(f)` to `(len, f)`. The crate is now on
+**`=0.9.0-rc.12`**, and the graph is unchanged by that move.
+
+### Fixed
+
+**Decrypting no longer leaves copies of the document on the heap.** ODF is
+deflate-then-encrypt, so every decrypted member is inflated on its way out. That
+inflate grew its output buffer as it decoded, and a `Vec` that reallocates frees
+the old block *without wiping it* — so each decrypt abandoned partial copies of
+the plaintext outside any wrapper, before there was a wrapper to put them in.
+Moving the finished buffer into a zeroizing wrapper never addressed it: the
+reallocations had already happened.
+
+`manifest:size` declares the inflated length, so the destination can now be
+sized before the decode rather than discovered by growing into it, and the
+inflate writes directly into the wrapper's own storage. The plaintext never
+exists in an unwrapped buffer, and a failed inflate is wiped rather than left
+behind.
+
+Two guards came with it, because a sized destination makes `manifest:size` an
+allocation length rather than a value checked afterwards. A hostile size is now
+refused before any key derivation, and a size that *overstates* the real length
+is rejected rather than accepted as a document with a tail of zeros — which is
+what a zero-filled destination would otherwise hand back. Suite 107 → 109.
+
 ## v0.1.0-rc.2 — 2026-09-04
 
 Adds a command-line front end, and fixes the docs.rs build — which was broken in
