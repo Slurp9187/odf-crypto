@@ -41,9 +41,20 @@ and a release candidate makes no compatibility promise. The old
 holding the old version in place, and a bare `cargo update` would have deleted
 four macros out from under `sensitive.rs` with no warning. The pin then earned
 itself within hours: rc.12 published the same day and changed
-`Dynamic::new_with`'s signature. Drop the `=` when
-secure-gate reaches a stable `0.9.0`; until then, moving version is an edit
-somebody reads.
+`Dynamic::new_with`'s signature.
+
+**Compatibility is the lesser half of that argument.** The stronger half is
+yanks: **20 of secure-gate's 54 published versions are yanked**, and a yank is
+how an author says *stop using this* — sometimes for a security reason that had
+to be acted on. A caret answers a yank by silently resolving to a neighbouring
+pre-release, possibly the one the yank existed to move people off. `=` answers
+it by failing to resolve, so a human decides. For a crate whose reason to exist
+is cryptographic, a hard stop beats a silent substitution.
+
+**Do not assume the `=` can be relaxed at a stable `0.9.0`.** The pre-release
+half of the argument expires then; the yank half does not. That is a decision to
+revisit with whoever maintains secure-gate, not something a stable version
+number grants.
 
 `decrypt` and `encrypt` were separate features until they were collapsed into
 `crypto-ops`: they pulled an identical dependency graph, and the split's only

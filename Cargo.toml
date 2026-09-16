@@ -140,8 +140,21 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # only thing holding rc.7 in place. `=` makes the next move an edit somebody
 # reads -- and it earned that within hours: rc.12 published the same day and
 # changed `Dynamic::new_with`'s signature, so the pin turned a silent build
-# break into a deliberate bump. Drop the `=` when secure-gate reaches a stable
-# 0.9.0.
+# break into a deliberate bump.
+#
+# Compatibility is the lesser half of the argument. The stronger half is YANKS.
+# 20 of secure-gate's 54 published versions are yanked, and a yank is how an
+# author says "stop using this" -- sometimes for a security reason that had to
+# be acted on. A caret requirement answers a yank by silently resolving to a
+# NEIGHBOURING pre-release, which may be the very version the yank existed to
+# move people off. `=` answers it by failing to resolve, loudly, so a human
+# decides. For a crate whose reason to exist is cryptographic, a hard stop beats
+# a silent substitution.
+#
+# So do NOT assume the `=` can be relaxed once 0.9.0 is stable. The pre-release
+# argument expires then; the yank argument does not. Revisit it as a decision,
+# with whoever maintains secure-gate, rather than treating a stable version
+# number as permission.
 secure-gate = { version = "=0.9.0-rc.12", default-features = false, features = [
     "alloc",
 ] }
