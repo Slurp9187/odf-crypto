@@ -11,9 +11,11 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
-## [0.1.0-rc.3] — Unreleased
+## [0.1.0-rc.3] — 2026-09-15
 
-The release line is open; this is what has landed on it so far.
+A dependency upgrade that turned out to carry a confidentiality fix. No public
+API moved: `classify`, `decrypt` and `encrypt` have the signatures `0.1.0-rc.2`
+shipped.
 
 ### Changed
 

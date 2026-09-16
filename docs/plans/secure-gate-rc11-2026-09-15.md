@@ -303,6 +303,15 @@ explicit that a published version is immutable and a tag moves freely only
 before publishing, so this cannot land in rc.2. Note that `main` is already
 three commits past the `v0.1.0-rc.2` tag, so the line needs opening regardless.
 
+> **Corrected at release.** That last sentence is wrong, and the conclusion it
+> supported was right for another reason. `v0.1.0-rc.2` is an *annotated* tag, so
+> `git rev-parse v0.1.0-rc.2` yields the tag object (`18aa7a8`), not the commit it
+> points at (`296fa85`) — which is `Add CLAUDE.md`, the then-tip of `main`, made
+> six minutes before rc.2 published. Nothing was sitting unreleased. The line still
+> needed opening, because rc.2 was published and therefore immutable. Dereference
+> with `git rev-parse 'v0.1.0-rc.2^{commit}'`, or just use `git log v0.1.0-rc.2..HEAD`,
+> which reads through the tag object correctly.
+
 Adopting the peer repository's changelog protocol, which the same person
 maintains: the versioned-but-undated section *is* the unreleased one, and a
 standing bare `[Unreleased]` is what that protocol exists to avoid. Its release
@@ -355,8 +364,8 @@ lead, the change written as a behavioural consequence with a measured number.
 how stale an *observation* is. A crate count is deterministic from the lockfile,
 so the lockfile pins it and git dates it.
 
-The three commits already sitting unreleased on `main` have no entries;
-completing rc.3's section is the release commit's job, not this one's.
+rc.3's section is this arc's seven commits and nothing else — see the correction
+under §6 above for why an earlier draft expected three more.
 
 **At tag time:** `git push --follow-tags` only pushes tags *missing* on the
 remote. It will not move one that already exists — it reports
@@ -467,8 +476,8 @@ does not enable `ct-eq` and has no constant-time comparison surface.
   newtypes: not "is it worth it" but **whether the nominal separation earns its
   keep when every wrapper has the same shape**, and whether the `derive:` surface
   is settled enough to build on while rc.11 is still moving it.
-- **Completing rc.3's changelog section.** The three commits already unreleased
-  on `main` get their entries from the release commit.
+- ~~**Completing rc.3's changelog section.**~~ Not required after all: the three
+  commits this referred to are inside rc.2, per the correction under §6.
 - **`cargo deny` / license re-verification.** `docs/LICENSING.md:112-114` asks
   for this after any dependency change. The graph here strictly shrinks by two
   crates and adds none, so no new licence enters; there is no `deny.toml` or
