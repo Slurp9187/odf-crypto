@@ -407,7 +407,7 @@ cargo build --no-default-features                     # secure-gate compiles eit
 cargo build --no-default-features --features crypto-ops
 cargo clippy --all-targets --no-default-features -- -D warnings
 cargo clippy --all-targets --no-default-features --features crypto-ops -- -D warnings
-cargo test  --no-default-features --features crypto-ops   # 109 tests, every golden KDF/cipher path
+cargo test  --no-default-features --features crypto-ops   # 112 tests, every golden KDF/cipher path
 cargo fmt --all --check
 ```
 

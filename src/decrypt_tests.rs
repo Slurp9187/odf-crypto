@@ -811,3 +811,66 @@ fn gcm_iv_tag_only_frame_is_not_rejected_as_too_short() {
         "IV||tag-only member must reach the cipher, not BadParameters: {err:?}"
     );
 }
+
+// --- the sized-slot inflate at its boundary ---
+//
+// `manifest:size = 0` is legal: an empty member is a normal thing for an ODF
+// package to carry. It is also the one input shape the sized-slot inflate had
+// never seen, because none of the goldens has an empty encrypted member. The
+// old grown-`Vec` inflate could not get this wrong -- it allocated nothing and
+// compared lengths afterwards. A slot is allocated first, so zero is now a real
+// case with real behaviour, and these pin it rather than assuming it.
+
+/// A zero-length slot is what `try_new_with(0, ..)` hands the closure.
+/// miniz_oxide's own source special-cases it -- without that, any write against
+/// a zero-length output buffer reports `HasMoreOutput` -- so this records that
+/// the decrypt path depends on that behaviour rather than merely expecting it.
+#[test]
+fn an_empty_member_inflates_into_a_zero_length_slot() {
+    let compressed = miniz_oxide::deflate::compress_to_vec(&[], 6);
+    let mut slot: [u8; 0] = [];
+    crate::decrypt::inflate_into(&compressed, &mut slot)
+        .expect("an empty member must inflate into an empty slot, not error");
+}
+
+/// The other half, and the one that would actually lose data: a member whose
+/// manifest claims 0 but whose ciphertext holds content must not decrypt to
+/// nothing.
+///
+/// Note which guard fires, because it is NOT the one that catches every other
+/// short inflate. At zero length our own `written != slot.len()` comparison is
+/// `0 != 0` and passes -- it cannot see this. What rejects it is the decoder
+/// itself, reporting `HasMoreOutput` because it has bytes to write and nowhere
+/// to put them. The assertion pins that distinction: an error message carrying
+/// `!=` would mean our comparison caught it, and at this length it cannot, so
+/// if that ever becomes the failing path something has changed underneath.
+#[test]
+fn a_zero_length_slot_refuses_a_stream_that_has_content() {
+    let compressed = miniz_oxide::deflate::compress_to_vec(b"not empty", 6);
+    let mut slot: [u8; 0] = [];
+    let err = crate::decrypt::inflate_into(&compressed, &mut slot)
+        .expect_err("a non-empty stream must not pass through a zero-length slot");
+    let DecryptError::Inflate(msg) = &err else {
+        panic!("expected Inflate, got {err:?}");
+    };
+    assert!(
+        !msg.contains("!="),
+        "at zero length the decoder must be what refuses this, not our length          comparison, which is 0 != 0 and passes: {msg}"
+    );
+}
+
+/// The bound exists to stop a hostile `manifest:size` becoming a huge
+/// allocation, so it must not also reject the legal small end. Zero is in
+/// range; negative is not, because `size as usize` on a negative `i64` is an
+/// enormous length rather than an error.
+#[test]
+fn zero_is_a_legal_manifest_size_and_negative_is_not() {
+    assert_eq!(
+        crate::decrypt::inflated_len(0).expect("0 must be in range"),
+        0
+    );
+    assert!(matches!(
+        crate::decrypt::inflated_len(-1),
+        Err(DecryptError::BadParameters(_))
+    ));
+}
