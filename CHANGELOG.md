@@ -11,6 +11,58 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [Unreleased]
+
+### Fixed
+
+**`DetectError::Inconsistent` no longer interpolates an unbounded
+package-controlled string.** The mimetype-conflict message quotes both the
+`mimetype` member and `manifest:media-type`. Only the first was bounded — it is
+capped at `MIMETYPE_CEILING` — while nothing caps an individual manifest
+attribute, so the second was limited only by the 8 MiB `MANIFEST_READ_CAP`.
+Measured: padding that attribute by 512 KiB produced a 524,447-character
+`Display`, growing linearly to the cap.
+
+Both quoted values are now elided at `DIAGNOSTIC_ELISION` (96 bytes), on a
+character boundary — `manifest:media-type` is arbitrary UTF-8 and slicing a
+`&str` at an arbitrary byte index would panic, which this crate does not do. The
+elided form reports how much was cut (`… [+524231 bytes elided]`): that count is
+the part of an anomalous value actually worth having, and it is ours rather than
+the package's. A 512 KiB attribute now yields a 243-character message.
+
+This bounds the message's **volume**, not the trustworthiness of its content. A
+short hostile value is still reproduced verbatim, because no escaping can tell
+`wrong password` from a media type — both are ordinary letters. That half is
+addressed by the doc note below telling consumers not to present the string as
+the library's own words.
+
+Two tests cover it, and the guard was broken to check they are not decoration:
+with the `elide` calls removed the length assertion fails at 524,435 characters.
+
+`Inconsistent` also gains the diagnostic note `BadParameters` already carried —
+do not match on its content — plus a warning that it may quote untrusted text.
+Severity is low: no memory-safety or cryptographic consequence. It is a
+log-flood and UI hazard, and a consumer rendering `DetectError` in a dialog got
+whatever the package author wrote. Found jointly with the `encrypted-file-vault`
+integration, whose own sibling crate had the same shape bite harder: a crafted
+`.docx` declaring `hashAlgorithm="wrong password"` made that consumer's refusal
+message say *wrong password*.
+
+### Documentation
+
+- **The goldens are LibreOffice output — all six.** `CLAUDE.md` said "real
+  LibreOffice and Apache OpenOffice output"; `meta:generator` inside every
+  golden reads LibreOffice 26.2.1.2, `aoo-blowfish-pbkdf2.odt` included, where
+  the `aoo-` prefix names the ODF 1.1 Blowfish format family and not a producer.
+  `make_goldens.py` only ever drives a local LibreOffice, and `LICENSING.md` §4
+  already said so. The corpus proves fidelity to LibreOffice and to the format,
+  not agreement between two independent writers.
+- **Not every Python helper needs LibreOffice.** `LICENSING.md` §5 and a
+  `Cargo.toml` comment both claimed each helper "needs a local LibreOffice over
+  UNO to do anything". `ref_decrypt.py` does not: it needs `cryptography` and
+  `argon2-cffi`, and its sweep — S5 negatives included — runs offline. That is
+  what makes it runnable in CI, which the old wording argued against.
+
 ## [0.1.0-rc.3] — 2026-09-15
 
 A dependency upgrade that turned out to carry a confidentiality fix. No public

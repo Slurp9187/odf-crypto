@@ -99,7 +99,11 @@ both licence files — 29 files with cargo's own additions.
 
 The Python helpers (`make_goldens.py`, `ref_decrypt.py`, `sha1_star.py`,
 `validate_encrypt.py`) stay in git and on GitHub but leave the tarball. They are
-UNO-driven developer tooling that no Rust code invokes. This is a packaging
+developer tooling that no Rust code invokes. Two of them — `make_goldens.py` and
+`validate_encrypt.py` — need a local LibreOffice over UNO. `ref_decrypt.py` and
+`sha1_star.py` do **not**: `ref_decrypt.py` needs only `cryptography` and
+`argon2-cffi`, and its sweep (including the S5 negatives) runs offline with
+LibreOffice not involved, which is what makes it runnable in CI. This is a packaging
 decision, not a licensing one — but it does mean the one LibreOffice quotation
 in §2 is not present in the crates.io artifact.
 

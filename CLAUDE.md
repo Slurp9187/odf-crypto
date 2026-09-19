@@ -121,12 +121,17 @@ disagree, the code is the fact.
 
 ## Tests
 
-168 of them: 112 library, 16 CLI unit, 31 CLI end-to-end, 9 doctests. All must
+170 of them: 114 library, 16 CLI unit, 31 CLI end-to-end, 9 doctests. All must
 pass in every feature configuration.
 
-**The goldens are the evidence.** `tests/goldens/*.odt` are real LibreOffice and
-Apache OpenOffice output, and they ship inside the published crate so the tarball
-can verify its own fidelity claim. Discover them at run time rather than
+**The goldens are the evidence.** `tests/goldens/*.odt` are real LibreOffice
+output — every one, including `aoo-blowfish-pbkdf2.odt`, whose `aoo-` prefix
+names the ODF 1.1 Blowfish format family rather than its producer. Check
+`meta:generator` before claiming otherwise; all six read LibreOffice 26.2.1.2,
+and `make_goldens.py` only ever drives a local LibreOffice. There is no Apache
+OpenOffice-produced evidence here, so the corpus proves fidelity to LibreOffice
+and to the format, not agreement between two independent writers. They ship
+inside the published crate so the tarball can verify its own fidelity claim. Discover them at run time rather than
 hardcoding a count — one arc's evidence file became a fifth golden before that
 arc even landed — but assert the corpus is not silently empty, because a glob
 matching nothing passes every test.

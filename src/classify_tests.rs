@@ -1146,6 +1146,59 @@ fn classify_err(bytes: &[u8]) -> DetectError {
 }
 
 #[test]
+fn hostile_media_type_cannot_flood_the_diagnostic() {
+    // Both sides of the mimetype-conflict message come out of the package, and
+    // only one was ever bounded: the `mimetype` member is capped at
+    // MIMETYPE_CEILING, but nothing caps a `manifest:media-type` attribute
+    // except the 8 MiB manifest read. Measured without `elide`: padding the
+    // attribute by 512 KiB produced a 524,447-character Display, linear to the
+    // cap. Delete the `elide` calls in classify.rs and this test fails on
+    // length -- which is the point of asserting on length rather than shape.
+    let padded = format!("{MIME_TEXT}{}", "A".repeat(512 * 1024));
+    let xml = manifest_wrap(Some("1.2"), &root_row("1.2", &padded));
+    let bytes = zip_with(&[
+        ("mimetype", MIME_TEXT.as_bytes()),
+        ("META-INF/manifest.xml", xml.as_bytes()),
+        ("content.xml", b"x"),
+    ]);
+
+    let err = classify_err(&bytes);
+    assert!(matches!(err, DetectError::Inconsistent(_)));
+
+    let msg = err.to_string();
+    assert!(
+        msg.len() < 512,
+        "diagnostic grew with attacker input: {} chars",
+        msg.len()
+    );
+    assert!(
+        !msg.contains(&"A".repeat(DIAGNOSTIC_ELISION + 1)),
+        "more than the elision bound of the hostile value survived"
+    );
+    assert!(
+        msg.contains("bytes elided]"),
+        "elision should say it happened, and how much was cut: {msg}"
+    );
+}
+
+#[test]
+fn elision_cuts_on_a_character_boundary() {
+    // `manifest:media-type` is arbitrary UTF-8 and slicing a &str at an
+    // arbitrary byte index panics. A multi-byte char straddling the bound is
+    // the case that would do it, so put one exactly there.
+    let straddling = "ä".repeat(DIAGNOSTIC_ELISION);
+    let xml = manifest_wrap(Some("1.2"), &root_row("1.2", &straddling));
+    let bytes = zip_with(&[
+        ("mimetype", MIME_TEXT.as_bytes()),
+        ("META-INF/manifest.xml", xml.as_bytes()),
+        ("content.xml", b"x"),
+    ]);
+
+    let msg = classify_err(&bytes).to_string();
+    assert!(msg.contains("bytes elided]"), "{msg}");
+}
+
+#[test]
 fn not_zip_is_detect_error() {
     assert!(matches!(classify_err(b"not a zip"), DetectError::NotZip));
 }

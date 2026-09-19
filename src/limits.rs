@@ -18,6 +18,25 @@ pub(crate) const MANIFEST_READ_CAP: usize = 8 * 1024 * 1024;
 /// which encrypt refuses to carry that member into the outer zip.
 pub(crate) const MIMETYPE_CEILING: usize = 1024;
 
+/// Bytes of an untrusted manifest string that may appear in a [`DetectError`]
+/// diagnostic.
+///
+/// Not a parsing bound — it limits only what is *rendered*. The two sides of
+/// the mimetype comparison both come out of the package, and only one of them
+/// was ever bounded: the `mimetype` member is capped at [`MIMETYPE_CEILING`],
+/// but nothing caps an individual `manifest:media-type` attribute, so it was
+/// bounded only by [`MANIFEST_READ_CAP`] — 8 MiB of attacker-chosen text
+/// interpolated verbatim into an error a consumer may log or show in a dialog.
+/// Measured before this existed: padding that attribute by 512 KiB produced a
+/// 524,447-character `Display`, growing linearly to the manifest cap.
+///
+/// 96 is chosen against the data, not the limit: a real media type is around
+/// 40 characters (`application/vnd.oasis.opendocument.text` is 39), so this
+/// shows any legitimate value whole and elides only what is already anomalous.
+///
+/// [`DetectError`]: crate::DetectError
+pub(crate) const DIAGNOSTIC_ELISION: usize = 96;
+
 #[cfg(feature = "crypto-ops")]
 pub(crate) use crypto::*;
 
