@@ -64,6 +64,14 @@ changelog does not describe, so a consumer reading it to decide whether to
 upgrade is reading about a different release than the one they would get. That
 check needs the network where the other two are offline, so it cannot join them
 in an offline job.
+
+Resolving that state is recorded as the **maintainer's call, not an agent's**.
+There are two ways out — publish it, making the claim true, or un-release it,
+putting `— Unreleased` back and removing the tag — and both change what the
+world is told. An agent detects, reports, and stops. In particular it must not
+"tidy" a dated heading back to `— Unreleased` because a check went red: that
+silently withdraws a release announcement, and whether a release is late or
+abandoned is not something a checker can know.
 `CLAUDE.md` points at it rather than restating it, which is that file's own rule
 and one the first draft of this entry broke by putting the flow there.
 

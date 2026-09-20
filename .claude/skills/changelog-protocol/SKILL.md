@@ -60,6 +60,21 @@ It becomes a defect when it *persists*. Then the changelog announces a release
 that does not exist, which is the same silent failure as invariant 2 wearing a
 different hat — it looks shipped forever and nothing complains.
 
+**Resolving it is the maintainer's call, not an agent's.** There are exactly two
+ways out and an agent may take neither on its own initiative:
+
+- **Publish it**, making the claim true. `cargo publish` is irreversible and
+  outward-facing; it needs an explicit go-ahead every time, and approval for one
+  release is not approval for the next.
+- **Un-release it**, putting `— Unreleased` back and removing the tag, making the
+  claim withdrawn rather than false.
+
+Both change what the world is told. An agent detects the state, reports it with
+the evidence, and stops — the same way it stops before publishing. Do not
+"tidy" a dated heading back to `— Unreleased` because a check went red; that is
+silently withdrawing a release announcement, and whether the release is late or
+abandoned is not something a checker can tell.
+
 **The inverse is worse and always wrong:** a version on crates.io with no dated
 heading means something shipped that the changelog does not describe. A consumer
 reading the changelog to decide whether to upgrade is then reading about a
