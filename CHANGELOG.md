@@ -49,9 +49,21 @@ LibreOffice's extension, not OASIS's.
 
 **The release workflow is now written down** rather than inferred from git
 history, and lives in a new `changelog-protocol` skill — adapted from
-`msoffice-crypto`'s skill of the same name, not copied. It carries the two
-invariants (the top heading matches `Cargo.toml`; a heading is dated if and only
-if that tag exists), the two-commit open/cut flow, and the tag mechanics.
+`msoffice-crypto`'s skill of the same name, not copied. It carries two
+invariants about the tree (the top heading matches `Cargo.toml`; a heading is
+dated if and only if that tag exists), a third about the registry, the
+two-commit open/cut flow, and the tag mechanics.
+
+The registry axis is an addition, not borrowed: a dated, tagged heading can
+still describe a release nobody can install, because publishing is a separate
+step from tagging. It is deliberately **not** a violation on sight — `rc.4` sat
+dated-and-unpublished for hours waiting on a go-ahead, which is expected and
+transient. It is a defect when it persists, and the inverse is always one: a
+version on crates.io with no dated heading means something shipped that the
+changelog does not describe, so a consumer reading it to decide whether to
+upgrade is reading about a different release than the one they would get. That
+check needs the network where the other two are offline, so it cannot join them
+in an offline job.
 `CLAUDE.md` points at it rather than restating it, which is that file's own rule
 and one the first draft of this entry broke by putting the flow there.
 

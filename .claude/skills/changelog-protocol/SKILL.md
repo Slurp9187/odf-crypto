@@ -43,6 +43,44 @@ done
   "$(grep -m1 -oE '0\.1\.0-rc\.[0-9]+' Cargo.toml)" ] || echo "TOP HEADING != Cargo.toml"
 ```
 
+## The third axis: the registry
+
+The two invariants above are about the *tree*. A dated, tagged heading can still
+describe a release nobody can install, because `cargo publish` is a separate
+step from tagging.
+
+**3. A dated heading should have a matching version on crates.io — eventually.**
+
+Unlike the first two, this is **not** a violation on sight. There is a
+legitimate window between cutting a line and publishing it, and `0.1.0-rc.4`
+sat in it for hours: dated, tagged, CI green, waiting on a human's explicit
+go-ahead. The state is expected and transient.
+
+It becomes a defect when it *persists*. Then the changelog announces a release
+that does not exist, which is the same silent failure as invariant 2 wearing a
+different hat — it looks shipped forever and nothing complains.
+
+**The inverse is worse and always wrong:** a version on crates.io with no dated
+heading means something shipped that the changelog does not describe. A consumer
+reading the changelog to decide whether to upgrade is then reading about a
+different release than the one they would get.
+
+This check needs the network, where the other two are offline — so it is a
+different class and cannot join the snippet above or an offline CI job:
+
+```bash
+PUB=$(curl -s https://crates.io/api/v1/crates/odf-crypto/versions \
+      | python -c "import sys,json;print(' '.join(v['num'] for v in json.load(sys.stdin)['versions']))")
+grep -oE "^## \[0\.1\.0-rc\.[0-9]+\] — [^ ]+" CHANGELOG.md | while read -r _ ver _ date; do
+  v=${ver//[\[\]]/}
+  case "$date:$(echo "$PUB" | grep -qw "$v" && echo pub || echo nopub)" in
+    [0-9]*:nopub) echo "DATED BUT UNPUBLISHED (fine if just cut): $v" ;;
+    Unreleased:pub) echo "PUBLISHED BUT UNDATED: $v" ;;
+  esac
+done
+for v in $PUB; do grep -q "^## \[$v\]" CHANGELOG.md || echo "PUBLISHED, NO HEADING AT ALL: $v"; done
+```
+
 **Heading style is `## [0.1.0-rc.N] — …`**, brackets included. `rc.1` and `rc.2`
 originally used `## v0.1.0-rc.N` and were normalised so the check above can be
 mechanical rather than tolerant of two spellings.
