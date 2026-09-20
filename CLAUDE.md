@@ -121,7 +121,7 @@ disagree, the code is the fact.
 
 ## Tests
 
-186 of them: 123 library, 16 CLI unit, 35 CLI end-to-end, 12 doctests. All must
+187 of them: 124 library, 16 CLI unit, 35 CLI end-to-end, 12 doctests. All must
 pass in every feature configuration.
 
 **The goldens are the evidence.** `tests/goldens/*.odt` are real LibreOffice

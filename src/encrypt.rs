@@ -80,6 +80,91 @@ const _: () = assert!(WHOLESOME.salt_len >= 8);
 const _: () = assert!(WHOLESOME.derived_key_len == 32);
 const _: () = assert!(WHOLESOME.iv_len == AES_GCM_IV_LEN);
 
+/// Which axis of an Argon2id tuple a [`ParamsReason`] is about.
+///
+/// Named rather than positional for the same reason [`Argon2Params`] has named
+/// fields: the manifest orders these `(t, m, p)` and `argon2::Params` orders
+/// them `(m, t, p)`, so an index would be a transposition waiting to happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Argon2Axis {
+    /// Time cost, `manifest:argon2-iterations`.
+    T,
+    /// Memory cost in KiB, `manifest:argon2-memory`.
+    MKib,
+    /// Parallelism, `manifest:argon2-lanes`.
+    P,
+}
+
+impl core::fmt::Display for Argon2Axis {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Exhaustive on purpose, with no `_` arm: `#[non_exhaustive]` binds
+        // downstream crates, not this one, so adding an axis fails to compile
+        // here until it is given a name. A wildcard would silently render it
+        // as something else.
+        f.write_str(match self {
+            Self::T => "t",
+            Self::MKib => "m",
+            Self::P => "p",
+        })
+    }
+}
+
+/// Why an [`Argon2Params`] tuple was refused — specifically, **whose rule it
+/// broke**.
+///
+/// That distinction is the reason this is a type rather than a string. A
+/// consumer telling a user "the format does not allow this" when the truth is
+/// "this crate declined" has said something false with a straight face, and a
+/// free-text message gives them no way to tell the two apart. Each variant
+/// names the authority.
+///
+/// Neither variant means *weak*. A cheap-but-runnable tuple is accepted; see
+/// [`Argon2Params`].
+///
+/// `#[non_exhaustive]`: more reasons are expected — a host that cannot allocate
+/// the requested memory is the next one — so match with a `_` arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ParamsReason {
+    /// **This crate declined.** The value is outside the range `odf-crypto`
+    /// acts on.
+    ///
+    /// This is a policy bound of ours, and it is worth being blunt about that:
+    /// the ODF manifest schema types these attributes as unbounded
+    /// `positiveInteger`, and LibreOffice validates the Argon2 triple only as
+    /// `0 < t && 0 < m && 0 < p`. So a tuple refused here may be perfectly
+    /// legal and perfectly openable elsewhere. Do not report it as a format
+    /// violation.
+    #[error("{axis} = {got} is outside {min}..={max}, the range this crate acts on")]
+    OutOfRange {
+        /// Which axis was out of range.
+        axis: Argon2Axis,
+        /// The value supplied.
+        got: i32,
+        /// Inclusive floor.
+        min: u32,
+        /// Inclusive ceiling.
+        max: u32,
+    },
+    /// **`argon2` cannot run it.** Not this crate's decision, and widening our
+    /// own bounds would not help.
+    ///
+    /// Today this is `m >= 8 * p` (argon2 cannot allocate fewer than 8 KiB per
+    /// lane) and `p <= argon2::Params::MAX_P_COST`.
+    #[error("{axis} = {got} is outside {min}..={max}, which argon2 itself requires")]
+    CipherRejects {
+        /// Which axis was rejected.
+        axis: Argon2Axis,
+        /// The value supplied.
+        got: i32,
+        /// Inclusive floor `argon2` requires.
+        min: u32,
+        /// Inclusive ceiling `argon2` requires.
+        max: u32,
+    },
+}
+
 /// Argon2id cost parameters for [`encrypt_with_params`].
 ///
 /// # These are a property of the file, not of the machine that wrote it
@@ -154,19 +239,24 @@ impl Argon2Params {
     /// - `m_kib < 8 * p`, which `argon2` itself rejects — the invariant the
     ///   default tuple checks with a `const` assert.
     pub fn new(t: i32, m_kib: i32, p: i32) -> Result<Self, EncryptError> {
-        let range = |what: &str, got: i32, lo: u32, hi: u32| {
-            EncryptError::Params(format!(
-                "argon2 {what} {got} is outside the supported range {lo}..={hi}"
-            ))
+        // Ours. The schema and LibreOffice both permit more; see
+        // `ParamsReason::OutOfRange`.
+        let ours = |axis, got, min, max| {
+            EncryptError::Params(ParamsReason::OutOfRange {
+                axis,
+                got,
+                min,
+                max,
+            })
         };
         if !(ARGON2_MIN_T_COST..=ARGON2_MAX_T_COST).contains(&u32::try_from(t).unwrap_or(0)) {
-            return Err(range("t", t, ARGON2_MIN_T_COST, ARGON2_MAX_T_COST));
+            return Err(ours(Argon2Axis::T, t, ARGON2_MIN_T_COST, ARGON2_MAX_T_COST));
         }
         if !(ARGON2_MIN_M_COST_KIB..=ARGON2_MAX_M_COST_KIB)
             .contains(&u32::try_from(m_kib).unwrap_or(0))
         {
-            return Err(range(
-                "m",
+            return Err(ours(
+                Argon2Axis::MKib,
                 m_kib,
                 ARGON2_MIN_M_COST_KIB,
                 ARGON2_MAX_M_COST_KIB,
@@ -174,20 +264,30 @@ impl Argon2Params {
         }
         // `argon2::Params::MAX_P_COST`, not a bound of ours -- the same
         // ceiling `kdf::derive_argon2id` applies on the read side, so the two
-        // directions cannot disagree about which tuples exist.
+        // directions cannot disagree about which tuples exist. Reported as
+        // `CipherRejects` for that reason: widening our own range would not
+        // make this tuple runnable.
         if !(ARGON2_MIN_P_COST..=argon2::Params::MAX_P_COST)
             .contains(&u32::try_from(p).unwrap_or(0))
         {
-            return Err(range("p", p, ARGON2_MIN_P_COST, argon2::Params::MAX_P_COST));
+            return Err(EncryptError::Params(ParamsReason::CipherRejects {
+                axis: Argon2Axis::P,
+                got: p,
+                min: ARGON2_MIN_P_COST,
+                max: argon2::Params::MAX_P_COST,
+            }));
         }
         // argon2's own requirement, not a policy of ours: it cannot allocate
         // fewer than 8 KiB per lane. Checked here because a caller-supplied
-        // tuple cannot be checked by the `const` assert above.
+        // tuple cannot be checked by the `const` assert above. `p` is already
+        // bounded by MAX_P_COST above, so `8 * p` cannot overflow `i32`.
         if m_kib < 8 * p {
-            return Err(EncryptError::Params(format!(
-                "argon2 requires m >= 8 * p; m = {m_kib} and p = {p} gives 8 * p = {}",
-                8 * p
-            )));
+            return Err(EncryptError::Params(ParamsReason::CipherRejects {
+                axis: Argon2Axis::MKib,
+                got: m_kib,
+                min: u32::try_from(8 * p).unwrap_or(u32::MAX),
+                max: ARGON2_MAX_M_COST_KIB,
+            }));
         }
         Ok(Self { t, m_kib, p })
     }
@@ -273,9 +373,8 @@ pub enum EncryptError {
     /// CSPRNG failure -- vanishingly rare, but a library must not panic for it.
     #[error("random number generation failed: {0}")]
     Random(String),
-    /// An [`Argon2Params`] tuple this crate cannot run -- out of the range
-    /// `decrypt` would accept back, or `m < 8 * p`, which `argon2` itself
-    /// rejects.
+    /// An [`Argon2Params`] tuple that cannot be used, carrying **whose rule**
+    /// it broke — see [`ParamsReason`].
     ///
     /// **Never returned for a tuple that is merely weak.** Cost is the
     /// caller's decision and this crate does not overrule it; see
@@ -283,9 +382,8 @@ pub enum EncryptError {
     ///
     /// Deliberately distinct from [`EncryptError::Internal`]: this reports a
     /// value that came from the caller, which they can correct, where
-    /// `Internal` reports an invariant of ours. The string is a diagnostic; do
-    /// not match on its content. It quotes only the caller's own numbers and
-    /// this crate's bounds, never anything read out of a package.
+    /// `Internal` reports an invariant of ours. It quotes only the caller's own
+    /// numbers and this crate's bounds, never anything read out of a package.
     ///
     /// # Do not render this as a problem with the document
     ///
@@ -297,7 +395,7 @@ pub enum EncryptError {
     /// looking at the wrong thing. The `odf-crypto` binary maps it to exit 1
     /// (usage), not 6 (malformed), for the same reason.
     #[error("invalid Argon2 parameters: {0}")]
-    Params(String),
+    Params(ParamsReason),
     /// The input buffer cannot be deflated. `compress_to_vec` itself is
     /// infallible, so in practice this is the 1 GiB input-size rejection.
     #[error("deflate failed: {0}")]

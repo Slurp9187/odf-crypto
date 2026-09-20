@@ -94,4 +94,6 @@ pub use types::{
 #[cfg(feature = "crypto-ops")]
 pub use decrypt::{decrypt, DecryptError};
 #[cfg(feature = "crypto-ops")]
-pub use encrypt::{encrypt, encrypt_with_params, Argon2Params, EncryptError};
+pub use encrypt::{
+    encrypt, encrypt_with_params, Argon2Axis, Argon2Params, EncryptError, ParamsReason,
+};

@@ -803,7 +803,15 @@ fn an_unrunnable_argon2_tuple_is_a_usage_error_not_a_malformed_file() {
         !out.exists(),
         "nothing should be written on a refused tuple"
     );
-    assert!(stderr(&e).contains("m >= 8 * p"), "{}", stderr(&e));
+    // The message must name WHOSE rule was broken, not just that one was.
+    // Reporting a bound of ours as a rule of the format is the failure this
+    // taxonomy exists to prevent, and it is invisible unless asserted.
+    let err = stderr(&e);
+    assert!(err.contains("argon2 itself requires"), "{err}");
+    assert!(
+        !err.contains("this crate acts on"),
+        "m < 8p is argon2's requirement, not our policy bound: {err}"
+    );
 }
 
 #[test]

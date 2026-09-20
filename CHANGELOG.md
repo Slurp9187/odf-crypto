@@ -86,6 +86,28 @@ added, which is exactly the silent fall-through [#40] exists to catch.
 The CLI gains `--argon2-t`, `--argon2-m` and `--argon2-p`, each defaulting
 independently so `--argon2-m 8192` alone keeps LibreOffice's `t` and `p`.
 
+`EncryptError::Params` carries a typed [`ParamsReason`], not a string, and the
+distinction it draws is **whose rule was broken**:
+
+- `OutOfRange` — *this crate declined.* A policy bound of ours. The ODF manifest
+  schema types these attributes as unbounded `positiveInteger`
+  (`OpenDocument-v1.4+libreoffice-manifest-schema.rng`) and LibreOffice validates
+  the triple only as `0 < t && 0 < m && 0 < p` (`ManifestImport.cxx:257`), so a
+  tuple refused here may be entirely legal and openable elsewhere.
+- `CipherRejects` — *`argon2` cannot run it.* `m >= 8 * p`, or `p` above
+  `argon2::Params::MAX_P_COST`. Widening our own bounds would not help.
+
+A string could not carry that difference, and a consumer told "the format does
+not allow this" when the truth is "this crate declined" has been handed a lie it
+will render as authoritative. Both the typed variant and the `Display` text now
+name the authority, and a test asserts the attribution rather than the wording.
+
+`ParamsReason` and `Argon2Axis` are both `#[non_exhaustive]`: a host that cannot
+allocate the requested memory is the next reason expected, and adding it will not
+be a breaking change. Inside the crate the `Argon2Axis` `Display` match is
+deliberately exhaustive with no `_` arm, so a new axis fails to compile until it
+is named rather than silently rendering as something else.
+
 Validated before release by the `encrypted-file-vault` integration, which built
 against the release commit as a git dependency and ran its own suite — 0 compile
 errors, 21 of 21 passing. Two refinements came back and are in this release.

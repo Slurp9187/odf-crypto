@@ -4,7 +4,9 @@ use zip::CompressionMethod;
 
 use crate::classify::classify;
 use crate::decrypt::{decrypt, DecryptError};
-use crate::encrypt::{encrypt, encrypt_with_params, Argon2Params, EncryptError};
+use crate::encrypt::{
+    encrypt, encrypt_with_params, Argon2Axis, Argon2Params, EncryptError, ParamsReason,
+};
 use crate::test_support::{
     append_stored_member, goldens_dir, load_golden, read_member, strict_b64_decode, zip_method,
     zip_namelist, zip_with, zip_with_methods, MIME_TEXT, NONASCII_PASSWORD, PASSWORD,
@@ -831,6 +833,44 @@ fn weak_but_runnable_params_are_accepted() {
     let plain = load_golden("lo-unencrypted.odt");
     let sealed = encrypt_with_params(&plain, PASSWORD, params).expect("weak must not be refused");
     assert_eq!(decrypt(&sealed, PASSWORD).expect("decrypt"), plain);
+}
+
+#[test]
+fn the_refusal_reason_names_whose_rule_it_was() {
+    // The point of the typed reason, and the thing a String could not carry:
+    // a consumer must be able to tell "the format forbids this" from "this
+    // crate declined". Reporting our own policy bound as a rule of argon2 or
+    // of ODF would be a lie a consumer renders as authoritative.
+    //
+    // OURS: the ODF manifest schema types these as unbounded positiveInteger
+    // and LibreOffice checks only `0 < t`, so nothing but this crate refuses
+    // a large t.
+    match Argon2Params::new(i32::MAX, 65536, 4) {
+        Err(EncryptError::Params(ParamsReason::OutOfRange { axis, got, .. })) => {
+            assert_eq!(axis, Argon2Axis::T);
+            assert_eq!(got, i32::MAX);
+        }
+        other => panic!("expected OutOfRange on t, got {other:?}"),
+    }
+
+    // ARGON2'S: m >= 8p is the KDF's own requirement. Widening our range
+    // would not make this tuple runnable, and saying "outside the range this
+    // crate acts on" would point the caller at the wrong fix.
+    match Argon2Params::new(3, 8, 4) {
+        Err(EncryptError::Params(ParamsReason::CipherRejects { axis, got, min, .. })) => {
+            assert_eq!(axis, Argon2Axis::MKib);
+            assert_eq!(got, 8);
+            assert_eq!(min, 32, "8 * p");
+        }
+        other => panic!("expected CipherRejects on m, got {other:?}"),
+    }
+
+    // The Display text carries the attribution too, since that is what a
+    // consumer without a match arm will render.
+    let ours = Argon2Params::new(0, 65536, 4).unwrap_err().to_string();
+    assert!(ours.contains("this crate acts on"), "{ours}");
+    let theirs = Argon2Params::new(3, 8, 4).unwrap_err().to_string();
+    assert!(theirs.contains("argon2 itself requires"), "{theirs}");
 }
 
 #[test]
