@@ -27,8 +27,9 @@ than carried forward.
 
 **The Argon2id cost is now a caller's choice**, through `encrypt_with_params`
 and `Argon2Params`. `encrypt` is unchanged and still writes LibreOffice's
-`(t=3, m=65536, p=4)`; the new entry point is opt-in and the weaker choice has
-to be typed out.
+`(t=3, m=65536, p=4)`, available to a caller as
+`Argon2Params::LIBREOFFICE_DEFAULT`; the new entry point is opt-in and the
+weaker choice has to be typed out.
 
 The driver is hardware, not testing. `m=65536` is **64 MiB of working memory per
 call**, which on an older phone or a 2 GB laptop is a meaningful share of what
@@ -92,11 +93,14 @@ independently so `--argon2-m 8192` alone keeps LibreOffice's `t` and `p`.
 `EncryptError::Params` carries a typed [`ParamsReason`], not a string, and the
 distinction it draws is **whose rule was broken**:
 
-- `OutOfRange` — *this crate declined.* A policy bound of ours. The ODF manifest
-  schema types these attributes as unbounded `positiveInteger`
-  (`OpenDocument-v1.4+libreoffice-manifest-schema.rng`) and LibreOffice validates
-  the triple only as `0 < t && 0 < m && 0 < p` (`ManifestImport.cxx:257`), so a
-  tuple refused here may be entirely legal and openable elsewhere.
+- `OutOfRange` — *this crate declined.* A policy bound of ours, and nobody
+  else's: the Argon2 attributes are defined by **LibreOffice's own extension
+  schema** (`libreoffice/OpenDocument-v1.4+libreoffice-manifest-schema.rng`) and
+  appear in no OASIS schema at all, where they are typed as unbounded
+  `positiveInteger`; LibreOffice then validates the triple only as
+  `0 < t && 0 < m && 0 < p` (`ManifestImport.cxx:257`). So the only authority
+  that defines these attributes imposes no ceiling, and a tuple refused here may
+  be entirely legal and openable elsewhere.
 - `CipherRejects` — *`argon2` cannot run it.* `m >= 8 * p`, or `p` above
   `argon2::Params::MAX_P_COST`. Widening our own bounds would not help.
 
