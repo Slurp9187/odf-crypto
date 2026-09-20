@@ -224,6 +224,12 @@ pub enum DetectError {
     Zip(String),
     /// The package is one LibreOffice itself would not open — a duplicate or
     /// invalid entry name, or a stream/folder collision.
+    ///
+    /// The string is a diagnostic; do not match on its content. It may quote
+    /// package-controlled text — the `mimetype` member and `manifest:media-type`
+    /// both appear in the mimetype-conflict case — so treat it as untrusted
+    /// when logging or displaying it. Each quoted value is elided to 96 bytes,
+    /// which bounds the message but does not make its content trustworthy.
     #[error("inconsistent package: {0}")]
     Inconsistent(String),
 }

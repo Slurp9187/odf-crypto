@@ -7,7 +7,7 @@ use zip::read::HasZipMetadata;
 use zip::CompressionMethod;
 use zip::ZipArchive;
 
-use crate::limits::{MANIFEST_READ_CAP, MIMETYPE_CEILING};
+use crate::limits::{DIAGNOSTIC_ELISION, MANIFEST_READ_CAP, MIMETYPE_CEILING};
 use crate::manifest::parse_manifest;
 use crate::types::{
     Checksum, ChecksumAlg, Classification, EncryptedKey, EntryEncryption, Kdf, KdfId, PropertyBag,
@@ -341,7 +341,9 @@ fn stage_b(
             };
             if xml_mt != mt.as_str() {
                 return Err(DetectError::Inconsistent(format!(
-                    "mimetype conflicts with manifest.xml, \"{xml_mt}\" vs. \"{mt}\""
+                    "mimetype conflicts with manifest.xml, \"{}\" vs. \"{}\"",
+                    elide(xml_mt),
+                    elide(mt)
                 )));
             }
         }
@@ -386,6 +388,30 @@ fn check_stored_data_descriptors(
         }
     }
     Ok(())
+}
+
+/// Render an untrusted manifest string into a diagnostic, bounded.
+///
+/// Both sides of the mimetype comparison are package-controlled, and before
+/// this only one of them was bounded — see [`DIAGNOSTIC_ELISION`] for the
+/// measurement that prompted it. The elided form reports how much was cut:
+/// it is the part of an anomalous value actually worth reporting, and it is
+/// ours rather than the package's.
+///
+/// The cut lands on a character boundary. Slicing a `&str` at an arbitrary
+/// byte index panics, `manifest:media-type` is arbitrary UTF-8, and this
+/// crate does not panic to describe its input.
+fn elide(s: &str) -> String {
+    if s.len() <= DIAGNOSTIC_ELISION {
+        return s.to_string();
+    }
+    let cut = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= DIAGNOSTIC_ELISION)
+        .last()
+        .unwrap_or(0);
+    format!("{}… [+{} bytes elided]", &s[..cut], s.len() - cut)
 }
 
 fn short_name(path: &str) -> &str {

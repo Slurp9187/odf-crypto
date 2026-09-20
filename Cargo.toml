@@ -22,8 +22,11 @@ categories = ["cryptography", "parser-implementations"]
 # Python helpers under tests/goldens/ all remain in the repository and on GitHub.
 #
 # Those helpers are developer tooling, not test inputs: no Rust code invokes them
-# (they appear only in doc comments and one assertion message) and each needs a
-# local LibreOffice over UNO to do anything.
+# (they appear only in doc comments and one assertion message). make_goldens.py
+# and validate_encrypt.py need a local LibreOffice over UNO; ref_decrypt.py and
+# sha1_star.py do not -- ref_decrypt.py's sweep runs offline on `cryptography`
+# and `argon2-cffi` alone. Excluding them is a tarball-size decision, not a
+# statement that they are unrunnable.
 #
 # Trimmed to what the tarball provably needs; each entry was tested by removing
 # it and packaging.
