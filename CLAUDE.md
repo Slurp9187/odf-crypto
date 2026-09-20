@@ -14,6 +14,36 @@ LibreOffice would prompt for, and one it refuses must be one LibreOffice would
 refuse to open. Anything else produces files real users cannot open, which is
 the only failure mode that actually matters here.
 
+### Authority is per field, not per format
+
+The rule above is right in effect and hides a split worth knowing before you
+argue from "the spec". Derived from the normative RELAX NG schemas in a
+LibreOffice checkout (`core/schema/`), not from prose:
+
+| field | defined by | so a LibreOffice refusal is |
+| --- | --- | --- |
+| `iteration-count`, `key-size`, `checksum-type` | **OASIS** (`odf1.2/1.3/1.4/…-manifest-schema.rng`) | evidence about one implementation |
+| `manifest:algorithm-name` | OASIS, but **open**: `"Blowfish CFB" \| anyURI` | not adjudicable by the schema at all |
+| `loext:argon2-iterations` / `-memory` / `-lanes` | **LibreOffice alone** (`libreoffice/OpenDocument-v1.4+libreoffice-manifest-schema.rng`); `argon2` appears in no OASIS schema | **a conformance failure** |
+
+Two consequences that change what an argument has to prove:
+
+- **For the profile `encrypt` writes — AES-256-GCM with Argon2id — there is no
+  OASIS specification to be compliant with.** Those attributes exist only in
+  LibreOffice's extension schema, and the cipher is named through an open
+  `anyURI` that would equally admit nonsense. There LibreOffice *is* the
+  specifying authority, and "follow LibreOffice" is not a pragmatic compromise
+  but the only available reading of correct.
+- **Where OASIS does specify, it specifies structure and no ranges.**
+  `iteration-count` and `key-size` are unbounded `nonNegativeInteger` with no
+  `minInclusive`/`maxInclusive` facet, and LibreOffice bounds neither on read.
+  So a numeric bound in `limits.rs` answers to nobody but us. Say so when you
+  write one; do not dress a policy cap as a format rule.
+
+The one thing this table cannot tell you is whether a *bound* is right. It tells
+you whose rule you are quoting, which is the question that keeps getting
+answered wrong.
+
 `classify` therefore re-runs LibreOffice's own two machines — `ManifestImport`,
 then `ZipPackage::parseManifest` — rather than evaluating manifest rows
 independently. State leaks across rows upstream in ways a tidy per-row
@@ -82,6 +112,30 @@ cannot reach the published artifact.
 There is no `panic!`, `unwrap`, `expect`, `unreachable!` or `todo!` in any
 non-test path. Keep it that way — a library must not abort its caller's process
 to report something it could return.
+
+**That sentence, not the list, is the rule.** The list names the mechanisms this
+crate controls; it is not the set of ways a process dies. The known gap is
+**allocation failure**, which calls `handle_alloc_error` and *aborts* — whatever
+the panic strategy, because an abort is not a panic. Nothing in the list above
+fires, and the crate is clean by its own measure, while the caller's process is
+gone.
+
+The consequence is worse here than a crash. An abort skips unwinding, so `Drop`
+never runs, so `secure-gate`'s zeroize-on-drop does not happen — and the crate's
+only zeroizing primitive is `Drop`. A path that aborts mid-decrypt leaves the
+password digest and derived key in memory, unwiped. `kdf.rs`'s Argon2 call is a
+live instance, open as of `0.1.0-rc.4`: `argon2`'s `hash_password_into` does
+`vec![Block::default(); block_count()]` sized from a manifest field
+(`argon2-0.5/src/lib.rs:230`), while `PasswordDigest` and `DerivedKey` are both
+alive inside `with_secret`/`with_secret_mut`. `ARGON2_MAX_M_COST_KIB` bounds how
+far it can be pushed; it does not close it.
+
+**So: an allocation whose size comes from untrusted input must be fallible.**
+Reach for `Vec::try_reserve` and an API that accepts caller-provided storage
+(`argon2`'s `hash_password_into_with_memory` is the pattern) rather than a
+constant chosen to keep the infallible one from failing. A guessed ceiling is
+wrong in both directions — it refuses a host that could have coped and still
+aborts one that could not.
 
 Two shapes, and the second is better:
 
