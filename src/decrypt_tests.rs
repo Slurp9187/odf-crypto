@@ -874,3 +874,94 @@ fn zero_is_a_legal_manifest_size_and_negative_is_not() {
         Err(DecryptError::BadParameters(_))
     ));
 }
+
+// --- kdf.rs's block buffer: fallible, not an abort ---
+//
+// `derive_argon2id` reserves its Argon2 working buffer with
+// `Vec::try_reserve_exact` rather than `vec![]` specifically so a host that
+// cannot supply the memory gets a `KdfError::HostCannotAllocate` back instead
+// of `handle_alloc_error` aborting the process with `PasswordDigest`/
+// `DerivedKey` still live and unwiped (see the doc comment on
+// `kdf::derive_argon2id`). A fallible path nobody has ever seen fail is
+// decoration, not evidence, so this drives the call with `m` at the crate's
+// own ceiling (`ARGON2_MAX_M_COST_KIB`, 1 GiB of blocks -- the scope this
+// crate accepts, not a value beyond it) and asserts the specific error.
+//
+// This is a genuine allocation attempt sized by how much memory the host
+// actually has free right now, so it can only witness `HostCannotAllocate`
+// on a host that is this tight on memory at the moment the test runs; it is
+// deliberately not manufactured with a value beyond `ARGON2_MAX_M_COST_KIB`,
+// which would only prove the earlier range check, not this one. On a
+// generously-provisioned host the request may simply succeed.
+//
+// `#[ignore]`, recording a real result rather than a hoped-for one: run in
+// isolation on the machine this was written on (16 GiB RAM, `Get-CimInstance
+// Win32_OperatingSystem` reporting `FreeVirtualMemory` fluctuating around
+// 1.8-2.3 GiB), this 1 GiB request `Ok`'d -- the crate's own legal ceiling
+// was not, on that occasion, above what the host could satisfy. Getting a
+// deterministic `Err` from here would mean either raising the request past
+// `ARGON2_MAX_M_COST_KIB` (out of scope -- see this arc's scope fence) or
+// deliberately exhausting the host's memory first, which was not done
+// because this suite may run on a live, shared machine where that is not a
+// safe thing for a test to do. Run explicitly with `cargo test -- --ignored
+// argon2_block_buffer_reports_host_capacity_not_an_abort` on a host you know
+// is this tight on memory (or under a container/`ulimit`/cgroup memory cap
+// below 1 GiB) to see the assertion actually pass.
+#[test]
+#[ignore = "host-capacity-dependent: passes only when the host has under ~1 GiB free at call time; not reliably true on a well-provisioned machine or CI runner"]
+fn argon2_block_buffer_reports_host_capacity_not_an_abort() {
+    let salt = [0u8; 16];
+    let mut out = [0u8; 32];
+    let result = crate::kdf::derive_argon2id(
+        b"start-key-bytes-are-arbitrary-for-this-probe",
+        &salt,
+        1,                                           // t: minimum iterations
+        crate::limits::ARGON2_MAX_M_COST_KIB as i32, // 1 GiB: the crate's own ceiling
+        1,                                           // p: minimum lanes
+        &mut out,
+    );
+    let requested_bytes = match result {
+        Err(crate::kdf::KdfError::HostCannotAllocate { requested_bytes }) => requested_bytes,
+        other => panic!(
+            "expected KdfError::HostCannotAllocate on this host; got {other:?} instead \
+             -- this machine had enough free memory to satisfy a 1 GiB Argon2 request, \
+             so the failure path was not exercised here"
+        ),
+    };
+    assert_eq!(requested_bytes, 1 << 30, "1 GiB of Argon2 blocks");
+    // Reaching this line at all is the point: `try_reserve_exact` returned
+    // `Err` and unwound normally rather than the allocator aborting the
+    // process, which is the one thing a `vec![]`-based version could never
+    // let this test observe.
+}
+
+#[test]
+fn a_host_capacity_failure_is_not_a_bad_parameter() {
+    // The allocator refusal itself cannot be tested deterministically here:
+    // that needs a #[global_allocator] shim, and `unsafe_code = "forbid"` in
+    // Cargo.toml makes one impossible -- `forbid` cannot be lifted by `allow`.
+    // The ignored test above drives a real 1 GiB request and is the only thing
+    // that exercises `try_reserve_exact` failing, on a host small enough.
+    //
+    // Everything downstream of that refusal IS deterministic, and it is where
+    // the damage would be done: a host failure reported as `BadParameters`
+    // tells the user their manifest is wrong when it may be perfectly legal
+    // and decrypt fine on a bigger machine.
+    let mapped = crate::decrypt::kdf_error(crate::kdf::KdfError::HostCannotAllocate {
+        requested_bytes: 1 << 30,
+    });
+    assert!(
+        matches!(
+            mapped,
+            DecryptError::HostCannotAllocate {
+                requested_bytes: 1_073_741_824
+            }
+        ),
+        "host capacity must not collapse into BadParameters, got {mapped:?}"
+    );
+
+    // And the other arm still lands where it did, so the split is real rather
+    // than everything becoming HostCannotAllocate.
+    let params = crate::decrypt::kdf_error(crate::kdf::KdfError::Params("argon2 t 0".into()));
+    assert!(matches!(params, DecryptError::BadParameters(_)));
+}

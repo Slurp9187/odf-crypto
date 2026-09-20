@@ -13,6 +13,61 @@ LibreOffice citation and a reproduction for each.
 
 ## [0.1.0-rc.5] — Unreleased
 
+### Fixed
+
+**The Argon2 key derivation no longer aborts the process when the host cannot
+supply the memory a manifest asks for.** `argon2`'s `hash_password_into`
+allocates its working blocks as `vec![Block::default(); block_count()]`
+(`argon2-0.5.3/src/lib.rs:230`), sized from `manifest:argon2-memory`. Rust
+**aborts** on allocation failure whatever the panic strategy, an abort skips
+unwinding, `Drop` never runs — and `Drop` is this crate's only zeroizing
+primitive. The allocation happens inside
+`start_key.with_secret(|sk| derived_key.with_secret_mut(|key| …))`, so the
+process died with the password digest and derived key in memory, unwiped.
+
+`kdf::derive_argon2id` now allocates the blocks itself with
+`Vec::try_reserve_exact` and passes them to `hash_password_into_with_memory`.
+An unaffordable request returns `DecryptError::HostCannotAllocate` or
+`EncryptError::HostCannotAllocate` instead.
+
+**The abort closed rather than moved**, which is the only thing that makes this
+more than theatre: everything beneath `hash_password_into_with_memory` in argon2
+0.5.3 — `initial_hash`, `verify_inputs`, `fill_blocks`, `finalize`,
+`blake2b_long` — is heap-free, stack `Block` locals and fixed buffers only. If
+any of it had allocated, the fix would have compiled, passed, and changed
+nothing.
+
+**Nothing about which inputs are accepted changed.** No bound in `limits.rs`
+moved. That is the separate provenance arc, and this had to land first: widening
+a memory ceiling before the allocation is fallible would make the abort *easier*
+to reach.
+
+**The CLI gains exit code 8, `host-capacity`.** Both new variants first landed
+in `decrypt_exit`/`encrypt_exit`'s trailing `_ => EX_MALFORMED`, so the binary
+announced exit 6 — "malformed or hostile package" — for a memory failure, which
+is precisely the "your file is bad" rendering the change exists to prevent. That
+is the **third** variant to fall through that wildcard after
+`EncryptError::Params`; [#40] remains open and is now overdue.
+
+**What is honestly not proven.** The `try_reserve_exact` failure itself is
+exercised only by an `#[ignore]`d test that drives a real 1 GiB request, and it
+returned `Ok` on the 16 GiB machine that wrote it. A deterministic test needs a
+`#[global_allocator]` shim, and `unsafe_code = "forbid"` in `Cargo.toml` makes
+one impossible — `forbid` cannot be lifted by `allow`. What *is* pinned
+deterministically is everything downstream: the `KdfError` → `DecryptError`
+split, and that neither variant maps to `EX_MALFORMED`. By this repo's own
+standard the guard itself is untested, and saying so is better than implying
+otherwise.
+
+**The other aborting allocations are recorded, not fixed** — the inflate slots
+and cipher buffers in `decrypt.rs`, each bounded at 1 GiB but summing across up
+to 4096 rows with wrapped plaintext live throughout. Filed as [#51]. Note
+`MemberPlaintext::try_new_with`'s `try_` names the *fill*, not the allocation;
+it is the site most likely to be mistaken for already-safe.
+
+[#40]: https://github.com/Slurp9187/odf-crypto/issues/40
+[#51]: https://github.com/Slurp9187/odf-crypto/issues/51
+
 ### Documentation
 
 **`CLAUDE.md` gains a fourth "Evidence, not assertion" rule: name the proxy when
@@ -136,7 +191,9 @@ disagreeing files to believe. Also recorded: `cargo package` refuses a dirty tre
 and says nothing useful about why, which has now cost two debugging detours.
 
 Neither `CLAUDE.md` nor this changelog ships in the crate — `include` is an
-allowlist and names neither — so nothing a consumer compiles has changed.
+allowlist and names neither — so the documentation items above change nothing a
+consumer compiles. The Fixed section does: two new public error variants and a
+new CLI exit code.
 
 ## [0.1.0-rc.4] — 2026-09-20
 

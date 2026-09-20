@@ -28,13 +28,23 @@ const EX_WRONG_PASSWORD: u8 = 4;
 const EX_REFUSED: u8 = 5;
 const EX_MALFORMED: u8 = 6;
 const EX_INTERNAL: u8 = 7;
+/// This machine could not supply the memory the work needed. Not the file's
+/// fault and not the flags' -- the same input may succeed on a larger host, or
+/// at a lower `--argon2-m`. It earns a code of its own for the reason 4 and 5
+/// do: it is the one failure here whose remedy is "change the machine or the
+/// cost", and a script that cannot separate it from 6 would tell a user their
+/// document is damaged when it is not.
+const EX_HOST_CAPACITY: u8 = 8;
 
 const AFTER_HELP: &str = "\
 EXIT CODES:
   0 ok        1 usage      2 io          3 not-odf
   4 wrong-password         5 refused     6 malformed   7 internal
+  8 host-capacity
 
-4 and 5 differ on purpose: 4 means try again, 5 means you had the wrong file.";
+4 and 5 differ on purpose: 4 means try again, 5 means you had the wrong file.
+8 means neither: this machine could not supply the memory, and the same file
+may work on a larger one or at a lower --argon2-m.";
 
 const PASSWORD_AFTER_HELP: &str = "\
 PASSWORDS:
@@ -43,7 +53,8 @@ PASSWORDS:
 
 EXIT CODES:
   0 ok        1 usage      2 io          3 not-odf
-  4 wrong-password         5 refused     6 malformed   7 internal";
+  4 wrong-password         5 refused     6 malformed   7 internal
+  8 host-capacity";
 
 /// Registered but hidden, so `--password secret` is met with the reason it does
 /// not exist rather than clap's generic "unexpected argument". Removing it would
@@ -66,7 +77,8 @@ PASSWORDS:
 
 EXIT CODES:
   0 ok        1 usage      2 io          3 not-odf
-  4 wrong-password         5 refused     6 malformed   7 internal";
+  4 wrong-password         5 refused     6 malformed   7 internal
+  8 host-capacity";
 
 fn password_args() -> [Arg; 4] {
     [
@@ -600,6 +612,7 @@ fn decrypt_exit(e: &DecryptError) -> u8 {
             EX_MALFORMED
         }
         DecryptError::Internal(_) => EX_INTERNAL,
+        DecryptError::HostCannotAllocate { .. } => EX_HOST_CAPACITY,
         _ => EX_MALFORMED,
     }
 }
@@ -616,6 +629,7 @@ fn encrypt_exit(e: &EncryptError) -> u8 {
         // silent fall-through #40 exists to catch.
         EncryptError::Params(_) => EX_USAGE,
         EncryptError::Random(_) | EncryptError::Internal(_) => EX_INTERNAL,
+        EncryptError::HostCannotAllocate { .. } => EX_HOST_CAPACITY,
         _ => EX_MALFORMED,
     }
 }

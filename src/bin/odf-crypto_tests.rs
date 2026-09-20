@@ -254,3 +254,31 @@ fn human_output_names_the_algorithm_tuple() {
     assert!(text.contains("Blowfish-CFB"));
     assert!(text.contains("PBKDF2 iterations="));
 }
+
+#[test]
+fn host_capacity_is_not_reported_as_a_damaged_document() {
+    // The whole point of `HostCannotAllocate` is that the file is fine and the
+    // machine is not. Both variants reached the trailing `_ => EX_MALFORMED`
+    // arm when they were added -- the third time a new variant has done that,
+    // after `EncryptError::Params` -- which told the user their document was
+    // malformed for a memory failure. Pin both, and pin that it is NOT 6.
+    assert_eq!(
+        decrypt_exit(&DecryptError::HostCannotAllocate {
+            requested_bytes: 1 << 30
+        }),
+        EX_HOST_CAPACITY
+    );
+    assert_eq!(
+        encrypt_exit(&EncryptError::HostCannotAllocate {
+            requested_bytes: 1 << 30
+        }),
+        EX_HOST_CAPACITY
+    );
+    assert_ne!(
+        decrypt_exit(&DecryptError::HostCannotAllocate {
+            requested_bytes: 1 << 30
+        }),
+        EX_MALFORMED,
+        "a host memory failure must never read as a damaged document"
+    );
+}

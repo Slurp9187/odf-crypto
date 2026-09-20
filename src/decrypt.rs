@@ -28,6 +28,7 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
 }
 
 use crate::classify::{classify, member_matches_path, zip_entry_name};
+use crate::kdf::KdfError;
 use crate::limits::{
     AES_BLOCK_LEN, AES_CBC_IV_LEN, AES_GCM_IV_LEN, AES_GCM_TAG_LEN, BLOWFISH_IV_LEN,
     CHECKSUM_WINDOW, CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN, DERIVED_KEY_MIN_LEN,
@@ -80,6 +81,10 @@ pub enum DecryptError {
     /// iteration count, Argon2 cost or key size beyond its floor or ceiling, or
     /// more encrypted rows than will be processed. The string is a diagnostic;
     /// do not match on its content.
+    ///
+    /// A verdict on the manifest, and the same verdict on every machine. A cost
+    /// this crate accepted and the host then could not meet is
+    /// [`DecryptError::HostCannotAllocate`], not a bad parameter.
     #[error("invalid encryption parameters: {0}")]
     BadParameters(String),
     /// Deliberately NOT the `BadParameters` analogue: that reports a hostile
@@ -92,6 +97,36 @@ pub enum DecryptError {
     /// return.
     #[error("internal invariant violated: {0}")]
     Internal(String),
+    /// This host could not allocate the working memory key derivation needs.
+    ///
+    /// **Not a statement about the package.** The manifest may be entirely
+    /// legal, and the same bytes may decrypt on a machine with more free memory
+    /// — so retrying, or retrying elsewhere, is meaningful, and re-downloading
+    /// the file is not. Deliberately not [`DecryptError::BadParameters`], which
+    /// reports a manifest field this crate refuses to act on at all, and
+    /// deliberately not [`DecryptError::Internal`], which reports an invariant
+    /// of ours; how much memory this machine had free at this moment is
+    /// neither.
+    ///
+    /// The shortfall is returned rather than aborted on because an abort skips
+    /// unwinding, and `Drop` is this crate's only zeroizing primitive — the
+    /// allocation happens with the password digest and the derived key both
+    /// live.
+    ///
+    /// Key derivation is the first allocation here to become fallible rather
+    /// than the last; when the others follow, this will want a field naming
+    /// which allocation failed. That will be a breaking change to the variant
+    /// and is accepted — [`DecryptError`] itself is `#[non_exhaustive]`, but
+    /// the variant is not, deliberately: a variant nobody outside the crate
+    /// can construct is a variant nobody outside the crate can write a test
+    /// against, and the binary's own exit-code test needs to construct it.
+    #[error("host could not allocate {requested_bytes} bytes for key derivation")]
+    HostCannotAllocate {
+        /// The size `argon2` asked for: `manifest:argon2-memory` rounded to
+        /// whole blocks — the package's own number, not a ceiling of this
+        /// crate's.
+        requested_bytes: usize,
+    },
     /// The decrypted stream was not valid DEFLATE, or did not inflate to the
     /// length `manifest:size` promised.
     ///
@@ -136,6 +171,11 @@ pub enum DecryptError {
 /// [`DecryptError::NotEncrypted`], [`DecryptError::Odf12Fatal`],
 /// [`DecryptError::UnsupportedPgp`], then [`DecryptError::BadParameters`] if the
 /// package declares more encrypted rows than will be processed.
+///
+/// During derivation, and alone in this list in blaming neither the package nor
+/// this crate: [`DecryptError::HostCannotAllocate`], when the host cannot
+/// allocate Argon2id's working buffer. The same bytes may decrypt on a machine
+/// with more free memory.
 ///
 /// After derivation: [`DecryptError::WrongPassword`],
 /// [`DecryptError::BadParameters`] for a hostile KDF or key-size field,
@@ -302,6 +342,28 @@ fn member_for_archive(
     )))
 }
 
+/// Give a [`KdfError`] its verdict on this side.
+///
+/// The two arms land in opposite halves of [`DecryptError`] — the package's
+/// fault and nobody's — so the match is exhaustive with no `_` arm, for the
+/// reason `impl Display for Argon2Axis` has none either: a third `KdfError`
+/// must be given a deliberate verdict here rather than inheriting whichever of
+/// these two it happens to be declared next to.
+///
+/// [`KdfError::Params`] is a manifest field — `t`, `m`, `p` or the key size
+/// this crate or `argon2` will not run — so it is a [`DecryptError::BadParameters`]
+/// here even though `encrypt`, which chose its own tuple, calls the identical
+/// error an invariant of its own. Both are right; the package author picked
+/// these numbers and this side is reading them.
+fn kdf_error(e: KdfError) -> DecryptError {
+    match e {
+        KdfError::Params(s) => DecryptError::BadParameters(s),
+        KdfError::HostCannotAllocate { requested_bytes } => {
+            DecryptError::HostCannotAllocate { requested_bytes }
+        }
+    }
+}
+
 fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
     let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
@@ -332,7 +394,7 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
                     // than reading it: `crate::kdf` is where the manifest's
                     // hostile-parameter guards live, so both directions get them.
                     crate::kdf::derive_argon2id(sk_bytes, salt, *t, *m, *p, derived_bytes)
-                        .map_err(DecryptError::BadParameters)
+                        .map_err(kdf_error)
                 }
                 // Screened out at the top of `decrypt`, ~140 lines and one
                 // function away. That distance is the whole argument for a

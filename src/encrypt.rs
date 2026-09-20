@@ -63,18 +63,24 @@ const WHOLESOME: Profile = Profile {
     odf_version: "1.4",
 };
 
-// The invariants that make this arc's Argon2id and AES-GCM calls infallible,
-// checked at compile time rather than asserted in a comment: argon2 requires
-// `m >= 8p` and a salt of at least 8 bytes, AES-256 needs a 32-byte key, and
-// GCM's nonce is 96 bits. `uris::AESGCM256_URL` in `build_manifest` is keyed
-// to `derived_key_len == 32`; the assert below is what ties them together.
+// The invariants that make this arc's Argon2id and AES-GCM calls reject
+// nothing about their PARAMETERS, checked at compile time rather than
+// asserted in a comment: argon2 requires `m >= 8p` and a salt of at least 8
+// bytes, AES-256 needs a 32-byte key, and GCM's nonce is 96 bits.
+// `uris::AESGCM256_URL` in `build_manifest` is keyed to `derived_key_len ==
+// 32`; the assert below is what ties them together. Not a claim that the
+// Argon2id call cannot fail at all -- it can still fail on the host's
+// available memory; see `EncryptError::HostCannotAllocate`, which is about
+// the machine, not the tuple these asserts cover.
 //
 // The Argon2 `m >= 8p` assert still covers the DEFAULT tuple, but it is no
 // longer the whole story: `encrypt_with_params` takes `(t, m, p)` from a
 // caller, and a value that arrives at run time cannot be checked at compile
 // time. `Argon2Params::new` carries that same invariant to the constructor,
-// which is why it returns a `Result` and why `encrypt_with_params` itself
-// cannot fail on its parameters.
+// which is why it returns a `Result` and why `encrypt_with_params` cannot
+// fail on its parameters' VALIDITY. Their COST is a different axis: however
+// small the tuple, no `(t, m, p)` can guarantee in advance that this host has
+// the memory to run it.
 const _: () = assert!(WHOLESOME.argon2_m_kib >= 8 * WHOLESOME.argon2_p);
 const _: () = assert!(WHOLESOME.salt_len >= 8);
 const _: () = assert!(WHOLESOME.derived_key_len == 32);
@@ -122,8 +128,18 @@ impl core::fmt::Display for Argon2Axis {
 /// Neither variant means *weak*. A cheap-but-runnable tuple is accepted; see
 /// [`Argon2Params`].
 ///
-/// `#[non_exhaustive]`: more reasons are expected — a host that cannot allocate
-/// the requested memory is the next one — so match with a `_` arm.
+/// `#[non_exhaustive]`: more reasons may be added, so match with a `_` arm.
+///
+/// A host that cannot allocate the requested memory is deliberately **not**
+/// one of them -- see [`EncryptError::HostCannotAllocate`], a top-level
+/// variant rather than a `ParamsReason`. `ParamsReason` is raised by
+/// [`Argon2Params::new`], before `encrypt_with_params` -- let alone the
+/// package -- is ever touched; it is `Copy + Eq`, a reproducible verdict on
+/// three integers that gives the same answer on every machine; and the CLI
+/// pins it to exit 1, usage. A host-capacity failure has none of those
+/// properties: it surfaces mid-`encrypt_with_params`, the same tuple can
+/// succeed on a machine with more free memory, and reporting it as exit 1
+/// would send someone to fix a command line that was never wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParamsReason {
@@ -396,6 +412,21 @@ pub enum EncryptError {
     /// (usage), not 6 (malformed), for the same reason.
     #[error("invalid Argon2 parameters: {0}")]
     Params(ParamsReason),
+    /// This host could not allocate the working memory Argon2id needs.
+    ///
+    /// **Not an invalid tuple.** `params` was validated when it was
+    /// constructed; this is the machine declining, and the same call may
+    /// succeed on a machine with more free memory. Lowering
+    /// [`Argon2Params::m_kib`] is a legitimate response, but read
+    /// [`Argon2Params`] first: the cost is stored in the file and binds
+    /// every future reader on every device, so trading it away to fit
+    /// today's host is irreversible.
+    #[error("host could not allocate {requested_bytes} bytes for key derivation")]
+    HostCannotAllocate {
+        /// The size, in bytes, of the working buffer Argon2id could not
+        /// obtain: `params.m_kib` rounded up to whole blocks.
+        requested_bytes: usize,
+    },
     /// The input buffer cannot be deflated. `compress_to_vec` itself is
     /// infallible, so in practice this is the 1 GiB input-size rejection.
     #[error("deflate failed: {0}")]
@@ -427,6 +458,11 @@ pub enum EncryptError {
     /// Unreachable today: every one of those is a compile-time constant
     /// guarded by `const` asserts beside the profile, which is why this
     /// carries no recovery advice.
+    ///
+    /// **Not** where a host's inability to allocate Argon2id's working memory
+    /// lands: that is [`EncryptError::HostCannotAllocate`], a distinct
+    /// variant because it blames the machine, not a parameter a crypto
+    /// primitive refused.
     ///
     /// Also covers a supposedly infallible write failing: `io::Write for
     /// Vec<u8>` through quick-xml, when building the manifest.
@@ -460,6 +496,11 @@ pub enum EncryptError {
 /// fails, [`EncryptError::Odf12Fatal`] for a package LibreOffice would refuse,
 /// and [`EncryptError::Mimetype`] for a `mimetype` member that cannot be
 /// carried into the output.
+///
+/// [`EncryptError::HostCannotAllocate`] is different from every entry above:
+/// it is not a pre-crypto screen. It surfaces mid-derivation, after the
+/// whole-input deflate has already run, if the host cannot supply Argon2id's
+/// working memory.
 ///
 /// Then [`EncryptError::Deflate`] (in practice, an input over 1 GiB),
 /// [`EncryptError::Random`], [`EncryptError::Zip`] and
@@ -525,9 +566,14 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
 ///
 /// # Errors
 ///
-/// Exactly [`encrypt`]'s, plus nothing: `params` was validated when it was
-/// constructed, so this cannot fail on it. [`EncryptError::Params`] comes from
-/// [`Argon2Params::new`], not from here.
+/// Exactly [`encrypt`]'s. `params`' *validity* was checked when it was
+/// constructed, so this still cannot fail on that: [`EncryptError::Params`]
+/// comes from [`Argon2Params::new`], not from here.
+///
+/// `params`' *cost* is a different question, and construction cannot have
+/// checked it: [`EncryptError::HostCannotAllocate`] can still occur here,
+/// scaling with `params.m_kib()` -- the one axis of the tuple a caller
+/// chooses and the one no validation can guarantee a given host can afford.
 ///
 /// # Examples
 ///
@@ -587,8 +633,18 @@ pub fn encrypt_with_params(
     let mut derived_key = DerivedKey::new(vec![0u8; WHOLESOME.derived_key_len]);
     start_key.with_secret(|sk| {
         derived_key.with_secret_mut(|key| {
-            crate::kdf::derive_argon2id(sk, &salt, params.t, params.m_kib, params.p, key)
-                .map_err(EncryptError::Internal)
+            crate::kdf::derive_argon2id(sk, &salt, params.t, params.m_kib, params.p, key).map_err(
+                // Exhaustive, no `_` arm: the next `KdfError` variant must be
+                // given a deliberate mapping here rather than silently
+                // inheriting one -- the same discipline `Argon2Axis`'s
+                // `Display` impl follows at its own match, above.
+                |e| match e {
+                    crate::kdf::KdfError::Params(s) => EncryptError::Internal(s),
+                    crate::kdf::KdfError::HostCannotAllocate { requested_bytes } => {
+                        EncryptError::HostCannotAllocate { requested_bytes }
+                    }
+                },
+            )
         })
     })?;
 

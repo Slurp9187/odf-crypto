@@ -12,7 +12,7 @@
 //! Secret material uses [`crate::sensitive`]'s `secure-gate` wrappers, this
 //! crate's only zeroizing primitive.
 
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use sha1::digest::Output;
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
@@ -53,6 +53,21 @@ pub(crate) fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
     }
 }
 
+/// Why [`derive_argon2id`] could not produce a key. Two kinds, and the
+/// difference is what the caller can do about it.
+#[derive(Debug)]
+pub(crate) enum KdfError {
+    /// The `(t, m, p)` tuple or the requested output length is one this
+    /// crate -- or `argon2` itself -- will not run. Deterministic: it
+    /// fails identically on every machine. Carries the diagnostic text
+    /// both directions already render today.
+    Params(String),
+    /// This host could not allocate argon2's `block_count() * Block::SIZE`
+    /// working buffer. Says nothing about the tuple: the same tuple may
+    /// derive fine on a machine with more free memory.
+    HostCannotAllocate { requested_bytes: usize },
+}
+
 /// Argon2id `(t, m, p)` over `start_key` with `salt`, filling `out` (whose
 /// length is the derived key length) -- the same shape as `pbkdf2_hmac`, so a
 /// caller allocates its key buffer exactly once and both KDF arms write into
@@ -60,10 +75,40 @@ pub(crate) fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
 /// reads `t`/`m`/`p`/`salt` off the manifest) and encrypt's one-and-only KDF
 /// (plan §6 step 6, which chooses `t=3, m=65536, p=4` itself).
 ///
-/// Returns a plain `String` error rather than either caller's own error type:
-/// decrypt maps it to `DecryptError::BadParameters`; encrypt only ever passes
-/// its own compile-time constants, so it maps a failure to
-/// `EncryptError::Internal` rather than treating it as unreachable.
+/// Returns [`KdfError`] rather than either caller's own error type, because
+/// the two callers want different things from the same tuple failure and both
+/// are right: a [`KdfError::Params`] is a hostile manifest field to decrypt,
+/// which maps it to `DecryptError::BadParameters`, and a broken invariant of
+/// ours to encrypt, which maps it to `EncryptError::Internal` -- encrypt only
+/// ever passes a tuple `Argon2Params::new` already validated, so a rejection
+/// here means that guard failed, not that a caller was wrong.
+/// [`KdfError::HostCannotAllocate`] is the one axis they render identically:
+/// each maps it to its own `HostCannotAllocate`, same name on both sides.
+///
+/// # The block buffer is ours on purpose
+///
+/// `Argon2::hash_password_into` allocates argon2's working memory itself, with
+/// `vec![Block::default(); self.params.block_count()]` (argon2 0.5.3
+/// `src/lib.rs:230`), sized from `m` -- which on the decrypt side is
+/// `manifest:argon2-memory`, a field the package author chose. An allocation
+/// that cannot be satisfied does not return and does not unwind: Rust *aborts*
+/// through `handle_alloc_error`, whatever the panic strategy, because an abort
+/// is not a panic. An abort skips unwinding, so `Drop` never runs -- and `Drop`
+/// is this crate's only zeroizing primitive. Both callers reach this function
+/// from inside nested `with_secret`/`with_secret_mut` closures, so at the
+/// moment of the abort `PasswordDigest` and `DerivedKey` are live and are left
+/// unwiped: key material surviving in memory a process that has already died.
+///
+/// So the buffer is allocated here instead, with [`Vec::try_reserve_exact`],
+/// which returns `Err` where `vec!` aborts, and handed to
+/// `hash_password_into_with_memory` (argon2 0.5.3 `src/lib.rs:243`), whose
+/// `impl AsMut<[Block]>` parameter exists for exactly this.
+///
+/// What this does **not** fix: `blocks` is a plain `Vec<Block>`, not a
+/// secure-gate wrapper, so argon2's working memory -- which is derived from the
+/// password -- is not zeroized when it drops, on this path or on the default
+/// one. That residual is unchanged by this function and is a separate question
+/// from the abort; conflating the two would claim a wipe that does not happen.
 ///
 /// Both slices are already inside their callers' `with_secret`/
 /// `with_secret_mut` closures, so this takes bare slices and never holds
@@ -72,9 +117,12 @@ pub(crate) fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
 /// The `i32`s are the manifest's own type (`sal_Int32`). Anything that does
 /// not fit `u32`, falls outside [`ARGON2_MIN_T_COST`]..=[`ARGON2_MAX_T_COST`]
 /// (and the matching `m`/`p` bounds), or fails the crate's own parameter
-/// check (`m >= 8p`, `p <= 0xFFFFFF`) is an error here rather than a panic
-/// inside `Params::new`, whose `m_cost < p_cost * 8` test overflows on
-/// `p >= 2^29` *before* it range-checks `p` (argon2 0.5.3 `params.rs:119`).
+/// check (`m >= 8p`, `p <= 0xFFFFFF`) is a [`KdfError::Params`] here rather
+/// than a panic inside `Params::new`, whose `m_cost < p_cost * 8` test
+/// overflows on `p >= 2^29` *before* it range-checks `p` (argon2 0.5.3
+/// `params.rs:119`). The working buffer now joins that list: it is a
+/// [`KdfError::HostCannotAllocate`] here rather than an abort inside
+/// `hash_password_into`.
 pub(crate) fn derive_argon2id(
     start_key: &[u8],
     salt: &[u8],
@@ -82,26 +130,46 @@ pub(crate) fn derive_argon2id(
     m: i32,
     p: i32,
     out: &mut [u8],
-) -> Result<(), String> {
-    let t = u32::try_from(t).map_err(|_| format!("argon2 iterations {t}"))?;
-    let m = u32::try_from(m).map_err(|_| format!("argon2 memory {m}"))?;
-    let p = u32::try_from(p).map_err(|_| format!("argon2 lanes {p}"))?;
+) -> Result<(), KdfError> {
+    let t = u32::try_from(t).map_err(|_| KdfError::Params(format!("argon2 iterations {t}")))?;
+    let m = u32::try_from(m).map_err(|_| KdfError::Params(format!("argon2 memory {m}")))?;
+    let p = u32::try_from(p).map_err(|_| KdfError::Params(format!("argon2 lanes {p}")))?;
     if !(ARGON2_MIN_T_COST..=ARGON2_MAX_T_COST).contains(&t) {
-        return Err(format!(
+        return Err(KdfError::Params(format!(
             "argon2 iterations {t} outside {ARGON2_MIN_T_COST}..={ARGON2_MAX_T_COST}"
-        ));
+        )));
     }
     if !(ARGON2_MIN_M_COST_KIB..=ARGON2_MAX_M_COST_KIB).contains(&m) {
-        return Err(format!(
+        return Err(KdfError::Params(format!(
             "argon2 memory {m} KiB outside {ARGON2_MIN_M_COST_KIB}..={ARGON2_MAX_M_COST_KIB}"
-        ));
+        )));
     }
     if !(ARGON2_MIN_P_COST..=Params::MAX_P_COST).contains(&p) {
-        return Err(format!("argon2 lanes {p}"));
+        return Err(KdfError::Params(format!("argon2 lanes {p}")));
     }
-    let params =
-        Params::new(m, t, p, Some(out.len())).map_err(|e| format!("argon2 params: {e}"))?;
+    let params = Params::new(m, t, p, Some(out.len()))
+        .map_err(|e| KdfError::Params(format!("argon2 params: {e}")))?;
+
+    // Read off `params` BEFORE it is moved into `Argon2::new` below -- the
+    // count and the byte figure the error carries are both unreachable after
+    // the move. `block_count()` is bounded by `ARGON2_MAX_M_COST_KIB`, checked
+    // above, so the product fits `usize` even on a 32-bit target; the
+    // `saturating_mul` says so without depending on that argument holding.
+    let block_count = params.block_count();
+    let requested_bytes = block_count.saturating_mul(Block::SIZE);
+
+    let mut blocks: Vec<Block> = Vec::new();
+    blocks
+        .try_reserve_exact(block_count)
+        .map_err(|_| KdfError::HostCannotAllocate { requested_bytes })?;
+    // Load-bearing: `try_reserve_exact` has already secured capacity for
+    // `block_count` elements, so this fill only writes into capacity that
+    // exists. `Vec::resize` grows the allocation only when capacity is short,
+    // and it is not -- were it short, the grow would be the infallible one
+    // this function exists to avoid, put straight back where it was removed.
+    blocks.resize(block_count, Block::default());
+
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into(start_key, salt, out)
-        .map_err(|e| format!("argon2: {e}"))
+        .hash_password_into_with_memory(start_key, salt, out, &mut blocks)
+        .map_err(|e| KdfError::Params(format!("argon2: {e}")))
 }

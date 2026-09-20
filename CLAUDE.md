@@ -124,12 +124,20 @@ gone.
 The consequence is worse here than a crash. An abort skips unwinding, so `Drop`
 never runs, so `secure-gate`'s zeroize-on-drop does not happen — and the crate's
 only zeroizing primitive is `Drop`. A path that aborts mid-decrypt leaves the
-password digest and derived key in memory, unwiped. `kdf.rs`'s Argon2 call is a
-live instance, open as of `0.1.0-rc.4`: `argon2`'s `hash_password_into` does
-`vec![Block::default(); block_count()]` sized from a manifest field
-(`argon2-0.5/src/lib.rs:230`), while `PasswordDigest` and `DerivedKey` are both
-alive inside `with_secret`/`with_secret_mut`. `ARGON2_MAX_M_COST_KIB` bounds how
-far it can be pushed; it does not close it.
+password digest and derived key in memory, unwiped.
+
+`kdf.rs`'s Argon2 call was the worked example and is **closed** — it allocates
+the block buffer itself with `try_reserve_exact` and hands it to
+`hash_password_into_with_memory`, so an unaffordable `manifest:argon2-memory`
+returns `HostCannotAllocate` instead of killing the process. Verified that the
+abort closed rather than moved: everything beneath that entry point in argon2
+0.5.3 is heap-free.
+
+**Others are still open**, and a ceiling is not a fix for them. The largest:
+`decrypt.rs`'s inflate slots and cipher buffers, sized from `manifest:size` and
+member lengths, each bounded at 1 GiB but summing across up to
+`MAX_ENCRYPTED_ENTRIES` rows with wrapped plaintext live throughout. They are
+tracked, not forgotten — see the issue linked from `CHANGELOG.md`'s rc.5 entry.
 
 **So: an allocation whose size comes from untrusted input must be fallible.**
 Reach for `Vec::try_reserve` and an API that accepts caller-provided storage
@@ -202,8 +210,14 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-187 of them: 124 library, 16 CLI unit, 35 CLI end-to-end, 12 doctests. All must
+189 of them: 125 library, 17 CLI unit, 35 CLI end-to-end, 12 doctests. All must
 pass in every feature configuration.
+
+One library test is `#[ignore]`d and is counted above: it needs a host with
+under ~1 GiB free to observe `try_reserve_exact` refusing, which is not true of
+a well-provisioned machine or a CI runner. It is counted because it exists and
+is run by `cargo test -- --ignored`; it is ignored because claiming a guard is
+exercised when it is not is worse than a skip.
 
 **The goldens are the evidence.** `tests/goldens/*.odt` are real LibreOffice
 output — every one, including `aoo-blowfish-pbkdf2.odt`, whose `aoo-` prefix
