@@ -234,6 +234,27 @@ matching nothing passes every test.
 Never assert on `encrypt`'s output bytes. Its salt and IV are fresh per call.
 Assert on the round trip.
 
+## Work lands through a PR
+
+Default to a branch and a pull request, including for work that would sail
+through. Not a risk judgement — a record one. A PR is browsable, linkable and
+carries its review, its CI run and its diff in one place a person can find
+later; a commit message is only findable by someone who already knows it exists.
+
+**And a PR is mutable where a commit is not.** This matters here more than
+most places, because the culture is to argue from evidence in the message — and
+evidence goes stale. A commit that cites a file which later moves, or justifies
+a decision that is afterwards reversed, is wrong permanently; the correction
+lives somewhere else and the reader has to find both. A PR body can be edited in
+place, which is the same property `docs/plans/` has and the same reason
+"Plans record reversals" works.
+
+Direct-to-`main` is for release mechanics — opening a line, cutting it — where
+the commit *is* the record and a PR adds a hop. Anything touching `src/` goes
+through a PR even when `main` is unprotected and even when CI would catch it
+afterwards, because "CI went green after it landed" is a worse artifact than a
+PR that shows the same thing before.
+
 ## Publishing
 
 - **`--locked` everywhere.** It catches a stale `Cargo.lock`, which this repo hit
