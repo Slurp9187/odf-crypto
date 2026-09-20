@@ -13,11 +13,80 @@ LibreOffice citation and a reproduction for each.
 
 ## [0.1.0-rc.4] — 2026-09-20
 
-Two hardening fixes to the error payloads, both about the same thing: what an
-untrusted package can get this crate to say. No public API moved — `classify`,
-`decrypt` and `encrypt` have the signatures `0.1.0-rc.3` shipped, and the
-dependency graph is unchanged at 25 crates for detection-only and 59 with
-`crypto-ops`, re-measured rather than carried forward.
+One addition and two hardening fixes. The fixes are both about the same thing —
+what an untrusted package can get this crate to *say*; the addition is about
+what a caller is allowed to *choose*.
+
+`classify`, `decrypt` and `encrypt` all keep the signatures `0.1.0-rc.3`
+shipped: `encrypt_with_params` is a new entry point beside `encrypt`, not a
+change to it, so nothing existing has to move. The dependency graph is unchanged
+at 25 crates for detection-only and 59 with `crypto-ops`, re-measured rather
+than carried forward.
+
+### Added
+
+**The Argon2id cost is now a caller's choice**, through `encrypt_with_params`
+and `Argon2Params`. `encrypt` is unchanged and still writes LibreOffice's
+`(t=3, m=65536, p=4)`; the new entry point is opt-in and the weaker choice has
+to be typed out.
+
+The driver is hardware, not testing. `m=65536` is **64 MiB of working memory per
+call**, which on an older phone or a 2 GB laptop is a meaningful share of what
+exists — and because the parameters travel with the file, a device that cannot
+spend 64 MiB to write also cannot spend it to read the document back. Lowering
+the write cost is the only thing that helps such a device, and it helps on both
+paths.
+
+**Weak tuples are accepted, not refused.** `Argon2Params::new` rejects only what
+`argon2` cannot run — a value outside the range `decrypt` would accept back, or
+`m < 8p` — and never a tuple that is merely cheap. Who a document belongs to,
+and what its owner can afford to run, is not this crate's call to make. What the
+crate does instead is *say so*: `Argon2Params::is_weaker_than_libreoffice`
+reports the comparison, the CLI prints a warning on stderr and writes the file
+anyway, and the rustdoc states the trade at the type.
+
+**Real LibreOffice reads these back**, established twice over — by measurement
+and from its source, because the whole feature is worthless if it is not true:
+a lower-cost file that only this crate could open would be exactly the outcome
+the crate exists to prevent.
+
+Measured: packages written at `(3, 65536, 4)`, `(2, 8192, 2)` and `(1, 1024, 1)`
+were each opened by LibreOffice 26.2.1.2 with the correct text recovered; the
+last is one sixty-fourth of the default memory.
+
+From source, which is the stronger half because it bounds every tuple rather
+than the three that were sampled. `ManifestImport.cxx:257` validates the three
+attributes for positivity and nothing else — `if (0 < t && 0 < m && 0 < p)`,
+with the `else` branch setting `bIgnoreEncryptData`; there is no floor, no
+ceiling and no clamp. `ZipFile.cxx:184-186` then passes the file's own values
+straight into `argon2_context`'s `t_cost`, `m_cost` and `lanes`, and `:192`
+states the policy outright: *"libargon2 validates all the arguments so don't
+need to do it here."*
+
+So LibreOffice's accepted range **is** libargon2's, and what this crate will
+write is a strict subset of it — `t` to `1 << 16` against libargon2's
+`u32::MAX`, `m` to `1 << 20` KiB against `u32::MAX`, `p` sharing argon2's own
+`MAX_P_COST`, and `m >= 8p` enforced on both sides. Nothing `encrypt_with_params`
+can produce is refusable by LibreOffice on parameter grounds. (LibreOffice links
+`phc-winner-argon2-20190702`, fetched at build time; the comparison above is
+against the Rust `argon2` crate's constants, which mirror the same PHC
+reference.)
+
+A struct rather than three integers, because two orderings of the same three
+`i32`s are already in play: the manifest writes `(t, m, p)` and `argon2::Params`
+orders them `(m, t, p)`. A tuple makes transposing them type-check, look
+plausible and still produce a file.
+
+`EncryptError::Params` is new. It is distinct from `Internal` on purpose —
+`Internal` reports an invariant of ours, this reports a value the caller can
+correct — and the CLI maps it to exit **1 (usage)**, not 6 (malformed): the flag
+was wrong, the document was fine. It reached the `_` catch-all arm when first
+added, which is exactly the silent fall-through [#40] exists to catch.
+
+The CLI gains `--argon2-t`, `--argon2-m` and `--argon2-p`, each defaulting
+independently so `--argon2-m 8192` alone keeps LibreOffice's `t` and `p`.
+
+[#40]: https://github.com/Slurp9187/odf-crypto/issues/40
 
 ### Changed
 

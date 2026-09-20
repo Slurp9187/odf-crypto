@@ -4,7 +4,7 @@ use zip::CompressionMethod;
 
 use crate::classify::classify;
 use crate::decrypt::{decrypt, DecryptError};
-use crate::encrypt::{encrypt, EncryptError};
+use crate::encrypt::{encrypt, encrypt_with_params, Argon2Params, EncryptError};
 use crate::test_support::{
     append_stored_member, goldens_dir, load_golden, read_member, strict_b64_decode, zip_method,
     zip_namelist, zip_with, zip_with_methods, MIME_TEXT, NONASCII_PASSWORD, PASSWORD,
@@ -763,4 +763,112 @@ fn s3_round_trip_byte_identical_nontrivial_fixture() {
         round_tripped, original,
         "decrypt(encrypt(p, pw), pw) must be byte-identical to p"
     );
+}
+
+// --- Caller-chosen Argon2 cost ---
+
+#[test]
+fn default_params_match_what_encrypt_writes_on_its_own() {
+    // `encrypt` delegates to `encrypt_with_params` with LIBREOFFICE_DEFAULT.
+    // If those two ever disagree, every other test here keeps passing while
+    // the plain `encrypt` silently changes profile -- so pin the tuple against
+    // the manifest of a package `encrypt` actually produced.
+    let sealed = encrypt(&load_golden("lo-unencrypted.odt"), PASSWORD).expect("encrypt");
+    let row = classify(&sealed)
+        .expect("classify")
+        .common
+        .expect("latch row");
+    let d = Argon2Params::LIBREOFFICE_DEFAULT;
+    assert_eq!((d.t(), d.m_kib(), d.p()), (3, 65536, 4));
+    assert!(
+        matches!(row.kdf, Kdf::Argon2id { t, m, p, .. } if (t, m, p) == (d.t(), d.m_kib(), d.p())),
+        "encrypt() must write LIBREOFFICE_DEFAULT, got {:?}",
+        row.kdf
+    );
+}
+
+#[test]
+fn caller_params_reach_both_the_manifest_and_the_derivation() {
+    // The manifest could agree with the caller while the key was derived from
+    // something else -- a file that decrypts here and nowhere else. The round
+    // trip alone would not catch it, because decrypt reads the manifest's
+    // copy. So assert the manifest says what was asked for AND that the
+    // package still round-trips, which together pin both halves.
+    let plain = load_golden("lo-unencrypted.odt");
+    let params = Argon2Params::new(2, 8192, 2).expect("valid tuple");
+    let sealed = encrypt_with_params(&plain, PASSWORD, params).expect("encrypt");
+
+    let row = classify(&sealed)
+        .expect("classify")
+        .common
+        .expect("latch row");
+    assert!(
+        matches!(
+            row.kdf,
+            Kdf::Argon2id {
+                t: 2,
+                m: 8192,
+                p: 2,
+                ..
+            }
+        ),
+        "manifest must record the caller's tuple, got {:?}",
+        row.kdf
+    );
+    assert_eq!(
+        decrypt(&sealed, PASSWORD).expect("decrypt"),
+        plain,
+        "a package derived at a caller-chosen cost must still round-trip"
+    );
+}
+
+#[test]
+fn weak_but_runnable_params_are_accepted() {
+    // The project rule: warn, never block. A tuple argon2 can run is written,
+    // however weak -- this is the lowest the crate's own bounds allow.
+    let params = Argon2Params::new(1, 8, 1).expect("m = 8 * p exactly, argon2's floor");
+    assert!(params.is_weaker_than_libreoffice());
+    let plain = load_golden("lo-unencrypted.odt");
+    let sealed = encrypt_with_params(&plain, PASSWORD, params).expect("weak must not be refused");
+    assert_eq!(decrypt(&sealed, PASSWORD).expect("decrypt"), plain);
+}
+
+#[test]
+fn params_are_refused_only_when_argon2_cannot_run_them() {
+    // m < 8p is argon2's own requirement, not a policy of ours.
+    assert!(matches!(
+        Argon2Params::new(3, 8, 4),
+        Err(EncryptError::Params(_))
+    ));
+    // Zero and negative are outside the supported range in both directions.
+    assert!(matches!(
+        Argon2Params::new(0, 65536, 4),
+        Err(EncryptError::Params(_))
+    ));
+    assert!(matches!(
+        Argon2Params::new(3, -1, 4),
+        Err(EncryptError::Params(_))
+    ));
+    // ... but m = 8p exactly is the boundary and must be allowed, or the
+    // check is off by one in the direction that blocks a legal tuple.
+    assert!(Argon2Params::new(1, 32, 4).is_ok());
+}
+
+#[test]
+fn is_weaker_than_libreoffice_reports_but_does_not_gate() {
+    assert!(!Argon2Params::LIBREOFFICE_DEFAULT.is_weaker_than_libreoffice());
+    // Weaker on any single axis counts.
+    assert!(Argon2Params::new(2, 65536, 4)
+        .unwrap()
+        .is_weaker_than_libreoffice());
+    assert!(Argon2Params::new(3, 8192, 4)
+        .unwrap()
+        .is_weaker_than_libreoffice());
+    assert!(Argon2Params::new(3, 65536, 2)
+        .unwrap()
+        .is_weaker_than_libreoffice());
+    // Stronger is not "weaker".
+    assert!(!Argon2Params::new(4, 131_072, 4)
+        .unwrap()
+        .is_weaker_than_libreoffice());
 }

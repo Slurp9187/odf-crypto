@@ -20,7 +20,10 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify;
-use crate::limits::{AES_GCM_IV_LEN, DEFLATE_CEILING, MIMETYPE_CEILING};
+use crate::limits::{
+    AES_GCM_IV_LEN, ARGON2_MAX_M_COST_KIB, ARGON2_MAX_T_COST, ARGON2_MIN_M_COST_KIB,
+    ARGON2_MIN_P_COST, ARGON2_MIN_T_COST, DEFLATE_CEILING, MIMETYPE_CEILING,
+};
 use crate::sensitive::{DeflatedPlaintext, DerivedKey};
 use crate::types::{Mode, StartKeyAlg};
 use crate::uris;
@@ -65,10 +68,160 @@ const WHOLESOME: Profile = Profile {
 // `m >= 8p` and a salt of at least 8 bytes, AES-256 needs a 32-byte key, and
 // GCM's nonce is 96 bits. `uris::AESGCM256_URL` in `build_manifest` is keyed
 // to `derived_key_len == 32`; the assert below is what ties them together.
+//
+// The Argon2 `m >= 8p` assert still covers the DEFAULT tuple, but it is no
+// longer the whole story: `encrypt_with_params` takes `(t, m, p)` from a
+// caller, and a value that arrives at run time cannot be checked at compile
+// time. `Argon2Params::new` carries that same invariant to the constructor,
+// which is why it returns a `Result` and why `encrypt_with_params` itself
+// cannot fail on its parameters.
 const _: () = assert!(WHOLESOME.argon2_m_kib >= 8 * WHOLESOME.argon2_p);
 const _: () = assert!(WHOLESOME.salt_len >= 8);
 const _: () = assert!(WHOLESOME.derived_key_len == 32);
 const _: () = assert!(WHOLESOME.iv_len == AES_GCM_IV_LEN);
+
+/// Argon2id cost parameters for [`encrypt_with_params`].
+///
+/// # These are a property of the file, not of the machine that wrote it
+///
+/// The three values are written into `META-INF/manifest.xml` and travel with
+/// the document. Choosing a low cost to suit a constrained device therefore
+/// weakens that document **permanently, for every future reader on every
+/// device** — the file cannot be re-derived at a higher cost without being
+/// decrypted and re-encrypted. It is a deliberate, irreversible trade and this
+/// crate does not make it for you: nothing here refuses a weak-but-valid
+/// tuple, and nothing silently substitutes a stronger one.
+///
+/// [`Argon2Params::LIBREOFFICE_DEFAULT`] is what current LibreOffice writes.
+/// Prefer it unless you have a reason you could defend to the person whose
+/// document it is.
+///
+/// # Why a struct rather than three integers
+///
+/// Two orderings of the same three `i32`s are already in play: the manifest
+/// writes `(t, m, p)` and `argon2::Params` orders them `(m, t, p)`. A tuple or
+/// array makes transposing them type-check, look plausible and still produce a
+/// file. Named fields make the mistake unrepresentable.
+///
+/// Fields are private and reached through [`t`](Self::t), [`m_kib`](Self::m_kib)
+/// and [`p`](Self::p), so a value of this type has always been validated.
+///
+/// # Examples
+///
+/// ```
+/// use odf_crypto::Argon2Params;
+///
+/// let default = Argon2Params::LIBREOFFICE_DEFAULT;
+/// assert_eq!((default.t(), default.m_kib(), default.p()), (3, 65536, 4));
+///
+/// // An eighth of the default memory: weaker, allowed, and yours to justify.
+/// let low = Argon2Params::new(2, 8192, 2)?;
+/// assert_eq!(low.m_kib(), 8192);
+///
+/// // Refused because argon2 cannot run it, not because it is weak.
+/// assert!(Argon2Params::new(3, 8, 4).is_err());
+/// # Ok::<(), odf_crypto::EncryptError>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Argon2Params {
+    t: i32,
+    m_kib: i32,
+    p: i32,
+}
+
+impl Argon2Params {
+    /// What current LibreOffice writes: `t = 3`, `m = 65536` KiB (64 MiB),
+    /// `p = 4` (`objstor.cxx:349-399`). The tuple [`encrypt`] uses.
+    pub const LIBREOFFICE_DEFAULT: Self = Self {
+        t: WHOLESOME.argon2_t,
+        m_kib: WHOLESOME.argon2_m_kib,
+        p: WHOLESOME.argon2_p,
+    };
+
+    /// Validate a `(t, m, p)` tuple, in the manifest's own order.
+    ///
+    /// `m_kib` is **kibibytes**, matching `manifest:argon2-memory` — 65536 is
+    /// 64 MiB, not 64 KiB.
+    ///
+    /// # Errors
+    ///
+    /// [`EncryptError::Params`] when the tuple cannot be run, never when it is
+    /// merely weak. Two reasons, and the distinction is the point:
+    ///
+    /// - a value outside the range this crate acts on at all, which is the
+    ///   same range `decrypt` accepts off a manifest, so anything `encrypt`
+    ///   writes can be read back;
+    /// - `m_kib < 8 * p`, which `argon2` itself rejects — the invariant the
+    ///   default tuple checks with a `const` assert.
+    pub fn new(t: i32, m_kib: i32, p: i32) -> Result<Self, EncryptError> {
+        let range = |what: &str, got: i32, lo: u32, hi: u32| {
+            EncryptError::Params(format!(
+                "argon2 {what} {got} is outside the supported range {lo}..={hi}"
+            ))
+        };
+        if !(ARGON2_MIN_T_COST..=ARGON2_MAX_T_COST).contains(&u32::try_from(t).unwrap_or(0)) {
+            return Err(range("t", t, ARGON2_MIN_T_COST, ARGON2_MAX_T_COST));
+        }
+        if !(ARGON2_MIN_M_COST_KIB..=ARGON2_MAX_M_COST_KIB)
+            .contains(&u32::try_from(m_kib).unwrap_or(0))
+        {
+            return Err(range(
+                "m",
+                m_kib,
+                ARGON2_MIN_M_COST_KIB,
+                ARGON2_MAX_M_COST_KIB,
+            ));
+        }
+        // `argon2::Params::MAX_P_COST`, not a bound of ours -- the same
+        // ceiling `kdf::derive_argon2id` applies on the read side, so the two
+        // directions cannot disagree about which tuples exist.
+        if !(ARGON2_MIN_P_COST..=argon2::Params::MAX_P_COST)
+            .contains(&u32::try_from(p).unwrap_or(0))
+        {
+            return Err(range("p", p, ARGON2_MIN_P_COST, argon2::Params::MAX_P_COST));
+        }
+        // argon2's own requirement, not a policy of ours: it cannot allocate
+        // fewer than 8 KiB per lane. Checked here because a caller-supplied
+        // tuple cannot be checked by the `const` assert above.
+        if m_kib < 8 * p {
+            return Err(EncryptError::Params(format!(
+                "argon2 requires m >= 8 * p; m = {m_kib} and p = {p} gives 8 * p = {}",
+                8 * p
+            )));
+        }
+        Ok(Self { t, m_kib, p })
+    }
+
+    /// Time cost, `manifest:argon2-iterations`.
+    #[must_use]
+    pub fn t(&self) -> i32 {
+        self.t
+    }
+
+    /// Memory cost in **KiB**, `manifest:argon2-memory`.
+    #[must_use]
+    pub fn m_kib(&self) -> i32 {
+        self.m_kib
+    }
+
+    /// Parallelism, `manifest:argon2-lanes`.
+    #[must_use]
+    pub fn p(&self) -> i32 {
+        self.p
+    }
+
+    /// Whether this is weaker than what LibreOffice writes.
+    ///
+    /// Reported, never enforced — [`encrypt_with_params`] accepts a tuple for
+    /// which this is `true`. It exists so a front end can say so: the CLI
+    /// prints a warning on this, and a library consumer can do the same
+    /// rather than re-deriving the comparison.
+    #[must_use]
+    pub fn is_weaker_than_libreoffice(&self) -> bool {
+        let d = Self::LIBREOFFICE_DEFAULT;
+        self.t < d.t || self.m_kib < d.m_kib || self.p < d.p
+    }
+}
 
 /// Failures from [`encrypt`].
 #[derive(Debug, thiserror::Error)]
@@ -93,6 +246,21 @@ pub enum EncryptError {
     /// CSPRNG failure -- vanishingly rare, but a library must not panic for it.
     #[error("random number generation failed: {0}")]
     Random(String),
+    /// An [`Argon2Params`] tuple this crate cannot run -- out of the range
+    /// `decrypt` would accept back, or `m < 8 * p`, which `argon2` itself
+    /// rejects.
+    ///
+    /// **Never returned for a tuple that is merely weak.** Cost is the
+    /// caller's decision and this crate does not overrule it; see
+    /// [`Argon2Params`].
+    ///
+    /// Deliberately distinct from [`EncryptError::Internal`]: this reports a
+    /// value that came from the caller, which they can correct, where
+    /// `Internal` reports an invariant of ours. The string is a diagnostic; do
+    /// not match on its content. It quotes only the caller's own numbers and
+    /// this crate's bounds, never anything read out of a package.
+    #[error("invalid Argon2 parameters: {0}")]
+    Params(String),
     /// The input buffer cannot be deflated. `compress_to_vec` itself is
     /// infallible, so in practice this is the 1 GiB input-size rejection.
     #[error("deflate failed: {0}")]
@@ -182,6 +350,72 @@ pub enum EncryptError {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
+    encrypt_with_params(bytes, password, Argon2Params::LIBREOFFICE_DEFAULT)
+}
+
+/// [`encrypt`] with the Argon2id cost chosen by the caller.
+///
+/// Identical in every other respect: one `encrypted-package` member,
+/// AES-256-GCM, a SHA-256 start key, no checksum, `manifest:version="1.4"`.
+/// Only `(t, m, p)` moves, and it moves into both the key derivation and the
+/// `loext:argon2-*` attributes, so the file describes how it was actually
+/// derived.
+///
+/// # This can produce a deliberately weak file, and will not stop you
+///
+/// `params` is accepted whenever `argon2` can run it — see [`Argon2Params`]
+/// for what is refused and why. A cost below
+/// [`Argon2Params::LIBREOFFICE_DEFAULT`] is not an error here, and this
+/// function does not warn: a library has no terminal to warn on. Call
+/// [`Argon2Params::is_weaker_than_libreoffice`] if you want to tell someone.
+///
+/// The cost travels **with the document**, so it is not a local performance
+/// setting. A file written at a low cost stays that weak for every future
+/// reader, including on hardware that could have afforded more.
+///
+/// # Real LibreOffice reads these back
+///
+/// Verified against LibreOffice 26.2.1.2 rather than inferred from the format:
+/// packages written at `(3, 65536, 4)`, `(2, 8192, 2)` and `(1, 1024, 1)` all
+/// open with the correct text recovered.
+///
+/// Its source bounds every tuple, not just those three. `ManifestImport.cxx:257`
+/// checks the attributes for positivity and nothing else — no floor, no ceiling,
+/// no clamp — and `ZipFile.cxx:184-186` passes the file's own values straight
+/// into `argon2_context`, with `:192` saying why there is no range check there
+/// either: *"libargon2 validates all the arguments so don't need to do it
+/// here."* What this crate will write is a strict subset of what libargon2
+/// accepts, so no tuple it produces is refusable by LibreOffice on parameter
+/// grounds.
+///
+/// # Errors
+///
+/// Exactly [`encrypt`]'s, plus nothing: `params` was validated when it was
+/// constructed, so this cannot fail on it. [`EncryptError::Params`] comes from
+/// [`Argon2Params::new`], not from here.
+///
+/// # Examples
+///
+/// ```
+/// use odf_crypto::{classify, decrypt, encrypt_with_params, Argon2Params, Kdf};
+///
+/// let plain = include_bytes!("../tests/goldens/lo-unencrypted.odt");
+/// let cheap = Argon2Params::new(2, 8192, 2)?;
+/// assert!(cheap.is_weaker_than_libreoffice());
+///
+/// let sealed = encrypt_with_params(plain, "hunter2", cheap)?;
+///
+/// // The file records the cost it was actually derived at.
+/// let row = classify(&sealed)?.common.expect("wholesome carries a latch row");
+/// assert!(matches!(row.kdf, Kdf::Argon2id { t: 2, m: 8192, p: 2, .. }));
+/// assert_eq!(decrypt(&sealed, "hunter2")?, plain.as_slice());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn encrypt_with_params(
+    bytes: &[u8],
+    password: &str,
+    params: Argon2Params,
+) -> Result<Vec<u8>, EncryptError> {
     if password.is_empty() {
         return Err(EncryptError::EmptyPassword);
     }
@@ -218,15 +452,8 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     let mut derived_key = DerivedKey::new(vec![0u8; WHOLESOME.derived_key_len]);
     start_key.with_secret(|sk| {
         derived_key.with_secret_mut(|key| {
-            crate::kdf::derive_argon2id(
-                sk,
-                &salt,
-                WHOLESOME.argon2_t,
-                WHOLESOME.argon2_m_kib,
-                WHOLESOME.argon2_p,
-                key,
-            )
-            .map_err(EncryptError::Internal)
+            crate::kdf::derive_argon2id(sk, &salt, params.t, params.m_kib, params.p, key)
+                .map_err(EncryptError::Internal)
         })
     })?;
 
@@ -257,7 +484,7 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
     })?;
 
     // Plan §2/§6 step 8: manifest.xml exactly per the emit table.
-    let manifest_xml = build_manifest(bytes.len() as i64, &iv, &salt, mimetype.as_deref())?;
+    let manifest_xml = build_manifest(bytes.len() as i64, &iv, &salt, mimetype.as_deref(), params)?;
 
     // Plan §3/§6 step 9: the three-member outer zip. `unwrap_or(&[])` writes a
     // zero-length `mimetype` member when neither fallback tier produced one --
@@ -424,6 +651,7 @@ fn build_manifest(
     iv: &[u8],
     salt: &[u8],
     media_type: Option<&str>,
+    params: Argon2Params,
 ) -> Result<Vec<u8>, EncryptError> {
     // `ManifestExport.cxx:145-153`: `xmlns:loext` and `manifest:version` are
     // both written together, gated on the same ODF >= 1.2 check -- always
@@ -455,9 +683,9 @@ fn build_manifest(
     start_key_gen.push_attribute((uris::ATTR_KEY_SIZE, key_size.as_str()));
 
     let (t, m, p) = (
-        WHOLESOME.argon2_t.to_string(),
-        WHOLESOME.argon2_m_kib.to_string(),
-        WHOLESOME.argon2_p.to_string(),
+        params.t.to_string(),
+        params.m_kib.to_string(),
+        params.p.to_string(),
     );
     let salt_b64 = crate::manifest::encode_b64(salt);
     let mut key_derivation = BytesStart::new(uris::ELEMENT_KEY_DERIVATION);

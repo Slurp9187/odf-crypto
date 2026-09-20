@@ -707,3 +707,132 @@ fn no_subcommand_prints_help_and_exits_usage() {
     let out = run(&[]);
     assert_eq!(code(&out), EX_USAGE);
 }
+
+// --- Argon2 cost flags: warn, never block ---
+
+#[test]
+fn weak_argon2_warns_on_stderr_and_still_writes() {
+    // The project rule is warn, never block. Both halves are asserted here
+    // because either alone would pass a broken implementation: a build that
+    // warned and refused, and a build that wrote silently, each satisfy one.
+    let s = Scratch::new("argonweak");
+    let pw = s.join("pw.txt");
+    std::fs::write(&pw, PASSWORD).unwrap();
+    let src = golden("lo-unencrypted.odt");
+    let out = s.join("weak.odt");
+
+    let e = run(&[
+        "encrypt",
+        src.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--password-file",
+        pw.to_str().unwrap(),
+        "--argon2-m",
+        "8192",
+    ]);
+
+    assert_eq!(code(&e), EX_OK, "a weak tuple must not be refused");
+    assert!(out.exists(), "the file must actually be written");
+    let err = stderr(&e);
+    assert!(
+        err.contains("warning") && err.contains("weaker than"),
+        "expected a weakness warning, got: {err}"
+    );
+    // The warning must name the consequence, not merely the fact.
+    assert!(
+        err.contains("every future reader"),
+        "the warning should say the cost travels with the file: {err}"
+    );
+}
+
+#[test]
+fn default_argon2_writes_without_a_warning() {
+    // Guards the inverse: if `is_weaker_than_libreoffice` were inverted, or
+    // the default tuple drifted below its own constant, every encrypt would
+    // start nagging and the warning would stop meaning anything.
+    let s = Scratch::new("argondefault");
+    let pw = s.join("pw.txt");
+    std::fs::write(&pw, PASSWORD).unwrap();
+    let src = golden("lo-unencrypted.odt");
+    let out = s.join("default.odt");
+
+    let e = run(&[
+        "encrypt",
+        src.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--password-file",
+        pw.to_str().unwrap(),
+    ]);
+
+    assert_eq!(code(&e), EX_OK, "{}", stderr(&e));
+    assert!(
+        !stderr(&e).contains("warning"),
+        "the default tuple must not warn: {}",
+        stderr(&e)
+    );
+}
+
+#[test]
+fn an_unrunnable_argon2_tuple_is_a_usage_error_not_a_malformed_file() {
+    // m < 8p is argon2's own requirement. Exit 1 (usage) rather than 6
+    // (malformed): the caller typed a bad flag, the document is fine, and a
+    // script must be able to tell those apart.
+    let s = Scratch::new("argonbad");
+    let pw = s.join("pw.txt");
+    std::fs::write(&pw, PASSWORD).unwrap();
+    let src = golden("lo-unencrypted.odt");
+    let out = s.join("never.odt");
+
+    let e = run(&[
+        "encrypt",
+        src.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--password-file",
+        pw.to_str().unwrap(),
+        "--argon2-m",
+        "8",
+        "--argon2-p",
+        "4",
+    ]);
+
+    assert_eq!(code(&e), EX_USAGE, "{}", stderr(&e));
+    assert!(
+        !out.exists(),
+        "nothing should be written on a refused tuple"
+    );
+    assert!(stderr(&e).contains("m >= 8 * p"), "{}", stderr(&e));
+}
+
+#[test]
+fn each_argon2_axis_defaults_independently() {
+    // `--argon2-m` alone must keep LibreOffice's t and p rather than zeroing
+    // them, which is the obvious way to get this wrong.
+    let s = Scratch::new("argonaxis");
+    let pw = s.join("pw.txt");
+    std::fs::write(&pw, PASSWORD).unwrap();
+    let src = golden("lo-unencrypted.odt");
+    let out = s.join("axis.odt");
+
+    let e = run(&[
+        "encrypt",
+        src.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--password-file",
+        pw.to_str().unwrap(),
+        "--argon2-m",
+        "16384",
+    ]);
+    assert_eq!(code(&e), EX_OK, "{}", stderr(&e));
+
+    let c = run(&["classify", out.to_str().unwrap(), "--json"]);
+    let json = stdout(&c);
+    assert!(
+        json.contains("\"kdf\": \"Argon2id t=3 m=16384KiB p=4\"")
+            || json.contains("\"kdf\":\"Argon2id t=3 m=16384KiB p=4\""),
+        "t and p should still be LibreOffice's: {json}"
+    );
+}
