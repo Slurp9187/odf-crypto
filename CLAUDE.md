@@ -208,6 +208,38 @@ Assert on the round trip.
 - **CI must mirror docs.rs.** The `docs` job runs stable without `--cfg docsrs`;
   the `docsrs` job runs nightly with it. rc.1 shipped broken documentation
   because only the second configuration fails and nothing built it.
+- **`cargo package` needs a clean tree.** It refuses a dirty working directory,
+  and the refusal prints nothing useful if you are grepping for success. Commit
+  first; a silent `cargo package` is almost always this and not a packaging bug.
+
+### Releasing: open the line, then cut it
+
+Two commits, not one, and the split is deliberate — a version is in development
+long before it is released, and the repo should say which it is.
+
+**Open the line**, immediately after the previous version publishes:
+
+1. `version` in `Cargo.toml` → the next `rc`.
+2. `cargo update --offline -p odf-crypto`, in the **same commit**. A bump alone
+   leaves the lock naming the old version and `cargo package --locked` refuses.
+   `--offline` keeps the diff to one line so nothing else can move under you.
+3. `README.md`'s version references — **all** of them, including the feature
+   table near the bottom.
+4. `CHANGELOG.md`: a new `## [0.1.0-rc.N] — Unreleased` heading.
+
+**Cut it**, when the release is ready: change `— Unreleased` to the date,
+re-measure the crate counts rather than carrying them forward, verify every
+configuration CI runs *including both doc builds*, then tag. Publish is a
+separate, explicit decision.
+
+**Why the README moves at open rather than at cut**, since it is the one step
+with a real cost: it means the README on GitHub advertises a version not yet on
+crates.io, so its install snippet is wrong for anyone copying it that day. That
+is accepted on purpose. The alternative — `Cargo.toml` at rc.5 while the README
+says rc.4 — makes the working tree internally inconsistent, which is worse and
+harder to notice. A reader can tell an unreleased version from `— Unreleased` in
+the changelog and the absence of a tag; they cannot tell which of two
+disagreeing files to believe.
 
 Lints live in `[lints]` in `Cargo.toml`, not `RUSTFLAGS` — `RUSTFLAGS` reaches
 every crate Cargo compiles, so a new warning in `quick-xml` would fail the build

@@ -11,6 +11,57 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.5] — Unreleased
+
+### Documentation
+
+**Two rules in `CLAUDE.md` were closed against themselves.** Both were found by
+applying the repo's own standards to the repo, and neither is a code change.
+
+*The no-panic rule named the mechanism and not the outcome.* It listed `panic!`,
+`unwrap`, `expect`, `unreachable!`, `todo!` — and the crate is clean by that
+measure. Allocation failure calls `handle_alloc_error` and **aborts**, whatever
+the panic strategy, because an abort is not a panic: nothing in the list fires
+and the caller's process is gone anyway. Worse here than a plain crash, because
+an abort skips unwinding, `Drop` never runs, and `Drop` is this crate's only
+zeroizing primitive — so an abort mid-decrypt leaves the password digest and
+derived key unwiped. `kdf.rs` is a live instance as of `0.1.0-rc.4`: `argon2`'s
+`hash_password_into` does `vec![Block::default(); block_count()]` sized from a
+manifest field (`argon2-0.5/src/lib.rs:230`) while both wrappers are alive.
+The rule now says the *sentence* is the rule, and requires an allocation sized
+from untrusted input to be fallible.
+
+*"LibreOffice's behaviour is the specification" hid a per-field split.* Derived
+from the normative RELAX NG schemas in a LibreOffice checkout: `iteration-count`,
+`key-size` and `checksum-type` are OASIS; `manifest:algorithm-name` is OASIS but
+**open** (`"Blowfish CFB" | anyURI`, adjudicating nothing); and `loext:argon2-*`
+is defined by **LibreOffice alone** — `argon2` appears in no OASIS schema. Two
+consequences: for the profile `encrypt` writes there is no OASIS specification to
+be compliant with, so "follow LibreOffice" is the only available reading of
+correct rather than a compromise; and where OASIS does specify, it specifies
+structure and **no ranges**, so a numeric bound in `limits.rs` answers to nobody
+but us. The original rule is kept verbatim above the refinement — it is correct
+in effect, and a reader who stops early is under-informed rather than misled.
+
+**The README's `OutOfRange` paragraph carried the same misattribution** the rc.4
+changelog had, and is corrected the same way: the Argon2 attributes are
+LibreOffice's extension, not OASIS's.
+
+**The release workflow is now written down** rather than inferred from git
+history. `CLAUDE.md`'s Publishing section documents the two-commit split — open
+the line (version, lock, README, `— Unreleased` heading), then cut it (date,
+re-measured counts, full verification, tag) — including the one step with a real
+cost: the README moves at *open*, so GitHub advertises a version not yet on
+crates.io and its install snippet is wrong for anyone copying it that day. That
+is accepted deliberately. The alternative leaves `Cargo.toml` and `README.md`
+disagreeing, which is worse and harder to notice; a reader can tell an unreleased
+version from `— Unreleased` and the missing tag, but cannot tell which of two
+disagreeing files to believe. Also recorded: `cargo package` refuses a dirty tree
+and says nothing useful about why, which has now cost two debugging detours.
+
+Neither `CLAUDE.md` nor this changelog ships in the crate — `include` is an
+allowlist and names neither — so nothing a consumer compiles has changed.
+
 ## [0.1.0-rc.4] — 2026-09-20
 
 One addition and two hardening fixes. The fixes are both about the same thing —

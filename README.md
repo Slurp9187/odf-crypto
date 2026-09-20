@@ -19,17 +19,17 @@ accept predicates, so a package this crate calls encrypted is one LibreOffice
 would prompt for, and a package it refuses is one LibreOffice would refuse to
 open.
 
-> **Pre-release.** This is `0.1.0-rc.4`. The API may change before `0.1.0`.
+> **Pre-release.** This is `0.1.0-rc.5`. The API may change before `0.1.0`.
 
 ## Install
 
 ```toml
 [dependencies]
 # Detection only — no cryptographic dependency.
-odf-crypto = "0.1.0-rc.4"
+odf-crypto = "0.1.0-rc.5"
 
 # Detection, reading and writing.
-odf-crypto = { version = "0.1.0-rc.4", features = ["crypto-ops"] }
+odf-crypto = { version = "0.1.0-rc.5", features = ["crypto-ops"] }
 ```
 
 Pre-release versions are not matched by ordinary requirements — name the full
@@ -142,11 +142,14 @@ was broken**, because those need different things from a caller:
 | `OutOfRange` | a policy bound of **this crate** | the OpenDocument format permits this value; the library is stricter than the format |
 | `CipherRejects` | **`argon2`** cannot run it (`m < 8p`, or `p` above its `MAX_P_COST`) | not a setting any library could relax |
 
-The distinction is not cosmetic. The ODF manifest schema types these attributes
-as unbounded `positiveInteger` and LibreOffice validates the triple only as
-`0 < t && 0 < m && 0 < p`, so a tuple `OutOfRange` refuses may be entirely legal
-and openable elsewhere. Reporting it as a format violation would be false, and
-falsely authoritative.
+The distinction is not cosmetic, and the Argon2 attributes make it sharp: they
+are defined by **LibreOffice's own extension schema**
+(`OpenDocument-v1.4+libreoffice-manifest-schema.rng`) and appear in no OASIS
+schema at all, typed there as unbounded `positiveInteger`; LibreOffice then
+validates the triple only as `0 < t && 0 < m && 0 < p`. So the only authority
+that defines them imposes no ceiling, and a tuple `OutOfRange` refuses may be
+entirely legal and openable elsewhere. Reporting it as a format violation would
+be false, and falsely authoritative.
 
 Each reason carries an `Argon2Axis` (`T` / `MKib` / `P`) and the offending value
 with its bounds — enums and integers, never interpolated text, so the payload
@@ -279,7 +282,7 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0-rc.4"` | `classify` alone. No cryptographic dependency. **25 crates.** |
+| **Detection-only** | `odf-crypto = "0.1.0-rc.5"` | `classify` alone. No cryptographic dependency. **25 crates.** |
 | **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **59 crates.** |
 | **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `rpassword` for the prompt. |
 
