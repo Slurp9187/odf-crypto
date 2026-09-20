@@ -105,6 +105,47 @@ Output is validated against a real LibreOffice: the repository carries a golden
 (`tests/goldens/validate_encrypt.py`) that bootstraps LibreOffice and confirms it
 opens what this crate wrote.
 
+#### Choosing the Argon2id cost
+
+`encrypt` uses LibreOffice's `(t=3, m=65536, p=4)`. That `m` is **64 MiB of
+working memory per call**, which some hardware cannot spend — and since the
+parameters are stored in the file, a device that cannot afford 64 MiB to write
+cannot afford it to read the document back either.
+
+```rust
+use odf_crypto::{encrypt_with_params, Argon2Params};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let plain = std::fs::read("document.odt")?;
+
+    // 8 MiB instead of 64. Accepted, and weaker — both on purpose.
+    let params = Argon2Params::new(2, 8192, 2)?;
+    if params.is_weaker_than_libreoffice() {
+        eprintln!("warning: this file will be cheaper to attack, forever");
+    }
+
+    let sealed = encrypt_with_params(&plain, "correct horse battery staple", params)?;
+    std::fs::write("locked.odt", sealed)?;
+    Ok(())
+}
+```
+
+`Argon2Params::new` refuses only what `argon2` **cannot run** — a value outside
+the range `decrypt` accepts back, or `m < 8p`. It never refuses a tuple for being
+merely weak. Whose document it is, and what its owner can afford to run, is not
+this crate's decision; it reports the trade instead of overruling it.
+
+The cost travels **with the file**, so it is not a local performance setting. A
+document written cheaply stays cheap to attack for every future reader, on any
+hardware.
+
+LibreOffice honours whatever is written — checked in its source, not just
+sampled. `ManifestImport.cxx:257` validates the three attributes for positivity
+and nothing else, `ZipFile.cxx:184-186` passes the file's own values into
+`argon2_context`, and `:192` says why there is no range check there either:
+*"libargon2 validates all the arguments so don't need to do it here."* What this
+crate will write is a strict subset of what libargon2 accepts.
+
 ## Command line
 
 ```sh
@@ -119,7 +160,16 @@ odf-crypto classify report.odt              # what is it, and how is it encrypte
 odf-crypto classify --json report.odt       # the same, as one JSON object
 odf-crypto decrypt  locked.odt -o plain.odt
 odf-crypto encrypt  plain.odt  -o locked.odt
+
+# Argon2id cost, for hardware that cannot spend 64 MiB. Each axis defaults
+# independently, so this keeps LibreOffice's t=3 and p=4.
+odf-crypto encrypt plain.odt -o locked.odt --argon2-m 8192
 ```
+
+A tuple weaker than LibreOffice's prints a warning on stderr and **still writes
+the file** — the cost is the caller's decision. A tuple `argon2` cannot run
+(`m < 8p`) is refused with exit 1, because that is a mistyped flag rather than a
+damaged document.
 
 ```
 $ odf-crypto classify report.odt
