@@ -855,6 +855,30 @@ fn params_are_refused_only_when_argon2_cannot_run_them() {
 }
 
 #[test]
+fn is_weaker_is_any_axis_below_not_a_strength_ordering() {
+    // Raised by the encrypted-file-vault integration, whose worked example was
+    // `(4, 65536, 4)` -- claimed to report weaker. It does not; the assertion
+    // below is what that case actually does. But the concern underneath it is
+    // real and the second case is where it bites: one fewer pass against twice
+    // the memory reports weaker, and is not obviously weaker at all.
+    //
+    // That is deliberate -- it is below the reference on an axis and a caller
+    // deserves to be told before it is frozen into a document -- so this test
+    // pins the semantics rather than the intuition, because the two differ.
+    let stronger_t = Argon2Params::new(4, 65536, 4).unwrap();
+    assert!(
+        !stronger_t.is_weaker_than_libreoffice(),
+        "stronger on t, identical elsewhere, must not report weaker"
+    );
+
+    let fewer_passes_double_memory = Argon2Params::new(2, 131_072, 4).unwrap();
+    assert!(
+        fewer_passes_double_memory.is_weaker_than_libreoffice(),
+        "any axis below the reference reports weaker, even when another is well above"
+    );
+}
+
+#[test]
 fn is_weaker_than_libreoffice_reports_but_does_not_gate() {
     assert!(!Argon2Params::LIBREOFFICE_DEFAULT.is_weaker_than_libreoffice());
     // Weaker on any single axis counts.

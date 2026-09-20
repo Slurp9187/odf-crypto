@@ -86,6 +86,20 @@ added, which is exactly the silent fall-through [#40] exists to catch.
 The CLI gains `--argon2-t`, `--argon2-m` and `--argon2-p`, each defaulting
 independently so `--argon2-m 8192` alone keeps LibreOffice's `t` and `p`.
 
+Validated before release by the `encrypted-file-vault` integration, which built
+against the release commit as a git dependency and ran its own suite — 0 compile
+errors, 21 of 21 passing. Two refinements came back and are in this release.
+`is_weaker_than_libreoffice` now documents that it is **any axis below the
+reference, not a strength ordering**: a tuple with one fewer pass but twice the
+memory reports weaker, which is right for deciding whether to warn and wrong as
+a claim about strength. And `EncryptError::Params` now says outright that it is
+a *usage* error — the tuple was wrong and the document was never examined — so a
+consumer does not render "this file is damaged" for it.
+
+(The integration's worked example for the first point, `(4, 65536, 4)`, turned
+out not to reproduce: it reports `false`, correctly. The concern underneath it
+did reproduce, on a different tuple, which is now the one the test pins.)
+
 [#40]: https://github.com/Slurp9187/odf-crypto/issues/40
 
 ### Changed

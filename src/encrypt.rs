@@ -210,12 +210,39 @@ impl Argon2Params {
         self.p
     }
 
-    /// Whether this is weaker than what LibreOffice writes.
+    /// Whether **any** axis is below what LibreOffice writes.
     ///
     /// Reported, never enforced — [`encrypt_with_params`] accepts a tuple for
     /// which this is `true`. It exists so a front end can say so: the CLI
     /// prints a warning on this, and a library consumer can do the same
     /// rather than re-deriving the comparison.
+    ///
+    /// # It is a warning trigger, not a strength ordering
+    ///
+    /// "Any axis below" is the right question for *should I warn about this*
+    /// and the wrong one for *is this cryptographically weaker*, because the
+    /// three axes do not trade off linearly and this collapses them to a bool.
+    /// A tuple can be below on one axis and well above on another:
+    ///
+    /// ```
+    /// use odf_crypto::Argon2Params;
+    ///
+    /// // One fewer pass, but twice LibreOffice's memory. Reported weaker.
+    /// let mixed = Argon2Params::new(2, 131_072, 4)?;
+    /// assert!(mixed.is_weaker_than_libreoffice());
+    ///
+    /// // Stronger on t, identical elsewhere. Not reported weaker.
+    /// let stronger = Argon2Params::new(4, 65536, 4)?;
+    /// assert!(!stronger.is_weaker_than_libreoffice());
+    /// # Ok::<(), odf_crypto::EncryptError>(())
+    /// ```
+    ///
+    /// Warning on the first is deliberate — it is below the reference on an
+    /// axis, and a caller deserves to be told before that is frozen into a
+    /// document — but do not read it as "this file is weaker overall". If you
+    /// need a per-axis decision, compare [`t`](Self::t), [`m_kib`](Self::m_kib)
+    /// and [`p`](Self::p) against [`Self::LIBREOFFICE_DEFAULT`] yourself;
+    /// `m_kib` is usually the axis a memory-constrained device cares about.
     #[must_use]
     pub fn is_weaker_than_libreoffice(&self) -> bool {
         let d = Self::LIBREOFFICE_DEFAULT;
@@ -259,6 +286,16 @@ pub enum EncryptError {
     /// `Internal` reports an invariant of ours. The string is a diagnostic; do
     /// not match on its content. It quotes only the caller's own numbers and
     /// this crate's bounds, never anything read out of a package.
+    ///
+    /// # Do not render this as a problem with the document
+    ///
+    /// It is a **usage** error: the tuple was wrong, the input package was
+    /// never examined. It is raised by [`Argon2Params::new`] before
+    /// [`encrypt_with_params`] is even called, so it says nothing about the
+    /// bytes a caller passed. A consumer that renders it as "this file is
+    /// damaged" tells the user the one thing it does not mean, and sends them
+    /// looking at the wrong thing. The `odf-crypto` binary maps it to exit 1
+    /// (usage), not 6 (malformed), for the same reason.
     #[error("invalid Argon2 parameters: {0}")]
     Params(String),
     /// The input buffer cannot be deflated. `compress_to_vec` itself is
