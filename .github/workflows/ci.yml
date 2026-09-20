@@ -53,6 +53,14 @@ jobs:
             flags: --no-default-features
           - name: crypto-ops
             flags: --no-default-features --features crypto-ops
+          # `cli` implies `crypto-ops`, so this entry is a superset -- and it is
+          # listed anyway, because the binary compiles in no other
+          # configuration. Without it `src/bin/` is never linted at all.
+          # Verified by appending an uncalled function to
+          # `src/bin/odf-crypto.rs`: clippy (crypto-ops) finished clean, clippy
+          # (cli) failed with "function ... is never used".
+          - name: cli
+            flags: --no-default-features --features cli
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -83,6 +91,18 @@ jobs:
             flags: --no-default-features
           - name: crypto-ops
             flags: --no-default-features --features crypto-ops
+          # The 52 tests that exist in no other configuration -- 17 CLI unit and
+          # 35 end-to-end -- including the two pinning `--password`'s absence
+          # from every help output and the one pinning exit code 4.
+          #
+          # Verified by changing EX_WRONG_PASSWORD from 4 to 41 in tests/cli.rs:
+          # test (detect-only) and test (crypto-ops) both stayed green while
+          # test (cli) failed at tests/cli.rs:439. `tests/cli.rs` is
+          # `#![cfg(feature = "cli")]`, so under the other two its harness
+          # reports "0 passed" rather than being absent -- a green line that
+          # looks like coverage and is not.
+          - name: cli
+            flags: --no-default-features --features cli
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -110,7 +130,13 @@ jobs:
       #
       # Build, not test: dev-dependencies are free to require a newer toolchain
       # than the library's own MSRV promise.
-      - run: cargo build --locked --no-default-features --features crypto-ops
+      #
+      # `cli`, not `crypto-ops`: `cli` implies `crypto-ops` so this is a strict
+      # superset, and it is the only configuration that compiles clap,
+      # serde_json and rpassword -- three dependency trees with MSRVs of their
+      # own, which `rust-version` in Cargo.toml promises for and nothing here
+      # checked. Measured at 1.85.0 before the switch: it builds clean.
+      - run: cargo build --locked --no-default-features --features cli
 
   docs:
     name: rustdoc
@@ -159,13 +185,26 @@ jobs:
       #
       # The `include` allowlist in Cargo.toml: the verification build compiles
       # the unpacked tarball, so a file the crate needs but the allowlist omits
-      # fails here instead of after publishing. Run with crypto-ops so the
-      # tarball is checked against the largest source set.
+      # fails here instead of after publishing.
+      #
+      # Run with `cli`, which is the largest source set. `crypto-ops` is not,
+      # though this comment said it was: the binary is
+      # `required-features = ["cli"]`, so a crypto-ops verification never
+      # compiles `src/bin/` -- the one directory the allowlist's own first
+      # comment singles out as needing to ship. Verified by appending a type
+      # error to `src/bin/odf-crypto.rs`: `cargo package --features crypto-ops`
+      # packaged and verified a tarball whose binary does not compile and said
+      # nothing, while `--features cli` failed with E0308.
+      #
+      # What this still does not guard, because no feature flag changes it:
+      # verification does not build `tests/`, so the `tests/cli.rs` and
+      # `tests/goldens/*.odt` entries in the allowlist are unchecked here --
+      # breaking tests/cli.rs leaves this job green. Tracked in issue #53.
       #
       # And --locked catches a stale Cargo.lock. Bumping `version` alone leaves
       # the lock out of date, which `cargo package` refuses -- a real failure
       # this repo already hit once, at 0.1.0 -> 0.1.0-rc.1.
-      - run: cargo package --locked --features crypto-ops
+      - run: cargo package --locked --features cli
 
 # The Python helpers under tests/goldens/ are deliberately NOT run here. Both
 # make_goldens.py and validate_encrypt.py bootstrap a local LibreOffice over UNO
