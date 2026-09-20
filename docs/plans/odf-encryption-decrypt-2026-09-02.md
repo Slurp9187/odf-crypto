@@ -100,6 +100,14 @@ Omitted `start-key-generation` already classified as SHA-1. Do **not** truncate 
 
 No iteration or memory cap: match LO’s absence. An attacker-complete row can make Argon2 expensive; that is accepted, not a slice.
 
+> **Reversed 2026-09-03, and reversed again in `0.1.0-rc.5`. Recorded here rather than corrected away, per CLAUDE.md.**
+>
+> The encrypt-arc review capped Argon2 `m` and `t` after all, for the reason in §9's settled line: the Rust `argon2` crate's `vec!` *aborted the process* where LO's libargon2 returns `ARGON2_MEMORY_ALLOCATION_ERROR`, so matching LO's absence of a cap would have made a hostile `argon2-memory` uncatchable by any caller. That was a sound reason and this paragraph was wrong when written — it assumed both implementations failed the same way, and they did not.
+>
+> `0.1.0-rc.5` removed the divergence: `kdf::derive_argon2id` allocates with `try_reserve_exact` and returns `HostCannotAllocate` exactly where libargon2 returns its error. So the 2026-09-03 justification no longer holds, and this paragraph's original instinct — match LO — is available again for `m`, now on its merits rather than as a safety question.
+>
+> **Not for `t`.** The settled line capped `m` and `t` together and the two were never the same argument: `t` allocates nothing, so there was never an abort to avoid, and `try_reserve` cannot help. A large `t` is slow here exactly as it is in LibreOffice. See `src/limits.rs`'s module docs for the labelling.
+
 ### Cipher
 
 Keep detection’s type name `Cipher::BlowfishCfb8` (`CipherID::BLOWFISH_CFB_8`). The **wire** is 64-bit-segment CFB.
