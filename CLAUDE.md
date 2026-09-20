@@ -217,7 +217,12 @@ Assert on the round trip.
 Two commits, not one, and the split is deliberate — a version is in development
 long before it is released, and the repo should say which it is.
 
-**Open the line**, immediately after the previous version publishes:
+**Open the line** when the first commit lands *past the release tag* — not when
+the previous version publishes. While `HEAD` is the tag, the version string is
+accurate and should be left alone; bumping at publish time invents a version
+whose only content is its own number, and makes `— Unreleased` mean "nothing
+happened yet" instead of "here is what has happened so far". The trigger is a
+commit, not a release.
 
 1. `version` in `Cargo.toml` → the next `rc`.
 2. `cargo update --offline -p odf-crypto`, in the **same commit**. A bump alone

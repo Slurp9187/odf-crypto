@@ -50,8 +50,15 @@ LibreOffice's extension, not OASIS's.
 **The release workflow is now written down** rather than inferred from git
 history. `CLAUDE.md`'s Publishing section documents the two-commit split — open
 the line (version, lock, README, `— Unreleased` heading), then cut it (date,
-re-measured counts, full verification, tag) — including the one step with a real
-cost: the README moves at *open*, so GitHub advertises a version not yet on
+re-measured counts, full verification, tag).
+
+The trigger for opening is **a commit landing past the release tag, not the
+previous version publishing**. While `HEAD` is the tag its version string is
+accurate and is left alone; bumping at publish time would invent a version whose
+only content is its own number, and would make `— Unreleased` mean "nothing has
+happened yet" rather than "here is what has happened so far".
+
+It also records the one step with a real cost: the README moves at *open*, so GitHub advertises a version not yet on
 crates.io and its install snippet is wrong for anyone copying it that day. That
 is accepted deliberately. The alternative leaves `Cargo.toml` and `README.md`
 disagreeing, which is worse and harder to notice; a reader can tell an unreleased
