@@ -35,6 +35,7 @@ use crate::limits::{
 };
 use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext};
 use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode};
+use crate::zip_err;
 use crate::DetectError;
 
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
@@ -102,6 +103,13 @@ pub enum DecryptError {
     /// A zip failure, either reading the input or writing the rebuilt package.
     /// Despite the name it also carries every quick-xml failure from the
     /// manifest rewrite. The string is a diagnostic; do not match on it.
+    ///
+    /// It may quote package-controlled text, so treat it as untrusted when
+    /// logging or displaying it. The zip half cannot: those go through
+    /// [`crate::zip_err::message`], which quotes only text this crate chose.
+    /// The quick-xml half can — `IllFormedError::UnmatchedEndTag` carries an
+    /// element name taken from the manifest — and unlike
+    /// [`crate::DetectError::Inconsistent`] it is not elided to a bound.
     #[error("zip error: {0}")]
     Zip(String),
 }
@@ -169,7 +177,7 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     ensure_encrypted_entry_count(class.encrypted_entries.len(), MAX_ENCRYPTED_ENTRIES)?;
 
     let mut archive =
-        ZipArchive::new(Cursor::new(bytes)).map_err(|e| DecryptError::Zip(e.to_string()))?;
+        ZipArchive::new(Cursor::new(bytes)).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     let manifest = read_member_by_path(&mut archive, MANIFEST_PATH)?;
 
     if class.mode == Mode::Wholesome {
@@ -241,7 +249,7 @@ fn read_member_by_path(
         let name = {
             let file = archive
                 .by_index(i)
-                .map_err(|e| DecryptError::Zip(e.to_string()))?;
+                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
             zip_entry_name(file.name_raw())
         };
         if member_matches_path(&name, want) {
@@ -259,7 +267,7 @@ fn read_member_at(
 ) -> Result<Vec<u8>, DecryptError> {
     let mut file = archive
         .by_index(index)
-        .map_err(|e| DecryptError::Zip(e.to_string()))?;
+        .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     let mut buf = Vec::new();
     file.by_ref()
         .take(CIPHERTEXT_READ_CEILING as u64 + 1)
@@ -282,7 +290,7 @@ fn member_for_archive(
     for i in 0..archive.len() {
         let file = archive
             .by_index(i)
-            .map_err(|e| DecryptError::Zip(e.to_string()))?;
+            .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
         let name = zip_entry_name(file.name_raw());
         if member_matches_path(&name, path) {
             return Ok((i, name));
@@ -622,14 +630,14 @@ fn rebuild_zip(
 ) -> Result<Vec<u8>, DecryptError> {
     let stripped = strip_manifest(manifest_xml)?;
     let mut src =
-        ZipArchive::new(Cursor::new(input)).map_err(|e| DecryptError::Zip(e.to_string()))?;
+        ZipArchive::new(Cursor::new(input)).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     let mut out = ZipWriter::new(Cursor::new(Vec::new()));
     let options = |method| SimpleFileOptions::default().compression_method(method);
 
     for i in 0..src.len() {
         let mut file = src
             .by_index(i)
-            .map_err(|e| DecryptError::Zip(e.to_string()))?;
+            .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
         let name = zip_entry_name(file.name_raw());
         let method = file.compression();
         let mut body = Vec::new();
@@ -647,17 +655,17 @@ fn rebuild_zip(
         // zip writer - no unwrapped clone of the plaintext along the way.
         if member_matches_path(&name, MANIFEST_PATH) {
             out.start_file(&name, options(CompressionMethod::Deflated))
-                .map_err(|e| DecryptError::Zip(e.to_string()))?;
+                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
             out.write_all(&stripped)
                 .map_err(|e| DecryptError::Zip(e.to_string()))?;
         } else if let Some(pt) = plain_members.get(&name) {
             out.start_file(&name, options(CompressionMethod::Deflated))
-                .map_err(|e| DecryptError::Zip(e.to_string()))?;
+                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
             pt.with_secret(|p| out.write_all(p))
                 .map_err(|e| DecryptError::Zip(e.to_string()))?;
         } else {
             out.start_file(&name, options(method))
-                .map_err(|e| DecryptError::Zip(e.to_string()))?;
+                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
             out.write_all(&body)
                 .map_err(|e| DecryptError::Zip(e.to_string()))?;
         }
@@ -665,7 +673,7 @@ fn rebuild_zip(
 
     let out_buf = out
         .finish()
-        .map_err(|e| DecryptError::Zip(e.to_string()))?
+        .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?
         .into_inner();
     Ok(out_buf)
 }
