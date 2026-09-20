@@ -130,10 +130,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Argon2Params::new` refuses only what `argon2` **cannot run** — a value outside
-the range `decrypt` accepts back, or `m < 8p`. It never refuses a tuple for being
-merely weak. Whose document it is, and what its owner can afford to run, is not
-this crate's decision; it reports the trade instead of overruling it.
+`Argon2Params::new` never refuses a tuple for being merely weak. Whose document
+it is, and what its owner can afford to run, is not this crate's decision; it
+reports the trade instead of overruling it.
+
+When it does refuse, the error carries a typed `ParamsReason` naming **whose rule
+was broken**, because those need different things from a caller:
+
+| reason | means | what to tell a user |
+| --- | --- | --- |
+| `OutOfRange` | a policy bound of **this crate** | the OpenDocument format permits this value; the library is stricter than the format |
+| `CipherRejects` | **`argon2`** cannot run it (`m < 8p`, or `p` above its `MAX_P_COST`) | not a setting any library could relax |
+
+The distinction is not cosmetic. The ODF manifest schema types these attributes
+as unbounded `positiveInteger` and LibreOffice validates the triple only as
+`0 < t && 0 < m && 0 < p`, so a tuple `OutOfRange` refuses may be entirely legal
+and openable elsewhere. Reporting it as a format violation would be false, and
+falsely authoritative.
+
+Each reason carries an `Argon2Axis` (`T` / `MKib` / `P`) and the offending value
+with its bounds — enums and integers, never interpolated text, so the payload
+needs no sanitising before it reaches a user. Both types are `#[non_exhaustive]`;
+match with a `_` arm.
 
 The cost travels **with the file**, so it is not a local performance setting. A
 document written cheaply stays cheap to attack for every future reader, on any

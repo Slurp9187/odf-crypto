@@ -37,9 +37,12 @@ spend 64 MiB to write also cannot spend it to read the document back. Lowering
 the write cost is the only thing that helps such a device, and it helps on both
 paths.
 
-**Weak tuples are accepted, not refused.** `Argon2Params::new` rejects only what
-`argon2` cannot run — a value outside the range `decrypt` would accept back, or
-`m < 8p` — and never a tuple that is merely cheap. Who a document belongs to,
+**Weak tuples are accepted, not refused.** `Argon2Params::new` rejects two
+things and neither of them is *cheap*: a value outside the range this crate acts
+on, and a tuple `argon2` cannot run (`m < 8p`, or `p` above its `MAX_P_COST`).
+Those are different authorities and the error says which — see `ParamsReason`
+below; an earlier draft of this entry attributed both to `argon2`, which is the
+mistake the type exists to prevent. Who a document belongs to,
 and what its owner can afford to run, is not this crate's call to make. What the
 crate does instead is *say so*: `Argon2Params::is_weaker_than_libreoffice`
 reports the comparison, the CLI prints a warning on stderr and writes the file
