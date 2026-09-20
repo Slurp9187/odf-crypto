@@ -11,7 +11,17 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
-## [Unreleased]
+## [0.1.0-rc.4] — 2026-09-20
+
+One addition and two hardening fixes. The fixes are both about the same thing —
+what an untrusted package can get this crate to *say*; the addition is about
+what a caller is allowed to *choose*.
+
+`classify`, `decrypt` and `encrypt` all keep the signatures `0.1.0-rc.3`
+shipped: `encrypt_with_params` is a new entry point beside `encrypt`, not a
+change to it, so nothing existing has to move. The dependency graph is unchanged
+at 25 crates for detection-only and 59 with `crypto-ops`, re-measured rather
+than carried forward.
 
 ### Added
 
@@ -58,14 +68,6 @@ The CLI gains `--argon2-t`, `--argon2-m` and `--argon2-p`, each defaulting
 independently so `--argon2-m 8192` alone keeps LibreOffice's `t` and `p`.
 
 [#40]: https://github.com/Slurp9187/odf-crypto/issues/40
-
-## [0.1.0-rc.4] — 2026-09-20
-
-Two hardening fixes to the error payloads, both about the same thing: what an
-untrusted package can get this crate to say. No public API moved — `classify`,
-`decrypt` and `encrypt` have the signatures `0.1.0-rc.3` shipped, and the
-dependency graph is unchanged at 25 crates for detection-only and 59 with
-`crypto-ops`, re-measured rather than carried forward.
 
 ### Changed
 
