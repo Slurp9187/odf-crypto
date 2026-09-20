@@ -377,9 +377,16 @@ pub fn encrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, EncryptError> {
 ///
 /// Verified against LibreOffice 26.2.1.2 rather than inferred from the format:
 /// packages written at `(3, 65536, 4)`, `(2, 8192, 2)` and `(1, 1024, 1)` all
-/// open with the correct text recovered. `ManifestImport.cxx:257-266` parses
-/// the three attributes as arbitrary positive integers rather than assuming
-/// the defaults, which is the mechanism behind that result.
+/// open with the correct text recovered.
+///
+/// Its source bounds every tuple, not just those three. `ManifestImport.cxx:257`
+/// checks the attributes for positivity and nothing else — no floor, no ceiling,
+/// no clamp — and `ZipFile.cxx:184-186` passes the file's own values straight
+/// into `argon2_context`, with `:192` saying why there is no range check there
+/// either: *"libargon2 validates all the arguments so don't need to do it
+/// here."* What this crate will write is a strict subset of what libargon2
+/// accepts, so no tuple it produces is refusable by LibreOffice on parameter
+/// grounds.
 ///
 /// # Errors
 ///

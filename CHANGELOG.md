@@ -45,13 +45,32 @@ crate does instead is *say so*: `Argon2Params::is_weaker_than_libreoffice`
 reports the comparison, the CLI prints a warning on stderr and writes the file
 anyway, and the rustdoc states the trade at the type.
 
-**Real LibreOffice reads these back — measured, not inferred.** Packages written
-at `(3, 65536, 4)`, `(2, 8192, 2)` and `(1, 1024, 1)` were all opened by
-LibreOffice 26.2.1.2 with the correct text recovered; the last is one
-sixty-fourth of the default memory. `ManifestImport.cxx:257-266` parses the three
-attributes as arbitrary positive integers rather than assuming the defaults,
-which is the mechanism behind that result. Without this the feature would have
-been worse than useless — a file only this crate could read.
+**Real LibreOffice reads these back**, established twice over — by measurement
+and from its source, because the whole feature is worthless if it is not true:
+a lower-cost file that only this crate could open would be exactly the outcome
+the crate exists to prevent.
+
+Measured: packages written at `(3, 65536, 4)`, `(2, 8192, 2)` and `(1, 1024, 1)`
+were each opened by LibreOffice 26.2.1.2 with the correct text recovered; the
+last is one sixty-fourth of the default memory.
+
+From source, which is the stronger half because it bounds every tuple rather
+than the three that were sampled. `ManifestImport.cxx:257` validates the three
+attributes for positivity and nothing else — `if (0 < t && 0 < m && 0 < p)`,
+with the `else` branch setting `bIgnoreEncryptData`; there is no floor, no
+ceiling and no clamp. `ZipFile.cxx:184-186` then passes the file's own values
+straight into `argon2_context`'s `t_cost`, `m_cost` and `lanes`, and `:192`
+states the policy outright: *"libargon2 validates all the arguments so don't
+need to do it here."*
+
+So LibreOffice's accepted range **is** libargon2's, and what this crate will
+write is a strict subset of it — `t` to `1 << 16` against libargon2's
+`u32::MAX`, `m` to `1 << 20` KiB against `u32::MAX`, `p` sharing argon2's own
+`MAX_P_COST`, and `m >= 8p` enforced on both sides. Nothing `encrypt_with_params`
+can produce is refusable by LibreOffice on parameter grounds. (LibreOffice links
+`phc-winner-argon2-20190702`, fetched at build time; the comparison above is
+against the Rust `argon2` crate's constants, which mirror the same PHC
+reference.)
 
 A struct rather than three integers, because two orderings of the same three
 `i32`s are already in play: the manifest writes `(t, m, p)` and `argon2::Params`
