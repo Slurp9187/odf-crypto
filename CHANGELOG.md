@@ -15,6 +15,24 @@ LibreOffice citation and a reproduction for each.
 
 ### Documentation
 
+**`CLAUDE.md` gains a fourth "Evidence, not assertion" rule: name the proxy when
+a rule tests one.** The recurring defect across this crate and its sibling is not
+a wrong check but one that silently swapped the property it cares about for a
+proxy it can observe, then took the proxy's name — *does not panic* for *does not
+abort*, *dated iff tagged* for *dated iff released*, *within our constant* for
+*within the format's range*, *`panic = "unwind"` is set* for *`Drop` runs, so
+secrets are wiped*. Every substitution was reasonable, because the real property
+was not observable from where the check runs; that is also what hides it, since
+the check does test what its name says. Four instances, two of them this
+repository's, and all four found by someone outside the rule asking what it was
+for. The rule cannot close the class — it widens who can catch it from an
+outsider to anyone who reads the paragraph. Framing owed to the
+`msoffice-crypto` session.
+
+Applied immediately: the `changelog-protocol` skill's second invariant is
+restated as *a released version has a dated heading — approximated by the tag*,
+naming both the property and why the tag stands in for it.
+
 **Two rules in `CLAUDE.md` were closed against themselves.** Both were found by
 applying the repo's own standards to the repo, and neither is a code change.
 

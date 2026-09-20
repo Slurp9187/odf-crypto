@@ -151,7 +151,7 @@ Two shapes, and the second is better:
 
 ## Evidence, not assertion
 
-This repo's culture is that a claim carries its proof. Three concrete rules,
+This repo's culture is that a claim carries its proof. Four concrete rules,
 each of which has caught a real error here:
 
 **Measure before you argue from a number.** "clap is roughly fifteen crates"
@@ -173,6 +173,32 @@ rustdoc sweep because they described behaviour the code no longer had —
 `Mode::Plain` documented `package_encrypted`, `kdf.rs` claimed `encrypt` treats
 a failure as unreachable when it maps to `Internal`. When a doc and the code
 disagree, the code is the fact.
+
+**Name the proxy when a rule tests one.** The recurring defect here is not a
+wrong check — it is a check that silently swapped the property it cares about
+for one it can see, and then took the proxy's name. Four instances, two of them
+this repo's:
+
+| the rule said | it meant | why it substituted |
+| --- | --- | --- |
+| does not `panic!` | does not abort the caller's process | an abort is not a panic and is not greppable |
+| dated iff tagged | dated iff **released** | the registry needs the network; `git tag` does not |
+| within our constant | within the **format's** range | the constant is an integer; the schema is elsewhere |
+| `panic = "unwind"` is set | `Drop` runs, so secrets are wiped | a profile setting is greppable; `handle_alloc_error` is not |
+
+Every substitution was reasonable — the real property was not observable from
+where the check runs, which is the right instinct. That is also what hides it:
+the check does test what its name says, so reading it cannot reveal the gap.
+Only holding the *purpose* beside the *mechanism* does, and the author is the
+least likely to, having made the substitution and found it obvious.
+
+So: **when a rule tests a proxy, say so in the rule and name the real
+property.** Not "dated iff tagged" but "a released version has a dated heading —
+approximated by the tag, because the registry needs the network". The
+substitution then survives in the text, where the next reader trips over it,
+instead of dissolving into a rule that reads complete. It does not close the
+class; it widens who can catch it from *an outsider who asks what this is for*
+to *anyone who reads the paragraph*.
 
 ## Tests
 

@@ -19,7 +19,13 @@ and they differ — see *What did not transfer*.
 **1. The top version heading matches `Cargo.toml`'s `version`.** Exact string,
 `-rc.N` included.
 
-**2. A heading carries a date if and only if that tag exists.**
+**2. A *released* version has a dated heading — approximated by the tag.**
+
+Stated as the property, not the proxy. What a reader wants to know is whether
+the release exists; the tag stands in for that because it is checkable offline
+where the registry is not. The substitution is why axis 3 below exists at all:
+`msoffice-crypto`'s `v0.1.0-rc.1` is dated *and* tagged *and* was never
+published, and their check is green on it.
 
 ```
 ## [0.1.0-rc.5] — Unreleased      while the work is in flight
@@ -236,6 +242,13 @@ Saying so is the point. This repository's rule is that a claim carries its proof
 and "the changelog is checked" would be a claim with no proof behind it. Both
 invariants held when this skill was written — verified by running the snippet,
 not by assuming — and keeping them true is currently a human's job.
+
+**When adding an invariant, re-read the section that scopes the existing ones.**
+Cheap, and it would have caught a real miss: the newest-line-only scoping for
+axis 3 was already written three paragraphs below, in this section, and had to
+be pointed out anyway.
+
+It inspects **only the newest section**.
 
 Automating it is worth doing and is not done. If you automate it, check **only
 the newest section**: historical sections are frozen, and a check that fails on
