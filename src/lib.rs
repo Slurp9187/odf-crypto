@@ -62,6 +62,7 @@ mod limits;
 mod manifest;
 mod types;
 mod uris;
+mod zip_err;
 mod zip_tree;
 
 #[cfg(test)]

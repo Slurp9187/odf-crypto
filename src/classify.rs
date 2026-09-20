@@ -14,6 +14,7 @@ use crate::types::{
     StartKeyAlg,
 };
 use crate::uris;
+use crate::zip_err;
 use crate::zip_tree::{FolderTree, ResolvedKind, StreamAsFolder};
 use crate::{Cipher, DetectError, Mode};
 
@@ -98,7 +99,7 @@ fn collect_members(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<ZipMem
     for i in 0..archive.len() {
         let file = archive
             .by_index(i)
-            .map_err(|err| DetectError::Zip(err.to_string()))?;
+            .map_err(|err| DetectError::Zip(zip_err::message(&err)))?;
         let meta = file.get_metadata();
         if meta.uncompressed_size == 0
             && u8::from(meta.system) == 0
@@ -167,7 +168,7 @@ fn read_named_member(
     };
     let mut file = archive
         .by_index(member.index)
-        .map_err(|err| DetectError::Zip(err.to_string()))?;
+        .map_err(|err| DetectError::Zip(zip_err::message(&err)))?;
     let mut buf = Vec::new();
     file.by_ref()
         .take(MANIFEST_READ_CAP as u64 + 1)
@@ -227,7 +228,7 @@ fn read_mimetype(
     };
     let mut file = archive
         .by_index(member.index)
-        .map_err(|err| DetectError::Zip(err.to_string()))?;
+        .map_err(|err| DetectError::Zip(zip_err::message(&err)))?;
     let mut buf = [0u8; MIMETYPE_CEILING];
     let n = file
         .read(&mut buf)

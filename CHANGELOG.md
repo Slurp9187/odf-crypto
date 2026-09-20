@@ -13,6 +13,64 @@ LibreOffice citation and a reproduction for each.
 
 ## [Unreleased]
 
+### Changed
+
+**Every conversion of a `zip::result::ZipError` into one of the three `Zip(String)`
+payloads now goes through one helper, `crate::zip_err::message`, instead of calling
+`e.to_string()` directly.** `ZipError` is `#[non_exhaustive]`
+(`zip-2.4.2/src/result.rs:19`) — semver protects the shape of the variants already
+enumerated; it does not promise the enumeration stays complete. A new variant landing in
+a `zip` 2.x *minor* release would flow its `Display` straight into a public error payload
+on a plain `cargo update`, with no compile error anywhere to catch it.
+
+How likely that is, measured rather than asserted, because this repo's rule is to measure
+before arguing from a number: across the four versions in the local registry cache —
+1.1.4, 2.4.2, 6.0.0, 8.6.0 — `ZipError` gained a variant exactly once, and at a *major*
+(`CompressionMethodNotSupported(u16)`, `zip-8.6.0/src/result.rs:32`; 6.0.0 and 2.4.2 both
+declare the same five). So the history does **not** show zip adding variants in minors,
+and this change is a cheap guard against something `#[non_exhaustive]` permits rather
+than a response to something zip has done. The honest case for it is that the cost is one
+no-op helper and the failure mode is silent.
+
+What zip *has* done, at a major, is widen a payload: 6.0.0 changed
+`InvalidArchive(&'static str)` to `InvalidArchive(Cow<'static, str>)` and began
+interpolating an archive entry name (`"Duplicate filename: {}"`,
+`zip-6.0.0/src/write.rs:1061`; still there at `zip-8.6.0/src/write.rs:1382`). That is the
+only attacker-controlled *free text* among the runtime-interpolated archive errors in
+either version. 6.0.0 has just that one; 8.6.0 has two more, and both are bounded —
+`zip-8.6.0/src/read.rs:642` interpolates a numeric extra-field id
+(`"Extra field {} header truncated"`) and `zip-8.6.0/src/spec.rs:236` a compile-time
+`type_name::<Self>()` (`"Unexpected end of {}"`).
+
+No behaviour change: the helper reproduces 2.4.2's `displaydoc` strings byte for byte,
+and a test asserts `message(&e) == e.to_string()` for every known variant — the same
+test that fires the day a `zip` minor changes its `Display` wording. Two guards ride
+along: `InvalidArchive` and `UnsupportedArchive` are matched with their payload bound as
+`&'static str`, so a future widening to `Cow` — the exact move 6.0.0 already made once —
+is a compile error rather than a silent quote of package text, and the wildcard arm
+contributes no text of its own.
+
+Scope, stated honestly: only the 18 genuine `ZipError` sites moved. The 16
+`std::io::Error` conversions are untouched on purpose — `io::Error`'s text is
+OS-generated, not package-controlled, and `io::Error` is not the `#[non_exhaustive]`
+risk this closes. Two adjacent items are recorded, not fixed: `decrypt.rs` still
+converts a `quick_xml::Error` into `DecryptError::Zip`, and `quick-xml`'s
+`IllFormedError::UnmatchedEndTag(String)` holds a document-derived element name that its
+`Display` writes (`quick-xml-0.38.4/src/errors.rs:98`), so manifest-controlled text can
+in principle reach that payload unelided. Reachability is doubtful, since `decrypt` runs
+`classify` first and a manifest that fails to parse classifies `Plain` and is refused.
+(An earlier draft of this entry cited `MissingEndTag` instead. That was wrong and is
+worth recording rather than quietly correcting: `MissingEndTag` is constructed only by
+`Error::missed_end`, whose callers all live in `quick-xml`'s `src/de/` serde
+deserializer, which this crate does not use — so the rewrite path cannot emit it.
+`DecryptError::Zip`'s own rustdoc now carries the warning.)
+And `encrypt.rs`'s `read_input_mimetype_member` still swallows every `ZipError` via
+`let Ok(..) else`, so a corrupt entry is indistinguishable from an absent `mimetype`
+member.
+
+`EncryptError::Zip` also gains the "diagnostic, do not match on its content" sentence
+its two siblings already carried.
+
 ### Fixed
 
 **`DetectError::Inconsistent` no longer interpolates an unbounded

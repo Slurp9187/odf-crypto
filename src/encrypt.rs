@@ -24,6 +24,7 @@ use crate::limits::{AES_GCM_IV_LEN, DEFLATE_CEILING, MIMETYPE_CEILING};
 use crate::sensitive::{DeflatedPlaintext, DerivedKey};
 use crate::types::{Mode, StartKeyAlg};
 use crate::uris;
+use crate::zip_err;
 use crate::DetectError;
 
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
@@ -114,7 +115,8 @@ pub enum EncryptError {
     #[error("unusable mimetype member: {0}")]
     Mimetype(String),
     /// A zip failure on either side: reading the input's own `mimetype`
-    /// member, or building the outer container `encrypt` writes.
+    /// member, or building the outer container `encrypt` writes. The string
+    /// is a diagnostic; do not match on its content.
     #[error("zip error: {0}")]
     Zip(String),
     /// A crypto primitive rejected parameters `encrypt` chose *itself* -- the
@@ -389,7 +391,7 @@ fn is_xml_char(c: char) -> bool {
 /// name lookup rather than decrypt's `member_matches_path` scan.
 fn read_input_mimetype_member(bytes: &[u8]) -> Result<Option<Vec<u8>>, EncryptError> {
     let mut archive =
-        ZipArchive::new(Cursor::new(bytes)).map_err(|e| EncryptError::Zip(e.to_string()))?;
+        ZipArchive::new(Cursor::new(bytes)).map_err(|e| EncryptError::Zip(zip_err::message(&e)))?;
     let Ok(mut file) = archive.by_name("mimetype") else {
         return Ok(None);
     };
@@ -515,14 +517,14 @@ fn assemble_zip(
     let mut out = ZipWriter::new(Cursor::new(Vec::with_capacity(capacity)));
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    let zip_err = |e: zip::result::ZipError| EncryptError::Zip(e.to_string());
+    let to_zip_err = |e: zip::result::ZipError| EncryptError::Zip(zip_err::message(&e));
     let io_err = |e: std::io::Error| EncryptError::Zip(e.to_string());
 
-    out.start_file("mimetype", stored).map_err(zip_err)?;
+    out.start_file("mimetype", stored).map_err(to_zip_err)?;
     out.write_all(mimetype).map_err(io_err)?;
 
     out.start_file("encrypted-package", stored)
-        .map_err(zip_err)?;
+        .map_err(to_zip_err)?;
     out.write_all(iv).map_err(io_err)?;
     // Written straight from the wrapper, the way `rebuild_zip` writes members
     // on the read side -- no unwrapped copy on the way out. By now the buffer
@@ -530,10 +532,11 @@ fn assemble_zip(
     // window exists where a plain copy of it could outlive the call.
     sealed.with_secret(|s| out.write_all(s)).map_err(io_err)?;
 
-    out.start_file(MANIFEST_PATH, deflated).map_err(zip_err)?;
+    out.start_file(MANIFEST_PATH, deflated)
+        .map_err(to_zip_err)?;
     out.write_all(manifest_xml).map_err(io_err)?;
 
-    Ok(out.finish().map_err(zip_err)?.into_inner())
+    Ok(out.finish().map_err(to_zip_err)?.into_inner())
 }
 
 #[cfg(test)]
