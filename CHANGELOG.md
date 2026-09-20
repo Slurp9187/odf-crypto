@@ -65,7 +65,23 @@ upgrade is reading about a different release than the one they would get. That
 check needs the network where the other two are offline, so it cannot join them
 in an offline job.
 
-Resolving that state is recorded as the **maintainer's call, not an agent's**.
+The axis is **scoped to the newest line**. A publish missed long ago is a
+historical fact rather than a defect: republishing ships a stale tree,
+un-releasing rewrites a record for nobody's benefit, and a check that stays red
+on something nobody can act on is a check somebody disables. That is the same
+rule the skill already stated for the other two invariants; it just had not been
+applied to this one.
+
+It also compares **existence, never dates**. The obvious extension — does the
+heading's date match when it was published — fires on roughly a third of evening
+releases, because registry timestamps are UTC and heading dates are stamped
+locally, and the changelog records no timezone to reconcile them. Raised by the
+`msoffice-crypto` session from a real pair in their own repo: a heading reading
+`2026-09-15` against a `created_at` of `2026-09-16T03:04:16Z`, which is the same
+moment on a UTC-7 machine.
+
+For the newest line, where action is still possible, resolving the state is
+recorded as the **maintainer's call, not an agent's**.
 There are two ways out — publish it, making the claim true, or un-release it,
 putting `— Unreleased` back and removing the tag — and both change what the
 world is told. An agent detects, reports, and stops. In particular it must not

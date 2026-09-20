@@ -60,8 +60,17 @@ It becomes a defect when it *persists*. Then the changelog announces a release
 that does not exist, which is the same silent failure as invariant 2 wearing a
 different hat — it looks shipped forever and nothing complains.
 
-**Resolving it is the maintainer's call, not an agent's.** There are exactly two
-ways out and an agent may take neither on its own initiative:
+**Scope it to the newest line.** A publish missed long ago is a historical fact,
+not a defect to fix: republishing means shipping a stale tree, and un-releasing
+means rewriting a record for no one's benefit. Let it go, and if it matters,
+say so once in that section rather than leaving a check red forever. This is the
+same rule the *Enforcement* section states for the other two — a check that
+fails on something nobody can act on is a check somebody disables, and then it
+catches nothing.
+
+For the newest line, where action is still possible: **resolving it is the
+maintainer's call, not an agent's.** There are exactly two ways out and an agent
+may take neither on its own initiative:
 
 - **Publish it**, making the claim true. `cargo publish` is irreversible and
   outward-facing; it needs an explicit go-ahead every time, and approval for one
@@ -79,6 +88,15 @@ abandoned is not something a checker can tell.
 heading means something shipped that the changelog does not describe. A consumer
 reading the changelog to decide whether to upgrade is then reading about a
 different release than the one they would get.
+
+**Compare existence, never dates.** The obvious extension — "and the heading's
+date matches when it was published" — is wrong and will fire on roughly a third
+of evening releases. Registry timestamps are UTC; heading dates are stamped
+locally. `msoffice-crypto`'s `rc.2` heading reads `2026-09-15` while its
+`created_at` is `2026-09-16T03:04:16Z`, which is the same moment on a UTC-7
+machine. There is no discrepancy and no way for a checker to know that, because
+the changelog does not record a timezone. Ask whether a matching version
+*exists*; that is answerable.
 
 This check needs the network, where the other two are offline — so it is a
 different class and cannot join the snippet above or an offline CI job:
