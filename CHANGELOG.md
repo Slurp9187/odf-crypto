@@ -11,6 +11,54 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [Unreleased]
+
+### Added
+
+**The Argon2id cost is now a caller's choice**, through `encrypt_with_params`
+and `Argon2Params`. `encrypt` is unchanged and still writes LibreOffice's
+`(t=3, m=65536, p=4)`; the new entry point is opt-in and the weaker choice has
+to be typed out.
+
+The driver is hardware, not testing. `m=65536` is **64 MiB of working memory per
+call**, which on an older phone or a 2 GB laptop is a meaningful share of what
+exists — and because the parameters travel with the file, a device that cannot
+spend 64 MiB to write also cannot spend it to read the document back. Lowering
+the write cost is the only thing that helps such a device, and it helps on both
+paths.
+
+**Weak tuples are accepted, not refused.** `Argon2Params::new` rejects only what
+`argon2` cannot run — a value outside the range `decrypt` would accept back, or
+`m < 8p` — and never a tuple that is merely cheap. Who a document belongs to,
+and what its owner can afford to run, is not this crate's call to make. What the
+crate does instead is *say so*: `Argon2Params::is_weaker_than_libreoffice`
+reports the comparison, the CLI prints a warning on stderr and writes the file
+anyway, and the rustdoc states the trade at the type.
+
+**Real LibreOffice reads these back — measured, not inferred.** Packages written
+at `(3, 65536, 4)`, `(2, 8192, 2)` and `(1, 1024, 1)` were all opened by
+LibreOffice 26.2.1.2 with the correct text recovered; the last is one
+sixty-fourth of the default memory. `ManifestImport.cxx:257-266` parses the three
+attributes as arbitrary positive integers rather than assuming the defaults,
+which is the mechanism behind that result. Without this the feature would have
+been worse than useless — a file only this crate could read.
+
+A struct rather than three integers, because two orderings of the same three
+`i32`s are already in play: the manifest writes `(t, m, p)` and `argon2::Params`
+orders them `(m, t, p)`. A tuple makes transposing them type-check, look
+plausible and still produce a file.
+
+`EncryptError::Params` is new. It is distinct from `Internal` on purpose —
+`Internal` reports an invariant of ours, this reports a value the caller can
+correct — and the CLI maps it to exit **1 (usage)**, not 6 (malformed): the flag
+was wrong, the document was fine. It reached the `_` catch-all arm when first
+added, which is exactly the silent fall-through [#40] exists to catch.
+
+The CLI gains `--argon2-t`, `--argon2-m` and `--argon2-p`, each defaulting
+independently so `--argon2-m 8192` alone keeps LibreOffice's `t` and `p`.
+
+[#40]: https://github.com/Slurp9187/odf-crypto/issues/40
+
 ## [0.1.0-rc.4] — 2026-09-20
 
 Two hardening fixes to the error payloads, both about the same thing: what an

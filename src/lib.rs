@@ -31,6 +31,14 @@
 //! `t=3, m=65536, p=4`, AES-256-GCM, a SHA-256 start key, no checksum, and
 //! `manifest:version="1.4"`. Per-entry writing and PGP wrapping are out of scope.
 //!
+//! The Argon2id cost is the one part of that profile a caller may change, with
+//! [`encrypt_with_params`] and [`Argon2Params`] — `m=65536` is 64 MiB of working
+//! memory per call, which some hardware cannot spend. A weaker tuple is accepted
+//! rather than refused: the cost is the caller's decision, and this crate reports
+//! it instead of overruling it. But it is stored *in the file*, so it binds every
+//! future reader on every device, and real LibreOffice honours whatever is
+//! written — verified against 26.2.1.2 down to `(1, 1024, 1)`.
+//!
 //! [`decrypt`] reads all three algorithm families LibreOffice and Apache
 //! OpenOffice produce — AES-GCM + Argon2id, AES-CBC + PBKDF2, and Blowfish-CFB +
 //! PBKDF2. PGP-wrapped packages are classified, and their wrapped material is
@@ -86,4 +94,4 @@ pub use types::{
 #[cfg(feature = "crypto-ops")]
 pub use decrypt::{decrypt, DecryptError};
 #[cfg(feature = "crypto-ops")]
-pub use encrypt::{encrypt, EncryptError};
+pub use encrypt::{encrypt, encrypt_with_params, Argon2Params, EncryptError};

@@ -14,8 +14,8 @@ use std::process::ExitCode;
 
 use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
 use odf_crypto::{
-    classify, decrypt, encrypt, Checksum, Cipher, Classification, DecryptError, DetectError,
-    EncryptError, Kdf, Mode, StartKeyAlg,
+    classify, decrypt, encrypt_with_params, Argon2Params, Checksum, Cipher, Classification,
+    DecryptError, DetectError, EncryptError, Kdf, Mode, StartKeyAlg,
 };
 
 // Plan §3. A CLI that returns 1 for everything cannot be scripted; 4 against 5
@@ -49,6 +49,24 @@ EXIT CODES:
 /// not exist rather than clap's generic "unexpected argument". Removing it would
 /// make the tool *less* clear about a decision the plan calls load-bearing.
 const PASSWORD_TRAP: &str = "password";
+
+/// `encrypt` gets its own after-help: the Argon2 flags need the trade spelled
+/// out where somebody about to use them will read it, and `PASSWORD_AFTER_HELP`
+/// is shared with `decrypt`, which has no such flags.
+const ENCRYPT_AFTER_HELP: &str = "ARGON2 COST:
+  Defaults are what LibreOffice writes: --argon2-t 3 --argon2-m 65536 --argon2-p 4.
+  Lower values exist for hardware that cannot afford 64 MiB. They are accepted,
+  not blocked -- but the cost is stored IN THE FILE and applies to every future
+  reader on every device, so a cheap file stays cheap to attack forever.
+  A tuple weaker than LibreOffice's prints a warning on stderr and still writes.
+
+PASSWORDS:
+  argv is world-readable in a process listing, so there is no `--password
+  VALUE` argument. Give exactly one source, or none to be prompted without echo.
+
+EXIT CODES:
+  0 ok        1 usage      2 io          3 not-odf
+  4 wrong-password         5 refused     6 malformed   7 internal";
 
 fn password_args() -> [Arg; 4] {
     [
@@ -139,11 +157,31 @@ fn cli() -> Command {
             "Decrypt an encrypted ODF package",
             "decrypted",
         ))
-        .subcommand(crypt_command(
-            "encrypt",
-            "Encrypt a plaintext ODF package",
-            "encrypted",
-        ))
+        .subcommand(
+            crypt_command("encrypt", "Encrypt a plaintext ODF package", "encrypted")
+                .arg(
+                    Arg::new("argon2-t")
+                        .long("argon2-t")
+                        .value_name("N")
+                        .value_parser(clap::value_parser!(i32))
+                        .help("Argon2id time cost (default 3)"),
+                )
+                .arg(
+                    Arg::new("argon2-m")
+                        .long("argon2-m")
+                        .value_name("KIB")
+                        .value_parser(clap::value_parser!(i32))
+                        .help("Argon2id memory cost in KiB (default 65536, i.e. 64 MiB)"),
+                )
+                .arg(
+                    Arg::new("argon2-p")
+                        .long("argon2-p")
+                        .value_name("N")
+                        .value_parser(clap::value_parser!(i32))
+                        .help("Argon2id parallelism (default 4)"),
+                )
+                .after_help(ENCRYPT_AFTER_HELP),
+        )
 }
 
 fn main() -> ExitCode {
@@ -332,6 +370,17 @@ enum PasswordSource {
     Prompt,
 }
 
+/// Build [`Argon2Params`] from the flags, defaulting each axis independently
+/// so `--argon2-m 8192` alone keeps LibreOffice's `t` and `p`.
+fn argon2_params(m: &ArgMatches) -> Result<Argon2Params, EncryptError> {
+    let d = Argon2Params::LIBREOFFICE_DEFAULT;
+    Argon2Params::new(
+        *m.get_one::<i32>("argon2-t").unwrap_or(&d.t()),
+        *m.get_one::<i32>("argon2-m").unwrap_or(&d.m_kib()),
+        *m.get_one::<i32>("argon2-p").unwrap_or(&d.p()),
+    )
+}
+
 fn cmd_crypt(m: &ArgMatches, dir: Direction) -> u8 {
     // The hidden trap arg. Registered so this explains itself rather than
     // clap saying "unexpected argument", which would not tell a caller why.
@@ -376,13 +425,33 @@ fn cmd_crypt(m: &ArgMatches, dir: Direction) -> u8 {
                 return decrypt_exit(&e);
             }
         },
-        Direction::Encrypt => match encrypt(&bytes, &password) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("odf-crypto: {e}");
-                return encrypt_exit(&e);
+        Direction::Encrypt => {
+            let params = match argon2_params(m) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("odf-crypto: {e}");
+                    return encrypt_exit(&e);
+                }
+            };
+            // Warn, never block -- the cost is the caller's decision and the
+            // crate does not overrule it. stderr so it cannot corrupt `-o -`.
+            if params.is_weaker_than_libreoffice() {
+                eprintln!(
+                    "odf-crypto: warning: Argon2id t={} m={} KiB p={} is weaker than LibreOffice's t=3 m=65536 p=4.
+odf-crypto: the cost is stored in the file and applies to every future reader, on any hardware.",
+                    params.t(),
+                    params.m_kib(),
+                    params.p()
+                );
             }
-        },
+            match encrypt_with_params(&bytes, &password, params) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("odf-crypto: {e}");
+                    return encrypt_exit(&e);
+                }
+            }
+        }
     };
 
     match m.get_one::<String>("output").map(String::as_str) {
@@ -542,6 +611,10 @@ fn encrypt_exit(e: &EncryptError) -> u8 {
             EX_REFUSED
         }
         EncryptError::Mimetype(_) | EncryptError::Deflate(_) | EncryptError::Zip(_) => EX_MALFORMED,
+        // The caller typed a bad --argon2-* value; the document is fine. This
+        // variant reached the `_` arm below when it was added, which is the
+        // silent fall-through #40 exists to catch.
+        EncryptError::Params(_) => EX_USAGE,
         EncryptError::Random(_) | EncryptError::Internal(_) => EX_INTERNAL,
         _ => EX_MALFORMED,
     }
