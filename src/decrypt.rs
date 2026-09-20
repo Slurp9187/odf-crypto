@@ -105,11 +105,12 @@ pub enum DecryptError {
     /// manifest rewrite. The string is a diagnostic; do not match on it.
     ///
     /// It may quote package-controlled text, so treat it as untrusted when
-    /// logging or displaying it. The zip half cannot: those go through
-    /// [`crate::zip_err::message`], which quotes only text this crate chose.
-    /// The quick-xml half can — `IllFormedError::UnmatchedEndTag` carries an
-    /// element name taken from the manifest — and unlike
-    /// [`crate::DetectError::Inconsistent`] it is not elided to a bound.
+    /// logging or displaying it. The zip half cannot: those are rendered by an
+    /// internal helper that quotes only text this crate chose, never the zip
+    /// crate's own `Display`. The quick-xml half can —
+    /// `IllFormedError::UnmatchedEndTag` carries an element name taken from the
+    /// manifest — and unlike [`crate::DetectError::Inconsistent`] it is not
+    /// elided to a bound.
     #[error("zip error: {0}")]
     Zip(String),
 }
