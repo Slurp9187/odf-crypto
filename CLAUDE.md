@@ -69,6 +69,7 @@ Nothing here restates these. Read them where they live.
 | --- | --- |
 | Secret handling, `secure-gate`, what is and is not wrapped | [`.claude/skills/odf-crypto-secure-gate/SKILL.md`](.claude/skills/odf-crypto-secure-gate/SKILL.md) |
 | Plans, parent/slice issues, closing keywords | [`docs/plan-workflow.md`](docs/plan-workflow.md) and the `file-plan-issues` skill |
+| Changelog invariants, the open/cut release flow, tag mechanics | [`.claude/skills/changelog-protocol/SKILL.md`](.claude/skills/changelog-protocol/SKILL.md) |
 | Why `MIT OR Apache-2.0` is sound against LibreOffice and odfdecrypt | [`docs/LICENSING.md`](docs/LICENSING.md) |
 | Design record for each arc | `docs/plans/<feature>-<yyyy-mm-dd>.md` |
 | The 54 detection findings, including the 2 refuted | [`docs/audits/classify-lo-fidelity-2026-09-01.md`](docs/audits/classify-lo-fidelity-2026-09-01.md) |
@@ -204,47 +205,15 @@ Assert on the round trip.
   ship in `lib.rs` regardless.
 - **A published version is immutable.** rc.1's docs.rs page is permanently broken
   and no amount of fixing repairs it; the fix ships in the next version. Move a
-  tag freely before publishing and never after.
+  tag freely before publishing and never after — and move it *by name with
+  `--force`*, because `git push --follow-tags` will not move an existing tag and
+  reports `Everything up-to-date` while the remote keeps the old commit.
 - **CI must mirror docs.rs.** The `docs` job runs stable without `--cfg docsrs`;
   the `docsrs` job runs nightly with it. rc.1 shipped broken documentation
   because only the second configuration fails and nothing built it.
 - **`cargo package` needs a clean tree.** It refuses a dirty working directory,
   and the refusal prints nothing useful if you are grepping for success. Commit
   first; a silent `cargo package` is almost always this and not a packaging bug.
-
-### Releasing: open the line, then cut it
-
-Two commits, not one, and the split is deliberate — a version is in development
-long before it is released, and the repo should say which it is.
-
-**Open the line** when the first commit lands *past the release tag* — not when
-the previous version publishes. While `HEAD` is the tag, the version string is
-accurate and should be left alone; bumping at publish time invents a version
-whose only content is its own number, and makes `— Unreleased` mean "nothing
-happened yet" instead of "here is what has happened so far". The trigger is a
-commit, not a release.
-
-1. `version` in `Cargo.toml` → the next `rc`.
-2. `cargo update --offline -p odf-crypto`, in the **same commit**. A bump alone
-   leaves the lock naming the old version and `cargo package --locked` refuses.
-   `--offline` keeps the diff to one line so nothing else can move under you.
-3. `README.md`'s version references — **all** of them, including the feature
-   table near the bottom.
-4. `CHANGELOG.md`: a new `## [0.1.0-rc.N] — Unreleased` heading.
-
-**Cut it**, when the release is ready: change `— Unreleased` to the date,
-re-measure the crate counts rather than carrying them forward, verify every
-configuration CI runs *including both doc builds*, then tag. Publish is a
-separate, explicit decision.
-
-**Why the README moves at open rather than at cut**, since it is the one step
-with a real cost: it means the README on GitHub advertises a version not yet on
-crates.io, so its install snippet is wrong for anyone copying it that day. That
-is accepted on purpose. The alternative — `Cargo.toml` at rc.5 while the README
-says rc.4 — makes the working tree internally inconsistent, which is worse and
-harder to notice. A reader can tell an unreleased version from `— Unreleased` in
-the changelog and the absence of a tag; they cannot tell which of two
-disagreeing files to believe.
 
 Lints live in `[lints]` in `Cargo.toml`, not `RUSTFLAGS` — `RUSTFLAGS` reaches
 every crate Cargo compiles, so a new warning in `quick-xml` would fail the build

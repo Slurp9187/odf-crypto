@@ -48,15 +48,30 @@ changelog had, and is corrected the same way: the Argon2 attributes are
 LibreOffice's extension, not OASIS's.
 
 **The release workflow is now written down** rather than inferred from git
-history. `CLAUDE.md`'s Publishing section documents the two-commit split — open
-the line (version, lock, README, `— Unreleased` heading), then cut it (date,
-re-measured counts, full verification, tag).
+history, and lives in a new `changelog-protocol` skill — adapted from
+`msoffice-crypto`'s skill of the same name, not copied. It carries the two
+invariants (the top heading matches `Cargo.toml`; a heading is dated if and only
+if that tag exists), the two-commit open/cut flow, and the tag mechanics.
+`CLAUDE.md` points at it rather than restating it, which is that file's own rule
+and one the first draft of this entry broke by putting the flow there.
 
 The trigger for opening is **a commit landing past the release tag, not the
 previous version publishing**. While `HEAD` is the tag its version string is
 accurate and is left alone; bumping at publish time would invent a version whose
 only content is its own number, and would make `— Unreleased` mean "nothing has
 happened yet" rather than "here is what has happened so far".
+
+Three things were re-derived rather than inherited, and are recorded in the
+skill as *what did not transfer*: the sibling's heading style (this repo already
+had brackets in three of five headings), its CI enforcement (we have none, and
+claiming otherwise would be a false claim in the file that forbids them), and its
+emphasis on dating individual entries — weaker here, because every measurement in
+this changelog already sits under a version heading that gets dated at cut. What
+does carry is naming the external version a measurement was taken against.
+
+`rc.1` and `rc.2`'s headings were normalised from `## v0.1.0-rc.N` to the
+bracketed form so the invariant check can be mechanical rather than tolerant of
+two spellings.
 
 It also records the one step with a real cost: the README moves at *open*, so GitHub advertises a version not yet on
 crates.io and its install snippet is wrong for anyone copying it that day. That
@@ -352,7 +367,7 @@ refused before any key derivation, and a size that *overstates* the real length
 is rejected rather than accepted as a document with a tail of zeros — which is
 what a zero-filled destination would otherwise hand back. Suite 107 → 109.
 
-## v0.1.0-rc.2 — 2026-09-04
+## [0.1.0-rc.2] — 2026-09-04
 
 Adds a command-line front end, and fixes the docs.rs build — which was broken in
 `0.1.0-rc.1` and cannot be repaired there, because a published version is
@@ -413,7 +428,7 @@ suggestion on a near-miss like `--password-en`. The JSON had no defect; it was
 replaced so that a field added later without escaping cannot silently emit
 broken output.
 
-## v0.1.0-rc.1 — 2026-09-04
+## [0.1.0-rc.1] — 2026-09-04
 
 First published release, and a pre-release: the API may change before `0.1.0`. Cargo
 does not match a pre-release from an ordinary requirement, so name the full version —
