@@ -213,6 +213,15 @@ to *anyone who reads the paragraph*.
 189 of them: 125 library, 17 CLI unit, 35 CLI end-to-end, 12 doctests. All must
 pass in every feature configuration.
 
+**And CI runs all three**, which was not true until PR #54. The `clippy` and
+`test` matrices held `detect-only` and `crypto-ops` and nothing else, so the 52
+tests that exist only under `cli` had never run on a runner -- including the two
+pinning `--password`'s absence from every help output and the one pinning exit
+code 4, both of which this file calls contracts. The rule said *every feature
+configuration*; the mechanism tested *the configurations in the matrix*; the
+mechanism took the rule's name. That is the substitution the section above
+describes, in this file, about this file.
+
 One library test is `#[ignore]`d and is counted above: it needs a host with
 under ~1 GiB free to observe `try_reserve_exact` refusing, which is not true of
 a well-provisioned machine or a CI runner. It is counted because it exists and
@@ -263,7 +272,11 @@ PR that shows the same thing before.
 - **`include` is an allowlist.** A new directory ships only once a pattern names
   it. The `*_tests.rs` files and the `.odt` goldens are load-bearing — without
   them the published crate fails `cargo test`, because the `#[path]` test modules
-  ship in `lib.rs` regardless.
+  ship in `lib.rs` regardless. **That last sentence is currently unproven**:
+  `cargo package`'s verification build does not compile `tests/`, so breaking
+  `tests/cli.rs` leaves the job green (issue #53). What the job does guard is
+  `src/**/*.rs`, and only since it started running with `--features cli` — under
+  `crypto-ops` the binary is excluded by `required-features` and never compiled.
 - **A published version is immutable.** rc.1's docs.rs page is permanently broken
   and no amount of fixing repairs it; the fix ships in the next version. Move a
   tag freely before publishing and never after — and move it *by name with
