@@ -1,5 +1,5 @@
 ---
-name: changelog-protocol
+name: odf-crypto-changelog-protocol
 description: Keep CHANGELOG.md's release claims checkable, and run the two-commit release flow. Use when adding a changelog entry, opening or cutting a release line, bumping the version in Cargo.toml, tagging, or when a version heading looks out of step with the manifest or the tags.
 ---
 
