@@ -1188,6 +1188,22 @@ fn classify_accepting_a_manifest_implies_the_rewrite_accepts_it() {
     );
 }
 
+/// `PBKDF2_MAX_ITER` pinned to the value, not read from the constant.
+///
+/// Reading the constant to build both the accept and the reject case makes a
+/// test self-referential: it passes at any value, which is what
+/// `the_t_ceiling_still_refuses_the_expensive_direction` was corrected for in
+/// the same release. The decision here was specifically 10_000_000 over
+/// `1 << 23`, so the number has to be named.
+#[test]
+fn the_pbkdf2_ceiling_is_nists_figure_not_a_round_exponent() {
+    assert_eq!(
+        crate::limits::PBKDF2_MAX_ITER,
+        10_000_000,
+        "NIST SP 800-132 5.2's own example; `1 << 23` = 8_388_608 refused it.          Pinning the exact value also pins that it is above the 600_000          LibreOffice writes -- clippy rejects that as a separate assertion,          because both sides are consts and it is decided at compile time."
+    );
+}
+
 // --- CLI exit-code tripwire (#40) ----------------------------------------
 
 /// Every [`DecryptError`] variant has an exit code assigned in `src/bin/odf-crypto.rs`

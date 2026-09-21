@@ -15,6 +15,47 @@ LibreOffice citation and a reproduction for each.
 
 ### Fixed
 
+**`PBKDF2_MAX_ITER` has a measured budget, and moves to 10,000,000.** Closes
+[#68]. It was `1 << 23` (8,388,608), derived by analogy from LibreOffice's
+*write* default of 600,000 — a figure that does not constrain readers, in a bound
+that only ever applies to reading. No time budget had been measured.
+
+Measured, through this crate's own `derive_key` on the release profile
+(`pbkdf2` 0.12.2, Intel i7-10510U):
+
+| `iteration-count` | one row, 32-byte key |
+| --- | --- |
+| 100,000 — LibreOffice per-entry write | 0.14–0.19 s |
+| 600,000 — LibreOffice wholesome write | ~1.1 s |
+| 10,000,000 — the new ceiling | ~19–33 s |
+
+**The budget is one row, tens of seconds on a slow laptop.** That is the sentence
+the constant needed and never had.
+
+**The 4096× multiplier is not reachable, which is the finding that settled the
+number.** A per-entry package may carry `MAX_ENCRYPTED_ENTRIES` rows and
+`decrypt` derives per row, so the arithmetic suggests hours. The loop propagates
+with `?`: a caller without the password pays for one derivation and stops.
+Measured through the public API with a wrong password — 1 row 24–30 s, 8 rows
+37.8 s, 64 rows 21.8 s, i.e. flat. On a real golden the correct password runs all
+five rows (15.70 s) and a wrong one runs a single KDF (2.47 s). The aggregate is
+a cost paid by someone who already holds the password, which is not a threat.
+
+**Why 10,000,000 rather than keeping `1 << 23`.** The old value refused NIST SP
+800-132 §5.2's own example — *"an iteration count of 10,000,000 may be
+appropriate"* — for a file LibreOffice opens, to save about two seconds. A round
+exponent that rejects a cited figure is the same shape as deriving a read ceiling
+from a write default. Nothing real writes above 600,000, so neither value refuses
+a current producer; the difference is which one can be defended.
+
+Also recorded on the constant: `manifest:key-size` is a second dial on the same
+work, since PBKDF2 emits `ceil(dkLen / 20)` HMAC-SHA1 blocks — 16/32/64 bytes
+cost 1/2/4×, so a 64-byte key at this ceiling is ~29–39 s. Bounded separately by
+`DERIVED_KEY_MAX_LEN`, and worth knowing before reading the table as a worst
+case; it is the worst case for the iteration dial alone.
+
+[#68]: https://github.com/Slurp9187/odf-crypto/issues/68
+
 **Breaking: the Argon2 memory ceiling is split by direction.** Closes [#67] and
 [#69]. `ARGON2_MAX_M_COST_KIB` becomes two constants, because one number was
 answering two questions with different threat models.
