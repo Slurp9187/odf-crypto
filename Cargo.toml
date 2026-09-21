@@ -2,7 +2,7 @@
 name = "odf-crypto"
 version = "0.1.0-rc.7"
 edition = "2021"
-description = "LibreOffice-faithful ODF package encryption detection, decryption and encryption"
+description = "LibreOffice-faithful encryption for ODF packages (.odt, .ods, .odp): detect it, decrypt it, write it"
 rust-version = "1.85"
 # Every src/bin/*.rs is otherwise auto-discovered as its own binary, which turns
 # the CLI's `#[path]` test module into a second bin target with no `main`. The
@@ -15,7 +15,7 @@ repository = "https://github.com/Slurp9187/odf-crypto"
 # one less thing depending on a build that might fail.
 documentation = "https://docs.rs/odf-crypto"
 readme = "README.md"
-keywords = ["odf", "libreoffice", "opendocument", "encryption", "decrypt"]
+keywords = ["odf", "odt", "libreoffice", "opendocument", "decrypt"]
 categories = ["cryptography", "parser-implementations"]
 # Allowlist -- everything not named here stays out of the tarball uploaded to
 # crates.io. It does NOT affect git: docs/, .claude/, CHANGELOG.md and the
