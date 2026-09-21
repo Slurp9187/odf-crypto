@@ -637,8 +637,12 @@ fn set_argon2_lanes_to_overflow(xml: &[u8]) -> Vec<u8> {
 }
 
 fn set_argon2_memory_to_2gib(xml: &[u8]) -> Vec<u8> {
-    // ~2 TiB of Argon2 blocks: `vec!` aborts the process rather than returning
-    // an error, where LO's own libargon2 returns ARGON2_MEMORY_ALLOCATION_ERROR.
+    // Above `ARGON2_MAX_M_COST_KIB_READ`, so `decrypt` refuses it by comparison
+    // before allocating anything. That refusal is the whole point of keeping a
+    // read-path cap: the number came from the package, and `decrypt` must run
+    // the KDF before it can verify a password, so without this the file chooses
+    // how much memory and time one attempt spends. Measured on a build without
+    // it: 8 GiB here is `WrongPassword` after 29 minutes.
     String::from_utf8_lossy(xml)
         .replace(
             "loext:argon2-memory=\"65536\"",
@@ -884,13 +888,13 @@ fn zero_is_a_legal_manifest_size_and_negative_is_not() {
 // `DerivedKey` still live and unwiped (see the doc comment on
 // `kdf::derive_argon2id`). A fallible path nobody has ever seen fail is
 // decoration, not evidence, so this drives the call with `m` at the crate's
-// own ceiling (`ARGON2_MAX_M_COST_KIB`, 1 GiB of blocks -- the scope this
+// own ceiling (`ARGON2_MAX_M_COST_KIB_READ`, 1 GiB of blocks -- the scope this
 // crate accepts, not a value beyond it) and asserts the specific error.
 //
 // This is a genuine allocation attempt sized by how much memory the host
 // actually has free right now, so it can only witness `HostCannotAllocate`
 // on a host that is this tight on memory at the moment the test runs; it is
-// deliberately not manufactured with a value beyond `ARGON2_MAX_M_COST_KIB`,
+// deliberately not manufactured with a value beyond `ARGON2_MAX_M_COST_KIB_READ`,
 // which would only prove the earlier range check, not this one. On a
 // generously-provisioned host the request may simply succeed.
 //
@@ -900,7 +904,7 @@ fn zero_is_a_legal_manifest_size_and_negative_is_not() {
 // 1.8-2.3 GiB), this 1 GiB request `Ok`'d -- the crate's own legal ceiling
 // was not, on that occasion, above what the host could satisfy. Getting a
 // deterministic `Err` from here would mean either raising the request past
-// `ARGON2_MAX_M_COST_KIB` (out of scope -- see this arc's scope fence) or
+// `ARGON2_MAX_M_COST_KIB_READ` (out of scope -- see this arc's scope fence) or
 // deliberately exhausting the host's memory first, which was not done
 // because this suite may run on a live, shared machine where that is not a
 // safe thing for a test to do. Run explicitly with `cargo test -- --ignored
@@ -915,9 +919,10 @@ fn argon2_block_buffer_reports_host_capacity_not_an_abort() {
     let result = crate::kdf::derive_argon2id(
         b"start-key-bytes-are-arbitrary-for-this-probe",
         &salt,
-        1,                                           // t: minimum iterations
-        crate::limits::ARGON2_MAX_M_COST_KIB as i32, // 1 GiB: the crate's own ceiling
-        1,                                           // p: minimum lanes
+        1,                                                // t: minimum iterations
+        crate::limits::ARGON2_MAX_M_COST_KIB_READ as i32, // 1 GiB: the read-path ceiling
+        1,                                                // p: minimum lanes
+        crate::limits::ARGON2_MAX_M_COST_KIB_READ,        // the ceiling decrypt passes
         &mut out,
     );
     let requested_bytes = match result {

@@ -1014,6 +1014,128 @@ fn is_weaker_than_libreoffice_reports_but_does_not_gate() {
         .is_weaker_than_libreoffice());
 }
 
+// --- #67: the Argon2 memory policy cap is gone ------------------------------
+
+/// **The tuple the old `1 << 20` cap refused**, and the reason it went.
+///
+/// RFC 9106 §4 names `t=1, p=4, m=2^21` (2 GiB) as its **first recommended**
+/// option. 2 GiB is twice the old ceiling, so a caller following the RFC to the
+/// letter got [`ParamsReason::OutOfRange`] — this crate's own policy refusing a
+/// tuple the specification recommends and LibreOffice would write and read.
+///
+/// Constructing the parameters allocates nothing; only `encrypt_with_params`
+/// would, and this deliberately does not call it.
+#[test]
+fn rfc9106_first_recommended_tuple_is_accepted() {
+    let p = Argon2Params::new(1, 2_097_152, 4).expect("RFC 9106 §4 first recommended option");
+    assert_eq!(p.t(), 1);
+    assert_eq!(p.m_kib(), 2_097_152);
+    assert_eq!(p.p(), 4);
+}
+
+/// The RFC's larger examples too, since "raise the cap to 2 GiB" was the
+/// obvious fix and would have refused these.
+#[test]
+fn the_rfcs_larger_examples_are_accepted_as_well() {
+    // 4 GiB and 6 GiB -- the RFC's own further examples. An earlier draft of
+    // this test used 1 << 23 (8 GiB), which is not a figure the RFC gives; the
+    // citation in `limits.rs` said 4 and 6 while the test said 4 and 8.
+    for m_kib in [1 << 22, 6 * 1024 * 1024] {
+        assert!(
+            Argon2Params::new(1, m_kib, 4).is_ok(),
+            "m = {m_kib} KiB must not be refused by a bound of ours"
+        );
+    }
+}
+
+/// The ceiling that remains is the manifest field's own width, not a number of
+/// ours — so nothing expressible in a package is refused for being too large.
+#[test]
+fn the_remaining_memory_ceiling_is_the_field_width() {
+    assert_eq!(
+        crate::limits::ARGON2_MAX_M_COST_KIB_WRITE,
+        i32::MAX as u32,
+        "the write ceiling must BE the field width, not merely be at least it --          `limits.rs` justifies keeping the check by the range an error reports"
+    );
+    assert!(
+        Argon2Params::new(1, i32::MAX, 4).is_ok(),
+        "and nothing of ours may sit below it"
+    );
+}
+
+/// What still refuses, and **whose rule it is** — the distinction
+/// [`ParamsReason`] exists for. Neither of these is a policy cap.
+#[test]
+fn what_refuses_a_memory_value_now_is_the_cipher_or_the_format() {
+    // The cipher: argon2 needs 8 KiB per lane, so `m >= 8p`.
+    let err = Argon2Params::new(1, 8, 4).expect_err("m = 8 with p = 4 is below argon2's own floor");
+    assert!(
+        matches!(
+            err,
+            EncryptError::Params(ParamsReason::CipherRejects {
+                axis: Argon2Axis::MKib,
+                ..
+            })
+        ),
+        "argon2's own requirement must not be reported as ours, got {err:?}"
+    );
+
+    // The format: `positiveInteger`, and LibreOffice checks `0 < m`.
+    let err = Argon2Params::new(1, 0, 1).expect_err("zero is not a positive integer");
+    assert!(
+        matches!(
+            err,
+            EncryptError::Params(ParamsReason::OutOfRange {
+                axis: Argon2Axis::MKib,
+                ..
+            })
+        ),
+        "got {err:?}"
+    );
+    let err = Argon2Params::new(1, -1, 1).expect_err("negative is not a positive integer");
+    assert!(matches!(
+        err,
+        EncryptError::Params(ParamsReason::OutOfRange { .. })
+    ));
+}
+
+// --- #69: the `t` ceiling stays, and now does more work ---------------------
+
+/// `ARGON2_MAX_T_COST` is kept deliberately, and #67 is why it matters more
+/// than it did: argon2's cost is roughly `t × m`, and `m` is now bounded only
+/// by the host. Uncapping both is the hang.
+///
+/// Nothing legitimate reaches it — RFC 9106 recommends `t` of 1 or 3, OWASP
+/// 1–5, LibreOffice writes 3 — which is the argument for leaving it where it
+/// is rather than minting a tighter number nobody measured.
+#[test]
+fn the_t_ceiling_still_refuses_the_expensive_direction() {
+    assert!(
+        Argon2Params::new(3, 65536, 4).is_ok(),
+        "LibreOffice's own tuple must pass"
+    );
+    // Literals, not `ARGON2_MAX_T_COST`. Reading the constant to build both the
+    // accept and the reject case makes the test self-referential: it would pass
+    // at 32, at 4, at anything. #69's decision was specifically NOT to lower it,
+    // so the test has to pin the value, which means naming it.
+    assert_eq!(crate::limits::ARGON2_MAX_T_COST, 65_536);
+    assert!(
+        Argon2Params::new(65_536, 65536, 4).is_ok(),
+        "the ceiling itself is inclusive"
+    );
+    let err = Argon2Params::new(65_537, 65536, 4).expect_err("one past the ceiling is refused");
+    assert!(
+        matches!(
+            err,
+            EncryptError::Params(ParamsReason::OutOfRange {
+                axis: Argon2Axis::T,
+                ..
+            })
+        ),
+        "and it is reported as OURS, because it is: {err:?}"
+    );
+}
+
 // --- CLI exit-code tripwire (#40) ----------------------------------------
 
 /// Every [`EncryptError`] variant has an exit code assigned in `src/bin/odf-crypto.rs`

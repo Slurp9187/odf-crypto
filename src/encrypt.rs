@@ -21,7 +21,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify;
 use crate::limits::{
-    AES_GCM_IV_LEN, ARGON2_MAX_M_COST_KIB, ARGON2_MAX_T_COST, ARGON2_MIN_M_COST_KIB,
+    AES_GCM_IV_LEN, ARGON2_MAX_M_COST_KIB_WRITE, ARGON2_MAX_T_COST, ARGON2_MIN_M_COST_KIB,
     ARGON2_MIN_P_COST, ARGON2_MIN_T_COST, DEFLATE_CEILING, MIMETYPE_CEILING,
 };
 use crate::sensitive::{DeflatedPlaintext, DerivedKey};
@@ -276,14 +276,14 @@ impl Argon2Params {
         if !(ARGON2_MIN_T_COST..=ARGON2_MAX_T_COST).contains(&u32::try_from(t).unwrap_or(0)) {
             return Err(ours(Argon2Axis::T, t, ARGON2_MIN_T_COST, ARGON2_MAX_T_COST));
         }
-        if !(ARGON2_MIN_M_COST_KIB..=ARGON2_MAX_M_COST_KIB)
+        if !(ARGON2_MIN_M_COST_KIB..=ARGON2_MAX_M_COST_KIB_WRITE)
             .contains(&u32::try_from(m_kib).unwrap_or(0))
         {
             return Err(ours(
                 Argon2Axis::MKib,
                 m_kib,
                 ARGON2_MIN_M_COST_KIB,
-                ARGON2_MAX_M_COST_KIB,
+                ARGON2_MAX_M_COST_KIB_WRITE,
             ));
         }
         // `argon2::Params::MAX_P_COST`, not a bound of ours -- the same
@@ -310,7 +310,7 @@ impl Argon2Params {
                 axis: Argon2Axis::MKib,
                 got: m_kib,
                 min: u32::try_from(8 * p).unwrap_or(u32::MAX),
-                max: ARGON2_MAX_M_COST_KIB,
+                max: ARGON2_MAX_M_COST_KIB_WRITE,
             }));
         }
         Ok(Self { t, m_kib, p })
@@ -679,7 +679,16 @@ pub fn encrypt_with_params(
     let mut derived_key = DerivedKey::new(vec![0u8; WHOLESOME.derived_key_len]);
     start_key.with_secret(|sk| {
         derived_key.with_secret_mut(|key| {
-            crate::kdf::derive_argon2id(sk, &salt, params.t, params.m_kib, params.p, key).map_err(
+            crate::kdf::derive_argon2id(
+                sk,
+                &salt,
+                params.t,
+                params.m_kib,
+                params.p,
+                ARGON2_MAX_M_COST_KIB_WRITE,
+                key,
+            )
+            .map_err(
                 // Exhaustive, no `_` arm: the next `KdfError` variant must be
                 // given a deliberate mapping here rather than silently
                 // inheriting one -- the same discipline `Argon2Axis`'s
