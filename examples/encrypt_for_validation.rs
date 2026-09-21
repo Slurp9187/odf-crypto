@@ -14,6 +14,14 @@
 //! ```text
 //! ODF_ENCRYPT_PASSWORD=... cargo run --quiet --example encrypt_for_validation -- <in.odt> <out.odt>
 //! ```
+//!
+//! `ODF_ARGON2_T`, `ODF_ARGON2_M_KIB` and `ODF_ARGON2_P` are optional. Set all
+//! three to call [`odf_crypto::encrypt_with_params`] instead of
+//! [`odf_crypto::encrypt`]; set none to get LibreOffice's default tuple. Setting
+//! some but not all is an error rather than a silent partial default, because a
+//! tuple half-applied is the one outcome nobody wants from a generator whose
+//! whole job is producing files at a KNOWN cost
+//! (`tests/artifacts/make_artifacts.py`, plan §7).
 
 use std::env;
 use std::process::ExitCode;
@@ -46,7 +54,40 @@ fn main() -> ExitCode {
         }
     };
 
-    let encrypted = match odf_crypto::encrypt(&plaintext, password) {
+    let axes = ["ODF_ARGON2_T", "ODF_ARGON2_M_KIB", "ODF_ARGON2_P"];
+    let set: Vec<Option<String>> = axes.iter().map(|k| env::var(k).ok()).collect();
+    let params = match set.iter().filter(|v| v.is_some()).count() {
+        0 => None,
+        3 => {
+            let mut parsed = [0i32; 3];
+            for (i, v) in set.iter().enumerate() {
+                match v.as_deref().unwrap_or("").parse::<i32>() {
+                    Ok(n) => parsed[i] = n,
+                    Err(e) => {
+                        eprintln!("{}: {e}", axes[i]);
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            match odf_crypto::Argon2Params::new(parsed[0], parsed[1], parsed[2]) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("argon2 params: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        n => {
+            eprintln!("set all three of {axes:?} or none; {n} were set");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let result = match params {
+        Some(p) => odf_crypto::encrypt_with_params(&plaintext, password, p),
+        None => odf_crypto::encrypt(&plaintext, password),
+    };
+    let encrypted = match result {
         Ok(b) => b,
         Err(e) => {
             eprintln!("encrypt: {e}");
