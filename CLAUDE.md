@@ -220,8 +220,14 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-209 of them: 138 library, 20 CLI unit, 35 CLI end-to-end, 16 doctests. All must
+215 of them: 144 library, 20 CLI unit, 35 CLI end-to-end, 16 doctests. All must
 pass in every feature configuration.
+
+**Count test functions, not passing tests.** `cargo test`'s summary line omits
+`#[ignore]`d ones, so reading the count off a green run under-reports by however
+many are ignored. `cargo test --lib -- --list | grep -c ': test$'` is the figure
+this line means. An rc.6 draft of this paragraph said 143 for exactly that
+reason.
 
 **And CI runs all three**, which was not true until PR #54. The `clippy` and
 `test` matrices held `detect-only` and `crypto-ops` and nothing else, so the 52
@@ -237,6 +243,13 @@ under ~1 GiB free to observe `try_reserve_exact` refusing, which is not true of
 a well-provisioned machine or a CI runner. It is counted because it exists and
 is run by `cargo test -- --ignored`; it is ignored because claiming a guard is
 exercised when it is not is worse than a skip.
+
+An rc.6 draft claimed a second such test and justified ignoring it with an
+invented fact — that Linux overcommit lets a 2 TiB `try_reserve_exact` succeed.
+Default `vm.overcommit_memory=0` is *heuristic* mode and refuses obvious
+overcommits, so that is false; it holds only under mode 1, which is not the
+default anywhere this runs. Recorded because the claim reached this file as
+doctrine before anyone checked it, which is the failure this section is about.
 
 **The goldens are the evidence.** `tests/goldens/*.odt` are real LibreOffice
 output — every one, including `aoo-blowfish-pbkdf2.odt`, whose `aoo-` prefix

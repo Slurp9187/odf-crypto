@@ -15,6 +15,71 @@ LibreOffice citation and a reproduction for each.
 
 ### Fixed
 
+**Breaking: the Argon2 memory ceiling is split by direction.** Closes [#67] and
+[#69]. `ARGON2_MAX_M_COST_KIB` becomes two constants, because one number was
+answering two questions with different threat models.
+
+| path | constant | value | whose number |
+| --- | --- | --- | --- |
+| `Argon2Params::new` → `encrypt` | `ARGON2_MAX_M_COST_KIB_WRITE` | `i32::MAX` KiB | **yours** |
+| manifest → `decrypt` | `ARGON2_MAX_M_COST_KIB_READ` | 1 GiB | **the file's** |
+
+`kdf::derive_argon2id` takes the ceiling as a parameter now rather than reading a
+constant, so the asymmetry is visible at both call sites. The function cannot
+know which threat model it is in; its callers can.
+
+**What changed on the write path.** At 1 GiB, `Argon2Params::new(1, 2_097_152, 4)`
+was `ParamsReason::OutOfRange` — **RFC 9106 §4's FIRST RECOMMENDED option**
+(`t=1, p=4, m=2^21`, 2 GiB) refused by a policy of ours, for a cost the caller
+chose to pay on their own machine. That is the owner's *never block a construct*
+case, and the cap is gone. Raising it to 2 GiB was considered and rejected: that
+still refuses the RFC's 4 GiB and 6 GiB examples and is a guessed number wearing
+a citation. What bounds this side now is the host, via `try_reserve_exact`, and
+the cipher, via `m >= 8p`.
+
+**What did not change on the read path, and why that took a second pass.** The
+first attempt removed the cap from both, arguing from the dead basis — a `vec!`
+abort that `try_reserve_exact` replaced in rc.5 — and from the RFC. Both
+arguments are about the write path. An independent audit of that attempt found
+what neither covered:
+
+> `try_reserve_exact` bounds the **abort**. It does not bound the **cost**.
+
+It grants whatever the allocator grants, and then `resize` and argon2's fill
+touch every page. `decrypt` cannot verify a password without first deriving the
+key, so a manifest's `m` is acted on *before* anything about the file is trusted.
+Measured on the uncapped build, rewriting only `loext:argon2-memory` in a golden
+and passing a **wrong** password:
+
+| `m` | one `decrypt` attempt |
+| --- | --- |
+| 2 GiB | `WrongPassword` after 13 seconds |
+| 8 GiB | `WrongPassword` after 29 minutes, 8.2 GiB committed |
+
+A 7,363-byte file buys that. So the cap was never the wrong idea — its stated
+reason was wrong, and it was applied to both paths when only one faces an
+untrusted number. It is still a policy figure with no measured budget behind it,
+the same gap [#68] records for `PBKDF2_MAX_ITER`; what is no longer true is that
+it lacks a reason.
+
+**`ARGON2_MAX_T_COST` stays at `1 << 16`** ([#69]), and its doc stops calling it
+a margin. It is a bound on the expensive direction for the *write* path, where
+`m` is now host-bounded and cost is roughly `t × m`. An earlier draft claimed it
+also defended `decrypt`; it does not, and that claim is corrected rather than
+removed — at ~21,800× LibreOffice's `t = 3`, a bound nothing legitimate reaches
+bounds no attacker either. Not lowered to a "plausible" range, because picking 32
+or 64 mints a fresh under-founded number and starts refusing a caller who
+followed RFC 9106 step 10 with CPU to spare.
+
+**Also corrected, from the same audit.** `limits.rs` pointed at
+`Argon2Params` for reporting an expensive tuple; no such facility exists, and
+`is_weaker_than_libreoffice` answers the opposite question — it calls RFC 9106's
+`t=1` tuple *weaker*. The doc now says so instead of implying a counterpart that
+was never written.
+
+[#67]: https://github.com/Slurp9187/odf-crypto/issues/67
+[#69]: https://github.com/Slurp9187/odf-crypto/issues/69
+
 **`Classification::wholesome_row()` — the row `decrypt` actually acts on.**
 Closes [#70]. `Classification::common` is the **latch** row, and for a
 [`Mode::Wholesome`] package that need not be the same row.

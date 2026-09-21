@@ -30,9 +30,9 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
 use crate::classify::{classify, member_matches_path, zip_entry_name};
 use crate::kdf::KdfError;
 use crate::limits::{
-    AES_BLOCK_LEN, AES_CBC_IV_LEN, AES_GCM_IV_LEN, AES_GCM_TAG_LEN, BLOWFISH_IV_LEN,
-    CHECKSUM_WINDOW, CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN, DERIVED_KEY_MIN_LEN,
-    INFLATE_CEILING, MAX_ENCRYPTED_ENTRIES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
+    AES_BLOCK_LEN, AES_CBC_IV_LEN, AES_GCM_IV_LEN, AES_GCM_TAG_LEN, ARGON2_MAX_M_COST_KIB_READ,
+    BLOWFISH_IV_LEN, CHECKSUM_WINDOW, CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN,
+    DERIVED_KEY_MIN_LEN, INFLATE_CEILING, MAX_ENCRYPTED_ENTRIES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
 };
 use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext};
 use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode};
@@ -606,8 +606,16 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
                     // Shared with `encrypt`, which chooses the same tuple rather
                     // than reading it: `crate::kdf` is where the manifest's
                     // hostile-parameter guards live, so both directions get them.
-                    crate::kdf::derive_argon2id(sk_bytes, salt, *t, *m, *p, derived_bytes)
-                        .map_err(kdf_error)
+                    crate::kdf::derive_argon2id(
+                        sk_bytes,
+                        salt,
+                        *t,
+                        *m,
+                        *p,
+                        ARGON2_MAX_M_COST_KIB_READ,
+                        derived_bytes,
+                    )
+                    .map_err(kdf_error)
                 }
                 // Screened out at the top of `decrypt`, ~140 lines and one
                 // function away. That distance is the whole argument for a
@@ -819,7 +827,7 @@ fn inflate_into(compressed: &[u8], slot: &mut [u8]) -> Result<(), DecryptError> 
 /// Bound `manifest:size` before it becomes an allocation length.
 ///
 /// **Its original reason is gone, and the same thing happened here as to
-/// `ARGON2_MAX_M_COST_KIB`.** This doc used to argue the ceiling like this: a
+/// `ARGON2_MAX_M_COST_KIB_READ`.** This doc used to argue the ceiling like this: a
 /// sized slot moves the allocation ahead of the decode, `size` is an `i64` the
 /// manifest controls, and `vec![0u8; huge]` aborts the caller's process rather
 /// than returning an error. The first two clauses still hold. The third does

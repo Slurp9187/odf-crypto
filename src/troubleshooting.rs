@@ -37,8 +37,16 @@
 //! **Case 4 is the one worth knowing about**, because reporting a policy cap as
 //! case 1 tells a user their file is invalid when it is not. These are ours,
 //! and the format permits more: `PBKDF2_MAX_ITER`, `ARGON2_MAX_T_COST`,
-//! `ARGON2_MAX_M_COST_KIB`, `MAX_ENCRYPTED_ENTRIES`, and the payload ceilings.
-//! A file refused by one of them may open perfectly in LibreOffice.
+//! `MAX_ENCRYPTED_ENTRIES`, and the payload ceilings. A file refused by one of
+//! them may open perfectly in LibreOffice.
+//!
+//! Argon2 memory split in two in `0.1.0-rc.6` and is on the list only for the
+//! direction you are reading about here. A manifest's `m` is still capped at
+//! 1 GiB by policy, because `decrypt` must run the KDF before it can check a
+//! password, so the file chooses the cost of the attempt. A cost **you** pass to
+//! `encrypt_with_params` is not capped by us at all — at 1 GiB that refused RFC
+//! 9106's own first recommended tuple — and an unaffordable one there is case 3
+//! rather than case 4.
 //!
 //! **Case 3 is a separate variant on purpose.** It blames neither the package
 //! nor this crate — the manifest may be entirely legal and the same bytes may

@@ -18,8 +18,7 @@ use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
 use crate::limits::{
-    ARGON2_MAX_M_COST_KIB, ARGON2_MAX_T_COST, ARGON2_MIN_M_COST_KIB, ARGON2_MIN_P_COST,
-    ARGON2_MIN_T_COST,
+    ARGON2_MAX_T_COST, ARGON2_MIN_M_COST_KIB, ARGON2_MIN_P_COST, ARGON2_MIN_T_COST,
 };
 use crate::sensitive::PasswordDigest;
 use crate::types::StartKeyAlg;
@@ -129,6 +128,7 @@ pub(crate) fn derive_argon2id(
     t: i32,
     m: i32,
     p: i32,
+    max_m_kib: u32,
     out: &mut [u8],
 ) -> Result<(), KdfError> {
     let t = u32::try_from(t).map_err(|_| KdfError::Params(format!("argon2 iterations {t}")))?;
@@ -139,9 +139,15 @@ pub(crate) fn derive_argon2id(
             "argon2 iterations {t} outside {ARGON2_MIN_T_COST}..={ARGON2_MAX_T_COST}"
         )));
     }
-    if !(ARGON2_MIN_M_COST_KIB..=ARGON2_MAX_M_COST_KIB).contains(&m) {
+    // `max_m_kib` is the caller's, not this function's, and that asymmetry is
+    // the point: `decrypt` passes `ARGON2_MAX_M_COST_KIB_READ` because a
+    // manifest chose the number and is acted on before any password is
+    // verified; `encrypt` passes `..._WRITE`, the field's own width, because
+    // the caller chose to spend their own memory. This function cannot know
+    // which threat model it is in. Its callers can.
+    if !(ARGON2_MIN_M_COST_KIB..=max_m_kib).contains(&m) {
         return Err(KdfError::Params(format!(
-            "argon2 memory {m} KiB outside {ARGON2_MIN_M_COST_KIB}..={ARGON2_MAX_M_COST_KIB}"
+            "argon2 memory {m} KiB outside {ARGON2_MIN_M_COST_KIB}..={max_m_kib}"
         )));
     }
     if !(ARGON2_MIN_P_COST..=Params::MAX_P_COST).contains(&p) {
@@ -152,9 +158,19 @@ pub(crate) fn derive_argon2id(
 
     // Read off `params` BEFORE it is moved into `Argon2::new` below -- the
     // count and the byte figure the error carries are both unreachable after
-    // the move. `block_count()` is bounded by `ARGON2_MAX_M_COST_KIB`, checked
-    // above, so the product fits `usize` even on a 32-bit target; the
-    // `saturating_mul` says so without depending on that argument holding.
+    // the move.
+    //
+    // The `saturating_mul` is the whole overflow story and always was; it does
+    // not depend on any ceiling holding.
+    //
+    // What the ceiling does affect is whether `requested_bytes` is HONEST. On a
+    // 32-bit target the product overflows a `usize` once `block_count` passes
+    // ~4.19M -- `m` above roughly 4 GiB -- and every larger value then reports
+    // exactly `u32::MAX` bytes. Unreachable from `decrypt`, whose cap is 1 GiB,
+    // but reachable from `encrypt_with_params` where the caller may name
+    // `i32::MAX`. The figure is a diagnostic, so a saturated one is a worse
+    // message rather than a safety problem -- recorded because the old 1 GiB
+    // cap kept it exact on both paths and no longer does on one.
     let block_count = params.block_count();
     let requested_bytes = block_count.saturating_mul(Block::SIZE);
 
