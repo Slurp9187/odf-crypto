@@ -178,6 +178,13 @@ pub struct Classification {
     /// together. A clone, not a borrow: the same entry also appears in
     /// `encrypted_entries`.
     ///
+    /// **For a [`Mode::Wholesome`] package this is not necessarily the row
+    /// `decrypt` acts on** — use [`Classification::wholesome_row`] if what you
+    /// want is the payload's cipher or KDF. The latch is first-wins, so a
+    /// manifest carrying a complete `content.xml` row *and* a complete
+    /// `encrypted-package` row takes `common` from the first and its
+    /// `Wholesome` verdict from the second. That doc has the worked case.
+    ///
     /// `None` for a [`Mode::Plain`] package, and also for one whose only
     /// complete rows sit on other members — encrypted entries can exist with no
     /// latch row, which is why `package_encrypted` is not
@@ -196,6 +203,68 @@ pub struct Classification {
     /// Present so a caller can hand it to an OpenPGP implementation; this crate
     /// refuses such packages.
     pub pgp_keys: Vec<EncryptedKey>,
+}
+
+impl Classification {
+    /// The row [`decrypt`](crate::decrypt) acts on for a [`Mode::Wholesome`]
+    /// package — the one resolving to `encrypted-package`.
+    ///
+    /// `None` for [`Mode::Plain`], and `None` for [`Mode::PerEntry`], where
+    /// there is no single payload row: `decrypt` acts on every entry in
+    /// [`Classification::encrypted_entries`].
+    ///
+    /// # Why this is not [`Classification::common`]
+    ///
+    /// **They can be different rows, and the difference is constructible.**
+    /// `common` is the *latch* row — the first accepted row resolving to
+    /// `content.xml` **or** `encrypted-package`, reproducing LibreOffice's
+    /// `HasEncryptedEntries` (`ZipPackage.cxx`), which is first-wins. Whether
+    /// the package is `Wholesome` is decided separately, by whether a complete
+    /// `encrypted-package` row exists at all.
+    ///
+    /// So a manifest carrying a complete `content.xml` row **and** a complete
+    /// `encrypted-package` row is `Wholesome` because of the second while
+    /// `common` came from the first:
+    ///
+    /// | row | cipher | kdf |
+    /// | --- | --- | --- |
+    /// | `content.xml` *(first, so it is `common`)* | AES-256-GCM | Argon2id |
+    /// | `encrypted-package` *(what `decrypt` uses)* | AES-256-CBC | PBKDF2 |
+    ///
+    /// Reading `common` there reports the modern profile for a package whose
+    /// payload is neither. LibreOffice does not write such a file; an attacker
+    /// can. **If you are asking what cipher or KDF the payload actually uses,
+    /// this method is the question you meant.**
+    ///
+    /// `decrypt` calls this, so the two cannot drift.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "crypto-ops")] {
+    /// use odf_crypto::{classify, Cipher, Mode};
+    ///
+    /// # fn demo(bytes: &[u8]) -> Result<(), odf_crypto::DetectError> {
+    /// let class = classify(bytes)?;
+    /// if class.mode == Mode::Wholesome {
+    ///     // Right: the row the payload is actually sealed with.
+    ///     let row = class.wholesome_row().expect("Wholesome implies this row");
+    ///     let modern = row.cipher == Cipher::AesGcmW3c;
+    ///     let _ = modern;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn wholesome_row(&self) -> Option<&EntryEncryption> {
+        if self.mode != Mode::Wholesome {
+            return None;
+        }
+        self.encrypted_entries
+            .iter()
+            .find(|e| e.path == "encrypted-package")
+    }
 }
 
 /// Failures that stop `classify` before a [`Classification`].

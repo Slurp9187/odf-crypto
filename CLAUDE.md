@@ -220,7 +220,7 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-204 of them: 134 library, 20 CLI unit, 35 CLI end-to-end, 15 doctests. All must
+209 of them: 138 library, 20 CLI unit, 35 CLI end-to-end, 16 doctests. All must
 pass in every feature configuration.
 
 **And CI runs all three**, which was not true until PR #54. The `clippy` and
