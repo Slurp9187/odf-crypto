@@ -172,8 +172,24 @@ mod crypto {
     /// answering an absurd claim with a comparison instead of an allocation
     /// attempt. See `decrypt::inflated_len`.
     pub(crate) const PAYLOAD_CEILING: usize = 1 << 30;
+    /// Decrypt's inflate cap. `manifest:size` is attacker-chosen, so this one
+    /// screens an untrusted number.
     pub(crate) const INFLATE_CEILING: usize = PAYLOAD_CEILING;
+    /// Decrypt's ciphertext-read cap. Same: a zip member's length is the
+    /// package's number, not ours.
     pub(crate) const CIPHERTEXT_READ_CEILING: usize = PAYLOAD_CEILING;
+    /// Encrypt's deflate cap — **hygiene, not a security boundary**, and it
+    /// shares the figure above only for shape.
+    ///
+    /// The distinction is the encrypt plan's, which asked for it to be written
+    /// here *"so nobody 'fixes' it into a security claim it isn't"*
+    /// (`odf-encryption-encrypt-2026-09-03.md`, §4). Sharing one constant with
+    /// the two above is what made that easy to lose: the paragraph on
+    /// `PAYLOAD_CEILING` argues all three at once, in terms of a hostile
+    /// `manifest:size`, and `encrypt` has no such thing — its caller hands it
+    /// the plaintext directly. There is no attacker-supplied length on this
+    /// path to defend against; there is only an unbounded allocation on a
+    /// pathological input, which is a different and much smaller claim.
     pub(crate) const DEFLATE_CEILING: usize = PAYLOAD_CEILING;
 
     /// `AES_GCM_IV_LEN` is also encrypt's nonce length; `encrypt.rs`

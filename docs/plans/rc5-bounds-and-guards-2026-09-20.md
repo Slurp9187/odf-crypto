@@ -1,4 +1,4 @@
-Status: **In flight (`0.1.0-rc.5`)** — every item shipped; §7's human verdict is the one thing outstanding · Authored 2026-09-20 · **Written into the repo late**, after three of its items had already landed; see *How this plan got here* · Shipped so far: [#52](https://github.com/Slurp9187/odf-crypto/pull/52) (§1, §6), `507d8a0` (§2's first half), plus two off-plan items — [#54](https://github.com/Slurp9187/odf-crypto/pull/54) and [#55](https://github.com/Slurp9187/odf-crypto/pull/55)
+Status: **All seven items shipped (`0.1.0-rc.5`, 2026-09-21); §7's human verdict is the one thing outstanding, and it gates the release** · Authored 2026-09-20 · **Written into the repo late**, after three of its items had already landed; see *How this plan got here* · §1 and §6 [#52](https://github.com/Slurp9187/odf-crypto/pull/52) · §2 `507d8a0` then [#58](https://github.com/Slurp9187/odf-crypto/pull/58) · §3 rc.4's `ParamsReason`, then [#58](https://github.com/Slurp9187/odf-crypto/pull/58) and [#62](https://github.com/Slurp9187/odf-crypto/pull/62) · §4 [#61](https://github.com/Slurp9187/odf-crypto/pull/61) · §5 [#64](https://github.com/Slurp9187/odf-crypto/pull/64) · §7 [#63](https://github.com/Slurp9187/odf-crypto/pull/63) · off-plan: [#54](https://github.com/Slurp9187/odf-crypto/pull/54), [#55](https://github.com/Slurp9187/odf-crypto/pull/55)
 
 Consumes [docs/plans/odf-encryption-decrypt-2026-09-02.md](odf-encryption-decrypt-2026-09-02.md) and [docs/plans/odf-encryption-encrypt-2026-09-03.md](odf-encryption-encrypt-2026-09-03.md), both Shipped. §1 and §2 below reverse decisions recorded in the first of those; the reversals are written into *that* file as well, not only here.
 
@@ -152,7 +152,7 @@ justifications for numbers already chosen.
 > measurement. `m` has physics behind it now; the other two have only a wait-time
 > opinion, and an opinion is a worse thing to remove than to name.
 
-### 2. Make the memory bounds real — **HALF SHIPPED** (`507d8a0`; remainder is [#51](https://github.com/Slurp9187/odf-crypto/issues/51))
+### 2. Make the memory bounds real — **SHIPPED** (`507d8a0`, then [#58](https://github.com/Slurp9187/odf-crypto/pull/58) closing [#51](https://github.com/Slurp9187/odf-crypto/issues/51))
 
 > **Severity was promoted during drafting.** This began as "make a guessed bound
 > honest". It is also closing a path on which **secrets are not wiped**, which is
@@ -176,17 +176,22 @@ than moved** — everything beneath that entry point in argon2 0.5.3 is heap-fre
 Had any of it allocated, the fix would have compiled, passed, and changed
 nothing.
 
-**Not shipped:** the same treatment where a manifest field sizes an allocation —
-`key-size` → derived-key buffer, and `decrypt.rs`'s inflate slots and cipher
-buffers, each bounded at 1 GiB but summing across up to `MAX_ENCRYPTED_ENTRIES`
-rows with wrapped plaintext live throughout. `MemberPlaintext::try_new_with`'s
-`try_` names the *fill*, not the allocation, and is the site most likely to be
-mistaken for already-safe.
+**Then shipped in #58:** the same treatment everywhere a manifest field sizes an
+allocation — `key-size` → derived-key buffer, both inflate slots, and every
+cipher buffer. `MemberPlaintext::try_new_with` was the trap this section
+predicted: its `try_` names the *fill*, and its body is `vec![0u8; len]`.
 
-**Do not** remove `PAYLOAD_CEILING` — but honour the encrypt plan's explicit
-instruction (`odf-encryption-encrypt-2026-09-03.md:169`) that `DEFLATE_CEILING`
-is *hygiene, not a security boundary*, which the current shared-constant comment
-contradicts.
+**Two sites stay open and say so in the code**, which is the other half of the
+requirement: `read_to_end` grows a ciphertext buffer infallibly and
+`std::io::Read` offers no fallible form, and `ZipArchive::new` preallocates from
+a count the file supplies. Pre-sizing the first from the zip header was written
+and *rejected* — the header is the attacker's number too.
+
+**`PAYLOAD_CEILING` is not removed**, and the encrypt plan's instruction that
+`DEFLATE_CEILING` is *hygiene, not a security boundary* is now honoured: it has
+its own doc comment saying so. Sharing one constant with decrypt's two ceilings
+is what made that easy to lose — the paragraph argued all three at once in terms
+of a hostile `manifest:size`, and `encrypt` has no such thing.
 
 ### 3. Error taxonomy: add the missing fourth case — **SHIPPED**
 
