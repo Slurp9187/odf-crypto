@@ -114,3 +114,39 @@ pub use decrypt::{decrypt, decrypt_with_limits, AllocationSite, DecryptError, De
 pub use encrypt::{
     encrypt, encrypt_with_params, Argon2Axis, Argon2Params, EncryptError, ParamsReason,
 };
+
+// Compiles every ```rust block in README.md, and renders none of it.
+//
+// `cfg(doctest)` is set only while rustdoc COLLECTS doctests, never while it
+// BUILDS documentation -- so `cargo test --doc` checks the examples and no part
+// of README.md reaches the rendered API pages. `cfg(test)` would be wrong: it is
+// not set during collection, so the examples would never run.
+//
+// Precisely: the struct is absent from every page under `doc/odf_crypto/`, but
+// the NAME appears once in `doc/src/odf_crypto/lib.rs.html`, because rustdoc's
+// source viewer renders the file verbatim including items it compiled out. That
+// is expected and harmless -- the README's prose is what must not escape, and it
+// appears nowhere. So verify by grepping a README-only SENTENCE, not this
+// identifier: grepping the identifier reports a correct setup as broken.
+//
+// Gated on `crypto-ops` because that is the smallest feature set under which
+// all four examples compile: one needs only `classify`, the other three need
+// `decrypt`, `encrypt` and `encrypt_with_params`. CI's `test (crypto-ops)` and
+// `test (cli)` jobs both reach it, which matters -- an inert check reads
+// exactly like a passing one.
+//
+// The examples are `no_run`: they are complete `fn main()` programs that read
+// `document.odt`, so collecting them without running them is the point. A
+// doctest that opens a file no machine has fails everywhere.
+//
+// A fence with NO language tag is Rust to rustdoc, and is not `no_run` --
+// README.md:195's sample terminal output ran as a doctest and failed until it
+// was tagged ```text. Tag every new fence; an untagged one is a live test.
+//
+// Proved by breaking it: `odf12_fatal` -> `odf12_fatl` in the README gave
+//     test src\lib.rs - ReadmeDoctests (line 180) - compile ... FAILED
+//     error[E0609]: no field `odf12_fatl` on type `Classification`
+// which is the defect class this catches -- a README naming a field that moved.
+#[cfg(all(doctest, feature = "crypto-ops"))]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;

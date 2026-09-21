@@ -19,17 +19,17 @@ accept predicates, so a package this crate calls encrypted is one LibreOffice
 would prompt for, and a package it refuses is one LibreOffice would refuse to
 open.
 
-> **Pre-release.** This is `0.1.0-rc.6`. The API may change before `0.1.0`.
+> **Pre-release.** This is `0.1.0-rc.7`. The API may change before `0.1.0`.
 
 ## Install
 
 ```toml
 [dependencies]
 # Detection only — no cryptographic dependency.
-odf-crypto = "0.1.0-rc.6"
+odf-crypto = "0.1.0-rc.7"
 
 # Detection, reading and writing.
-odf-crypto = { version = "0.1.0-rc.6", features = ["crypto-ops"] }
+odf-crypto = { version = "0.1.0-rc.7", features = ["crypto-ops"] }
 ```
 
 Pre-release versions are not matched by ordinary requirements — name the full
@@ -42,7 +42,7 @@ version as above; `"0.1"` will not resolve to it.
 `classify` answers whether the bytes are an ODF package, whether it is
 encrypted, in which zip shape, and with which algorithm tuple.
 
-```rust
+```rust,no_run
 use odf_crypto::{classify, Mode};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Decrypt
 
-```rust
+```rust,no_run
 use odf_crypto::decrypt;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -88,7 +88,7 @@ so a caller can tell "bad password" from "we will not touch this package".
 
 ### Encrypt
 
-```rust
+```rust,no_run
 use odf_crypto::encrypt;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -112,7 +112,7 @@ working memory per call**, which some hardware cannot spend — and since the
 parameters are stored in the file, a device that cannot afford 64 MiB to write
 cannot afford it to read the document back either.
 
-```rust
+```rust,no_run
 use odf_crypto::{encrypt_with_params, Argon2Params};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -192,7 +192,7 @@ the file** — the cost is the caller's decision. A tuple `argon2` cannot run
 (`m < 8p`) is refused with exit 1, because that is a mistyped flag rather than a
 damaged document.
 
-```
+```text
 $ odf-crypto classify report.odt
 package:     ODF
 mode:        wholesome
@@ -295,7 +295,7 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0-rc.6"` | `classify` alone. No cryptographic dependency. **25 crates.** |
+| **Detection-only** | `odf-crypto = "0.1.0-rc.7"` | `classify` alone. No cryptographic dependency. **25 crates.** |
 | **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **59 crates.** |
 | **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `rpassword` for the prompt. |
 
