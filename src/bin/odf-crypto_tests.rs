@@ -282,3 +282,101 @@ fn host_capacity_is_not_reported_as_a_damaged_document() {
         "a host memory failure must never read as a damaged document"
     );
 }
+
+// --- exit-code canary (#40) ----------------------------------------------
+//
+// Exit codes are a contract: 4 means *wrong password, try again*, 5 means
+// *refused, you had the wrong file* (CLAUDE.md). Nothing pinned them, so a
+// change to `decrypt_exit` was a silent change to a scripted interface.
+//
+// These three tests are the *correctness* half of the guard. They are not the
+// completeness half and cannot be, which is worth stating where someone would
+// otherwise add a match here and believe the job done: `DetectError`,
+// `DecryptError` and `EncryptError` are `#[non_exhaustive]`, and this binary is
+// a separate crate from the library defining them, so rustc requires a `_` arm
+// here exactly as it does in the mapping. Measured, not assumed -- a
+// wildcard-free match in this file fails to build with E0004, "`DecryptError`
+// is marked as non-exhaustive, so a wildcard `_` is necessary to match
+// exhaustively".
+//
+// Completeness therefore lives in the library, where the attribute does not
+// apply: `every_*_variant_is_accounted_for_in_the_cli_exit_map` in
+// `src/classify_tests.rs`, `src/decrypt_tests.rs` and `src/encrypt_tests.rs`
+// stop compiling when a variant is added. Neither half is sufficient alone.
+
+#[test]
+fn the_detect_exit_map_is_the_documented_one() {
+    for (e, want) in [
+        (DetectError::NotZip, EX_NOT_ODF),
+        (DetectError::MissingManifest, EX_NOT_ODF),
+        (DetectError::Inconsistent(String::new()), EX_REFUSED),
+        (DetectError::Zip(String::new()), EX_MALFORMED),
+    ] {
+        assert_eq!(detect_exit(&e), want, "{e:?}");
+    }
+}
+
+#[test]
+fn the_decrypt_exit_map_is_the_documented_one() {
+    for (e, want) in [
+        // Not a constant: `Classify` delegates, so this pins the delegation
+        // rather than a number that happens to agree with it today.
+        (
+            DecryptError::Classify(DetectError::MissingManifest),
+            EX_NOT_ODF,
+        ),
+        (
+            DecryptError::Classify(DetectError::Zip(String::new())),
+            EX_MALFORMED,
+        ),
+        (DecryptError::WrongPassword, EX_WRONG_PASSWORD),
+        (DecryptError::NotEncrypted, EX_REFUSED),
+        (DecryptError::Odf12Fatal, EX_REFUSED),
+        (DecryptError::UnsupportedPgp, EX_REFUSED),
+        (DecryptError::EmptyPassword, EX_REFUSED),
+        (DecryptError::BadParameters(String::new()), EX_MALFORMED),
+        (DecryptError::Inflate(String::new()), EX_MALFORMED),
+        (DecryptError::Zip(String::new()), EX_MALFORMED),
+        (DecryptError::Internal(String::new()), EX_INTERNAL),
+        (
+            DecryptError::HostCannotAllocate {
+                requested_bytes: 1 << 40,
+            },
+            EX_HOST_CAPACITY,
+        ),
+    ] {
+        assert_eq!(decrypt_exit(&e), want, "{e:?}");
+    }
+}
+
+#[test]
+fn the_encrypt_exit_map_is_the_documented_one() {
+    // Built through the real constructor rather than assembled by hand, so the
+    // test keeps working if `ParamsReason`'s shape changes and stops working if
+    // `new` stops rejecting this tuple.
+    let params = Argon2Params::new(0, 65536, 1)
+        .expect_err("t = 0 is below ARGON2_MIN_T_COST and must be refused");
+
+    for (e, want) in [
+        (EncryptError::Classify(DetectError::NotZip), EX_NOT_ODF),
+        (EncryptError::AlreadyEncrypted, EX_REFUSED),
+        (EncryptError::Odf12Fatal, EX_REFUSED),
+        (EncryptError::EmptyPassword, EX_REFUSED),
+        (EncryptError::Mimetype(String::new()), EX_MALFORMED),
+        (EncryptError::Deflate(String::new()), EX_MALFORMED),
+        (EncryptError::Zip(String::new()), EX_MALFORMED),
+        // The caller typed a bad --argon2-* value; the document is fine. This
+        // is the variant that fell through the `_` arm when it was added.
+        (params, EX_USAGE),
+        (EncryptError::Random(String::new()), EX_INTERNAL),
+        (EncryptError::Internal(String::new()), EX_INTERNAL),
+        (
+            EncryptError::HostCannotAllocate {
+                requested_bytes: 1 << 40,
+            },
+            EX_HOST_CAPACITY,
+        ),
+    ] {
+        assert_eq!(encrypt_exit(&e), want, "{e:?}");
+    }
+}
