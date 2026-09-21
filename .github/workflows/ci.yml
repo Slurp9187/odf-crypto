@@ -206,6 +206,34 @@ jobs:
       # this repo already hit once, at 0.1.0 -> 0.1.0-rc.1.
       - run: cargo package --locked --features cli
 
+  prose:
+    name: audit claims
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: prose
+      # Reads the project's prose back against the tree: relative links, this
+      # crate's own `file.rs:NNN` citations, backticked `module::item` paths,
+      # and the version and MSRV figures in the live documents.
+      #
+      # Needs cargo, not just Python. Check A's second half asks
+      # `cargo package --list` whether a link's target actually SHIPS -- a link
+      # into `docs/` resolves in a checkout and 404s from docs.rs, because
+      # `include` is an allowlist. Reading the allowlist instead would report
+      # README.md and the licence files as broken, since cargo adds those
+      # without their appearing in it.
+      #
+      # `--clone` is pointed at a path that does not exist, so check F (upstream
+      # LibreOffice citations) SKIPS rather than fails. No runner has the clone.
+      # It is not decoration: locally it verifies every upstream citation in the
+      # tree, and this repo cites LibreOffice by line because its behaviour is
+      # the specification. The count is printed, never asserted -- writing the
+      # changelog entry for this job moved it from 73 to 76.
+      - run: python tools/audit_claims.py --clone /nonexistent
+
 # The Python helpers under tests/goldens/ are deliberately NOT run here. Both
 # make_goldens.py and validate_encrypt.py bootstrap a local LibreOffice over UNO
 # to generate and re-open fixtures; they need a LibreOffice install, they are

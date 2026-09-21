@@ -13,6 +13,68 @@ LibreOffice citation and a reproduction for each.
 
 ## [0.1.0-rc.7] - Unreleased
 
+### Added
+
+**`tools/audit_claims.py` reads the project's prose back against the tree**, and
+a `prose` CI job runs it. Lints check shape, not truth; this checks the truths a
+machine can reach. Five arms — relative links, this crate's own `file.rs:NNN`
+citations, backticked `module::item` paths, version and MSRV figures in the live
+documents, and upstream LibreOffice citations against a local clone.
+
+Adapted from `msoffice-crypto`'s tool of the same name, same owner and the same
+licence. **The check letters are kept, gaps included** — there is no D or G here —
+so the two files stay legible to someone who knows the other, for the same reason
+the two READMEs share a section order.
+
+**Check F is the one worth having in this repository specifically.** LibreOffice's
+behaviour *is* this crate's specification, and `CLAUDE.md`, the plans and the
+README cite it by line — `ManifestImport.cxx:272-274`, `ZipFile.cxx:155-160`,
+`objstor.cxx:356-362`. Those numbers drift whenever upstream moves, and in a repo
+whose first rule is that a claim carries its proof, an unverifiable citation is
+worse than none. It verifies every one of them locally — the count is printed
+rather than asserted, because this entry's own citations moved it from 73 to 76
+while being written — and skips rather than fails where the clone is absent,
+which is every CI runner.
+
+**Check A asks a different question than the tool it came from.** The upstream
+version tests whether a link resolves *on disk*; this one also asks whether the
+target **ships**. Those differ exactly at the `include` allowlist, and the gap is
+not hypothetical — a relative link into `docs/` was written into the README during
+this release's restructure and caught by reading. It resolves in a checkout and
+404s from docs.rs. The check reads `cargo package --list` rather than the
+allowlist, because cargo adds `README.md` and the licence files without their
+appearing there.
+
+**Deliberately not reimplemented: the changelog heading check.** The global
+`changelog-protocol` skill already ships one, and a second copy of a rule is free
+to drift from the first — which is the defect this file exists to catch.
+
+**Proved by breaking what it guards**, since a check that passes on a clean tree
+has demonstrated nothing. All nine failure arms were made to fire and the tree
+restored; the list is in the tool's own docstring.
+
+**The first run flagged eleven things and all eleven were wrong**, which is
+recorded rather than quietly fixed, because each correction made the check
+*sharper*: one was `file-plan-issues` quoting `[plan](docs/plans/x.md)` as an
+example of a link you must **not** write — prose about markup quotes the markup —
+and ten were citations into dependencies (`argon2-0.5.3/src/lib.rs:230`,
+`zip-2.4.2/src/result.rs:19`) matched on their basename with the path in front of
+them ignored.
+
+### Changed
+
+**Crate keywords and description, for discoverability by file extension.**
+`keywords` traded `encryption` for `odt`. Five is the crates.io maximum, so this
+was a swap rather than an addition, and the measurement decided it: searching the
+registry returns this crate first for `odf` and `libreoffice` and fifth for
+`opendocument`, but **not in the first twenty for `odt`** — while `encryption`
+is both the most contested term on the registry and already present in the
+description, which crates.io also indexes.
+
+The description gains `.ods` and `.odp` for the same reason, and loses a
+repetition it should not have had: it read *"…package encryption detection,
+decryption and encryption"*.
+
 ### Documentation
 
 **The README's examples are compiled on every CI run.** Nothing checked them
@@ -103,20 +165,6 @@ becoming "the grid above" where a paragraph moved.
 ship, so a relative link would have resolved on GitHub and 404'd from docs.rs
 and crates.io — the one place a reader following a fidelity claim is most likely
 to be standing.
-
-### Changed
-
-**Crate keywords and description, for discoverability by file extension.**
-`keywords` traded `encryption` for `odt`. Five is the crates.io maximum, so this
-was a swap rather than an addition, and the measurement decided it: searching the
-registry returns this crate first for `odf` and `libreoffice` and fifth for
-`opendocument`, but **not in the first twenty for `odt`** — while `encryption`
-is both the most contested term on the registry and already present in the
-description, which crates.io also indexes.
-
-The description gains `.ods` and `.odp` for the same reason, and loses a
-repetition it should not have had: it read *"…package encryption detection,
-decryption and encryption"*.
 
 **The "effort gap, not judgement" claim now carries its proof, and it covers
 Blowfish explicitly.** A 64-bit block cipher looks like something a writer ought
