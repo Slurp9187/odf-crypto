@@ -11,7 +11,7 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
-## [0.1.0-rc.5] — Unreleased
+## [0.1.0-rc.5] - Unreleased
 
 ### Fixed
 
@@ -321,6 +321,54 @@ verdict covers **those exact bytes**: `encrypt` draws a fresh salt and IV per
 call, so regenerating the set moves every sha256 and the row would then describe
 files nobody opened.
 
+**Both project skills are repo-scoped profiles now, and one of them was a
+268-line fork of a global skill it was supposed to defer to.**
+
+`.claude/skills/changelog-protocol/` shared its name with a **global** skill of
+the same name. Two skills with one name is a collision whichever scope wins, and
+here the local copy had stopped being a profile: it restated the invariants, the
+registry axis, the release flow and the tag mechanics that the global skill
+already carried, so the global skill's checker, `references/` and adoption pass
+were unreachable from this repository.
+
+It had also **re-derived one of the global rules and arrived at a weaker
+version**. A long section argued that this changelog's pre-publication dated
+record — everything below the first version heading — must be exempted from the
+checks. The global skill already says *scope every check to the newest section*,
+which covers it and is a rule about every repository rather than about one
+repository's history. Measured: the checker never reaches that record.
+
+Renamed to `odf-crypto-changelog-protocol` and reduced to a 127-line profile
+recording only what is true here — version of record, heading format, release
+marker, registry, what a bump touches, enforcement, exempt history, and what did
+not transfer. `odf-crypto-secure-gate` went from 434 lines to 201 on the same
+reasoning.
+
+**The version headings are now ASCII hyphens**, `## [0.1.0-rc.5] - Unreleased`,
+where every one had been an em dash. This makes the global checker run
+mechanically rather than asking it to accept two spellings — the same argument
+that normalized `rc.1` and `rc.2` from `## v0.1.0-rc.N` to the bracketed form.
+Prose inside entries is untouched; only headings are constrained.
+
+**That normalization came out of a bug found by running the checker**, which is
+the argument for running a tool rather than reading it. Against the em-dashed
+file it reported:
+
+```
+::error file=CHANGELOG.md::no version heading found
+```
+
+on a fully compliant changelog — its heading pattern takes a literal ASCII
+hyphen, so it matched nothing and reported that as a breach. The wrong part was
+the **diagnosis**, not the strictness: *"no version heading found"* reads as
+*your changelog is broken* rather than *one character is not the separator I
+want*, and sends a reader to the wrong file. Reported upstream; the global skill
+now names the near miss instead, and deliberately still refuses the em dash.
+
+Verified after the change: `ok CHANGELOG.md:14 [0.1.0-rc.5] - Unreleased`,
+`v0.1.0-rc.5` absent, which is correct for a line that is cut but unpublished.
+
+
 **A troubleshooting page ships on docs.rs, organised by symptom.**
 `odf_crypto::troubleshooting` is a doc-only module — `//!` docs, no items, no
 runtime cost — covering six symptoms: `BadParameters` and whose rule it was;
@@ -378,9 +426,10 @@ for. The rule cannot close the class — it widens who can catch it from an
 outsider to anyone who reads the paragraph. Framing owed to the
 `msoffice-crypto` session.
 
-Applied immediately: the `changelog-protocol` skill's second invariant is
-restated as *a released version has a dated heading — approximated by the tag*,
-naming both the property and why the tag stands in for it.
+Applied immediately to the changelog protocol's second invariant, restated as
+*a released version has a dated heading — approximated by the tag*, naming both
+the property and why the tag stands in for it. That wording now lives in the
+global `changelog-protocol` skill rather than here — see below.
 
 **Two rules in `CLAUDE.md` were closed against themselves.** Both were found by
 applying the repo's own standards to the repo, and neither is a code change.
@@ -415,11 +464,20 @@ changelog had, and is corrected the same way: the Argon2 attributes are
 LibreOffice's extension, not OASIS's.
 
 **The release workflow is now written down** rather than inferred from git
-history, and lives in a new `changelog-protocol` skill — adapted from
-`msoffice-crypto`'s skill of the same name, not copied. It carries two
-invariants about the tree (the top heading matches `Cargo.toml`; a heading is
-dated if and only if that tag exists), a third about the registry, the
-two-commit open/cut flow, and the tag mechanics.
+history: two invariants about the tree (the top heading matches `Cargo.toml`; a
+heading is dated if and only if that tag exists), a third about the registry,
+the two-commit open/cut flow, and the tag mechanics.
+
+> **Superseded within rc.5, and recorded rather than rewritten.** That reasoning
+> first landed as a repo-local `changelog-protocol` skill adapted from
+> `msoffice-crypto`'s. It should not have: a **global** `changelog-protocol`
+> skill already owned all of it, and the local copy shared its name. A project
+> skill and a user skill with one name is a collision whichever scope wins, and
+> the local file had grown into a 268-line fork that shadowed the global skill's
+> checker, references and adoption pass. `.claude/skills/` now holds a
+> 127-line profile under a repo-scoped name, recording only this repo's answers.
+> The reasoning above is still right; it is simply not this repository's to
+> carry.
 
 The registry axis is an addition, not borrowed: a dated, tagged heading can
 still describe a release nobody can install, because publishing is a separate
@@ -489,7 +547,7 @@ allowlist and names neither — so the documentation items above change nothing 
 consumer compiles. The Fixed section does: two new public error variants and a
 new CLI exit code.
 
-## [0.1.0-rc.4] — 2026-09-20
+## [0.1.0-rc.4] - 2026-09-20
 
 One addition and two hardening fixes. The fixes are both about the same thing —
 what an untrusted package can get this crate to *say*; the addition is about
@@ -717,7 +775,7 @@ message say *wrong password*.
   `argon2-cffi`, and its sweep — S5 negatives included — runs offline. That is
   what makes it runnable in CI, which the old wording argued against.
 
-## [0.1.0-rc.3] — 2026-09-15
+## [0.1.0-rc.3] - 2026-09-15
 
 A dependency upgrade that turned out to carry a confidentiality fix. No public
 API moved: `classify`, `decrypt` and `encrypt` have the signatures `0.1.0-rc.2`
@@ -772,7 +830,7 @@ refused before any key derivation, and a size that *overstates* the real length
 is rejected rather than accepted as a document with a tail of zeros — which is
 what a zero-filled destination would otherwise hand back. Suite 107 → 109.
 
-## [0.1.0-rc.2] — 2026-09-04
+## [0.1.0-rc.2] - 2026-09-04
 
 Adds a command-line front end, and fixes the docs.rs build — which was broken in
 `0.1.0-rc.1` and cannot be repaired there, because a published version is
@@ -833,7 +891,7 @@ suggestion on a near-miss like `--password-en`. The JSON had no defect; it was
 replaced so that a field added later without escaping cannot silently emit
 broken output.
 
-## [0.1.0-rc.1] — 2026-09-04
+## [0.1.0-rc.1] - 2026-09-04
 
 First published release, and a pre-release: the API may change before `0.1.0`. Cargo
 does not match a pre-release from an ordinary requirement, so name the full version —
