@@ -47,7 +47,8 @@ in `decrypt_exit`/`encrypt_exit`'s trailing `_ => EX_MALFORMED`, so the binary
 announced exit 6 — "malformed or hostile package" — for a memory failure, which
 is precisely the "your file is bad" rendering the change exists to prevent. That
 is the **third** variant to fall through that wildcard after
-`EncryptError::Params`; [#40] remains open and is now overdue.
+`EncryptError::Params`, and [#40] is now closed against it — see *The
+exit-code contract is guarded* below.
 
 **What is honestly not proven.** The `try_reserve_exact` failure itself is
 exercised only by an `#[ignore]`d test that drives a real 1 GiB request, and it
@@ -65,8 +66,74 @@ to 4096 rows with wrapped plaintext live throughout. Filed as [#51]. Note
 `MemberPlaintext::try_new_with`'s `try_` names the *fill*, not the allocation;
 it is the site most likely to be mistaken for already-safe.
 
+**The exit-code contract is guarded, in the only place exhaustiveness works.**
+Closes [#40]. Exit codes are a contract — 4 means *wrong password, try again*,
+5 means *refused, you had the wrong file* — and nothing enforced it, which is how
+three variants reached the trailing `_` arm and announced exit 6.
+
+The issue's own prescription does not work, and finding that out is the useful
+part. It said to put an exhaustive `#[cfg(test)]` match beside the mapping,
+because `#[non_exhaustive]` binds only outside the defining crate. The binary is
+outside it: `src/bin/odf-crypto.rs` is a separate crate depending on the library,
+so rustc requires the very `_` arm the canary was meant to catch
+(`error[E0004]: … is marked as non-exhaustive, so a wildcard is necessary`).
+Measured with a throwaway variant added and no code assigned: the binary built
+clean and all three of its canaries passed 20/20, on precisely the defect they
+existed to catch.
+
+So the guard is two halves. **Correctness** in the binary — every variant
+asserted against its documented code, with `Classify` asserted to *delegate*
+rather than pinned to a number that agrees with it today. **Completeness** in the
+library, where the attribute does not apply: three wildcard-free matches that
+stop compiling when a variant appears, mapping to `()` rather than to codes so
+there is no second copy of the mapping free to drift.
+
+**Every bound in `src/limits.rs` now says whose rule it is** ([#52]) — `spec`,
+`LibreOffice`, `hard`, or `policy` — because the recurring defect here is not a
+wrong number but a number whose authority nobody can name, and a policy cap
+reported as a format rule tells a user their file is invalid when it is not.
+**No value moved**, verified mechanically: the diff changes no `pub(crate) const`
+line. Labelling is what decides which values should move, and doing both at once
+makes the labels post-hoc justifications for numbers already chosen.
+
+Every MAX in the file turned out to be policy. `ARGON2_MAX_M_COST_KIB` **lost its
+justification** — its only stated basis was that the two implementations diverge
+at allocation failure, and the `try_reserve_exact` fix above removed that
+divergence. `ARGON2_MAX_T_COST` was never the same argument and the decrypt plan
+conflated them: `t` allocates nothing, so there was never an abort to avoid.
+`PBKDF2_MAX_ITER` derives a **read** ceiling from LibreOffice's **write** default
+(`ZipPackage.cxx:1400`) while LibreOffice imposes no read ceiling at all. What
+would justify those two is a measured time budget; it has not been taken, and the
+comments now say so rather than inventing one.
+
+**The `cli` configuration now runs in CI, where it never had** ([#54]).
+`grep -rn 'cli' .github/workflows/` matched only the word "clippy". 52 tests had
+therefore never run on a runner — including the two pinning `--password`'s
+absence from every help output and the one pinning exit code 4 — and the binary
+was never linted at `-D warnings` in any job. `MSRV` and `cargo package` moved to
+`cli` as well: the latter's comment claimed `crypto-ops` gave "the largest source
+set" when `required-features = ["cli"]` meant it never compiled `src/bin/` at
+all, proven by packaging a tarball whose binary does not compile and watching the
+job stay green.
+
+Still not guarded, measured rather than assumed: `cargo package` verification
+does not build `tests/` under any feature flag, so the allowlist's `tests/cli.rs`
+and `tests/goldens/*.odt` entries are unchecked and `CLAUDE.md`'s claim that
+without them the published crate fails `cargo test` is unproven. Filed as [#53]
+and marked unproven in place.
+
+**The plan governing this line is in the repository** —
+`docs/plans/rc5-bounds-and-guards-2026-09-20.md` — which it had not been for the
+first three pull requests of rc.5. It records its own lateness rather than
+back-dating itself, carries the two off-plan items above rather than absorbing
+them, and leaves the open decision on the three unmeasured policy caps where it
+belongs, with the maintainer.
+
 [#40]: https://github.com/Slurp9187/odf-crypto/issues/40
 [#51]: https://github.com/Slurp9187/odf-crypto/issues/51
+[#52]: https://github.com/Slurp9187/odf-crypto/pull/52
+[#53]: https://github.com/Slurp9187/odf-crypto/issues/53
+[#54]: https://github.com/Slurp9187/odf-crypto/pull/54
 
 ### Documentation
 
