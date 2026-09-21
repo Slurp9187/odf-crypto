@@ -29,7 +29,7 @@
 //! | `ARGON2_MAX_M_COST_KIB_WRITE` | hard | `i32::MAX`, the manifest field's width — a caller's own choice |
 //! | `ARGON2_MAX_M_COST_KIB_READ` | **policy** | 1 GiB — what an *untrusted* manifest may spend |
 //! | `ARGON2_MAX_T_COST` | **policy** | kept deliberately: a DoS bound on `t × m`, not a margin |
-//! | `PBKDF2_MAX_ITER` | **policy** | derived from LO's *write* default, not any read limit |
+//! | `PBKDF2_MAX_ITER` | **policy** | ~19–33 s for one row, measured — see its own docs |
 //! | `MAX_ENCRYPTED_ENTRIES` | policy | nothing in the format caps manifest rows |
 //! | `MANIFEST_READ_CAP`, `MIMETYPE_CEILING` | policy | resource bounds of ours |
 //! | `PAYLOAD_CEILING` and its aliases | policy | see the note at its definition |
@@ -117,29 +117,64 @@ mod crypto {
     /// what a missing attribute becomes (`""` → `toInt32` → 0); classify still
     /// accepts that row, decrypt must not run HMAC-SHA1 zero times.
     pub(crate) const PBKDF2_MIN_ITER: u32 = 1;
-    /// Inclusive ceiling on `manifest:iteration-count`. **Policy, and the
-    /// weakest-founded bound in this file.**
+    /// Inclusive ceiling on `manifest:iteration-count`. **Policy, and as of
+    /// `0.1.0-rc.6` it finally has the measured budget it always lacked.**
     ///
-    /// The 600_000 it is derived from is what LibreOffice *writes*
-    /// (`ZipPackage.cxx:1400`, inside the save path); LibreOffice imposes no
-    /// ceiling at all on *read* — `ManifestImport.cxx:272-274` stores
-    /// `toInt32()` with no comparison, and `rtl_digest_PBKDF2`
-    /// (`sal/rtl/digest.cxx:1825-1838`) validates only pointers. A write-side
-    /// default does not constrain readers, and deriving a read ceiling from one
-    /// was the error.
+    /// LibreOffice imposes no read ceiling at all — `ManifestImport.cxx:272-274`
+    /// stores `toInt32()` with no comparison, and `rtl_digest_PBKDF2`
+    /// (`sal/rtl/digest.cxx:1825-1838`) validates only pointers. The old value
+    /// was derived from the 600_000 LibreOffice *writes*
+    /// (`ZipPackage.cxx:1400`, inside the save path), and a write-side default
+    /// does not constrain readers. That was the error.
     ///
-    /// An earlier version of this comment also justified the exponent by
-    /// analogy to [`ARGON2_MAX_M_COST_KIB_READ`] being "the same order of margin".
-    /// That analogy now points at nothing: the Argon2 cap's own basis was
-    /// removed in `0.1.0-rc.5` (see the module docs), and it was never the same
-    /// kind of thing — `m` bought memory, which could abort; iterations buy
-    /// time, which cannot.
+    /// # The budget, measured
     ///
-    /// What would justify a number here is a measured time budget — "N seconds
-    /// of HMAC-SHA1 on reference hardware is the longest single-row stall this
-    /// crate accepts". That measurement has not been taken, and until it is,
-    /// this is a round number.
-    pub(crate) const PBKDF2_MAX_ITER: u32 = 1 << 23;
+    /// `pbkdf2` 0.12.2 / `sha1` 0.10.7 through this crate's own `derive_key`,
+    /// release profile, Intel i7-10510U (4C/8T, 15 W mobile):
+    ///
+    /// | `iteration-count` | one row, 32-byte key |
+    /// | --- | --- |
+    /// | 100_000 — LibreOffice per-entry write | 0.14–0.19 s |
+    /// | 600_000 — LibreOffice wholesome write | ~1.1 s |
+    /// | 10_000_000 — **this ceiling** | **~19–33 s** |
+    ///
+    /// **So the budget is: one row, tens of seconds, on a slow laptop.** That is
+    /// the sentence this constant needed and did not have.
+    ///
+    /// # Why one row is the whole threat
+    ///
+    /// A per-entry package may carry up to [`MAX_ENCRYPTED_ENTRIES`] rows and
+    /// `decrypt` derives a key for each, so the arithmetic suggests a 4096×
+    /// multiplier. **It is not reachable.** The loop propagates with `?`, so a
+    /// caller without the password pays for exactly one derivation and then
+    /// stops. Measured through the public API with a wrong password: 1 row
+    /// 24–30 s, 8 rows 37.8 s, 64 rows 21.8 s — i.e. flat. On a real golden the
+    /// correct password runs all five rows (15.70 s) and a wrong one runs a
+    /// single KDF (2.47 s).
+    ///
+    /// The aggregate is therefore a cost paid by someone who already holds the
+    /// password, which is not a threat. Recorded because the multiplier is the
+    /// obvious argument for a tighter cap and it does not survive measurement.
+    ///
+    /// # Why 10_000_000 and not `1 << 23`
+    ///
+    /// The old `1 << 23` = 8_388_608 refused NIST SP 800-132 §5.2's own example
+    /// — *"an iteration count of 10,000,000 may be appropriate"* — for a file
+    /// LibreOffice would open, to save about two seconds. A round exponent that
+    /// rejects a cited figure is the same shape of mistake as deriving a read
+    /// ceiling from a write default. Nothing real writes above 600_000, so this
+    /// refuses no current producer either way; the difference is which number
+    /// can be defended.
+    ///
+    /// # The second dial, which this constant does not bound
+    ///
+    /// `manifest:key-size` multiplies the same work: PBKDF2 emits
+    /// `ceil(dkLen / 20)` HMAC-SHA1 blocks, so 16/32/64 bytes cost 1/2/4×.
+    /// At this ceiling a 64-byte key is ~29–39 s rather than ~19–33 s. Bounded
+    /// separately by [`DERIVED_KEY_MAX_LEN`], and worth knowing when reading the
+    /// table above as though it were the worst case. It is the worst case for
+    /// *this* dial only.
+    pub(crate) const PBKDF2_MAX_ITER: u32 = 10_000_000;
 
     /// Inclusive floor on Argon2 `t` / `m` / `p`. Manifest import already
     /// requires all three `> 0` for a complete row; decrypt re-checks so a
