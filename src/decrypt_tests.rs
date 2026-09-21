@@ -1054,6 +1054,135 @@ fn every_allocation_site_renders_distinctly() {
     );
 }
 
+// --- #48: the rewrite's read error is unreachable, and this keeps it so -----
+
+/// A complete per-entry manifest: one latch row on `content.xml` with a full
+/// `encryption-data`, so `parse_manifest` yields a row and `classify` reports
+/// [`Mode::PerEntry`].
+fn complete_per_entry_manifest() -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2">
+ <manifest:file-entry manifest:full-path="/" manifest:version="1.2" manifest:media-type="{mime}"/>
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml" manifest:size="64">
+  <manifest:encryption-data manifest:checksum-type="{sha1_1k}" manifest:checksum="{b64}">
+   <manifest:algorithm manifest:algorithm-name="{aes}" manifest:initialisation-vector="{b64}"/>
+   <manifest:start-key-generation manifest:start-key-generation-name="{sha1}"/>
+   <manifest:key-derivation manifest:key-derivation-name="{pbkdf2}" manifest:salt="{b64}" manifest:iteration-count="1024" manifest:key-size="32"/>
+  </manifest:encryption-data>
+ </manifest:file-entry>
+</manifest:manifest>
+"#,
+        mime = crate::test_support::MIME_TEXT,
+        sha1_1k = crate::uris::SHA1_1K_NAME,
+        aes = crate::uris::AES256_URL,
+        sha1 = crate::uris::SHA1_NAME,
+        pbkdf2 = crate::uris::PBKDF2_NAME,
+        b64 = crate::test_support::B64,
+    )
+}
+
+/// **The guard behind [`DecryptError::Zip`]'s "why it is not elided" section.**
+///
+/// That variant can carry a `quick-xml` error whose payload is an element name
+/// taken from the document, unbounded — the same shape `DetectError::Inconsistent`
+/// was elided for. It is *not* elided here, on the argument that the path cannot
+/// be reached: `parse_manifest` maps any read error to an empty row list,
+/// `classify` then reports `Mode::Plain`, and `decrypt` refuses that with
+/// `NotEncrypted` before the rewrite runs.
+///
+/// That argument rests on quick-xml 0.38.4 internals — specifically that
+/// `expand_empty_elements`, the only configuration difference between the two
+/// readers, cannot change *which* inputs are ill-formed. A dependency bump could
+/// falsify it with no diff in this crate at all, which is exactly the kind of
+/// claim that should not live only in prose.
+///
+/// So: mutate a complete manifest every way that is cheap, and assert the
+/// implication directly. **Any failure here means the elision is now required.**
+#[test]
+fn classify_accepting_a_manifest_implies_the_rewrite_accepts_it() {
+    let base = complete_per_entry_manifest();
+
+    // The premise. If this stops holding the corpus below is vacuous — every
+    // mutation would trivially satisfy an implication whose antecedent is never
+    // true — so it is asserted rather than assumed.
+    assert!(
+        !crate::manifest::parse_manifest(base.as_bytes()).is_empty(),
+        "baseline manifest must yield rows, or this test proves nothing"
+    );
+    assert!(crate::decrypt::strip_manifest(base.as_bytes()).is_ok());
+
+    let injections = [
+        "<x/>",
+        "</x>",
+        "<x>",
+        "<a/></a>",
+        "<a></a>",
+        "<a/><a/>",
+        "<!--c-->",
+        "<?pi?>",
+        "<a/></b>",
+        "</a>",
+        "<a></b>",
+        "&",
+        "<![CDATA[]]>",
+        "<a/>t",
+        "</manifest:manifest>",
+        "<manifest:file-entry/>",
+        "]]>",
+        "<!DOCTYPE m>",
+    ];
+
+    let mut candidates: Vec<String> = Vec::new();
+    // Truncation at every char boundary: catches unterminated everything.
+    for i in 0..base.len() {
+        if base.is_char_boundary(i) {
+            candidates.push(base[..i].to_string());
+        }
+    }
+    // Injection at every inter-tag boundary, which is where a manifest's
+    // structure can actually be perturbed.
+    for (i, _) in base.match_indices('>') {
+        for inj in injections {
+            let mut m = String::with_capacity(base.len() + inj.len());
+            m.push_str(&base[..=i]);
+            m.push_str(inj);
+            m.push_str(&base[i + 1..]);
+            candidates.push(m);
+        }
+    }
+
+    let mut antecedent_true = 0usize;
+    let mut strip_refused = 0usize;
+    for m in &candidates {
+        let rows_exist = !crate::manifest::parse_manifest(m.as_bytes()).is_empty();
+        let strip_ok = crate::decrypt::strip_manifest(m.as_bytes()).is_ok();
+        if !strip_ok {
+            strip_refused += 1;
+        }
+        if rows_exist {
+            antecedent_true += 1;
+            assert!(
+                strip_ok,
+                "REACHABLE: classify accepts this manifest and the rewrite refuses it, \
+                 so DecryptError::Zip can carry unbounded document text and must now be \
+                 elided (see its rustdoc). Manifest:\n{m}"
+            );
+        }
+    }
+
+    // Coverage, not just a pass: a corpus that never exercised either side of
+    // the implication would pass silently and mean nothing.
+    assert!(
+        antecedent_true > 100,
+        "too few mutations kept classify happy ({antecedent_true}); corpus is not exercising the implication"
+    );
+    assert!(
+        strip_refused > 100,
+        "too few mutations made the rewrite refuse ({strip_refused}); corpus is not hostile enough"
+    );
+}
+
 // --- CLI exit-code tripwire (#40) ----------------------------------------
 
 /// Every [`DecryptError`] variant has an exit code assigned in `src/bin/odf-crypto.rs`
