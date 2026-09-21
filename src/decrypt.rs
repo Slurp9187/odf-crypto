@@ -724,6 +724,17 @@ fn derive_key(
 ) -> Result<DerivedKey, DecryptError> {
     let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
+    // Unreachable from the only current caller, and kept deliberately. Since #79
+    // `decrypt_member` screens this same field against the row's cipher, and every
+    // length that screen admits -- 16/24/32, or Blowfish's 4..=56 -- already sits
+    // inside this range, so nothing gets here to fail it.
+    //
+    // It stays because it is *this function's* precondition rather than that one's:
+    // `try_zeroed(n)` below allocates from `n`, and a second caller added later
+    // would otherwise inherit an unguarded `i32` straight from a manifest. Said
+    // out loud rather than left to be rediscovered, because an unreachable guard
+    // that reads as live is how the next person concludes the length is checked
+    // here and removes the screen.
     if !(DERIVED_KEY_MIN_LEN..=DERIVED_KEY_MAX_LEN).contains(&n) {
         return Err(DecryptError::BadParameters(format!(
             "derived_key_len {n} outside {DERIVED_KEY_MIN_LEN}..={DERIVED_KEY_MAX_LEN}"
@@ -768,12 +779,53 @@ fn derive_key(
     Ok(derived)
 }
 
+/// Can `cipher` take a derived key of `n` bytes?
+///
+/// Knowable from the manifest alone, which is the whole point: the cipher's own
+/// refusal arrives *after* the key derivation that produced the key it refuses,
+/// and a row is free to make that derivation expensive. PBKDF2 emits
+/// `ceil(dkLen / 20)` HMAC-SHA1 blocks, so `manifest:key-size="64"` against an
+/// AES row costs twice what 32 does and is then thrown away -- a multiplier the
+/// file was never entitled to spend. See issue #79.
+///
+/// **This is a cost screen, not a fidelity change.** It accepts and refuses
+/// exactly the set the cipher does, so no package's outcome moves; only the
+/// moment of the refusal does. LibreOffice derives first too -- `StaticGetCipher`
+/// tests `m_nDerivedKeySize < 0` and nothing else before deriving
+/// (`ZipFile.cxx:154-157`) -- and that is not a reason to keep the ordering,
+/// because what its behaviour binds is which packages are accepted, and the
+/// timing of an error inside this function is not something a package can
+/// observe.
+///
+/// Kept in step with the cipher by `screen_matches_what_the_cipher_accepts`,
+/// which constructs every variant at every length rather than trusting this
+/// list. A hand-maintained copy of another crate's constraint is a proxy, and
+/// proxies here drift silently.
+fn cipher_accepts_key_len(cipher: Cipher, n: i32) -> bool {
+    match cipher {
+        // NSS picks AES-128/192/256 from the derived key length, so these are the
+        // three the dispatch below can name -- see `decrypt_aes_gcm`.
+        Cipher::AesGcmW3c | Cipher::AesCbcW3c => matches!(n, 16 | 24 | 32),
+        // Blowfish takes a variable key. Measured against `blowfish` 0.9 rather
+        // than read off the algorithm: `4..=56`, which is what
+        // `DERIVED_KEY_MAX_LEN`'s own doc means by "56 is Blowfish's maximum key;
+        // 64 rounds it up".
+        Cipher::BlowfishCfb8 => (4..=56).contains(&n),
+    }
+}
+
 fn decrypt_member(
     row: &EntryEncryption,
     password: &str,
     blob: &[u8],
     limits: &DecryptLimits,
 ) -> Result<DeflatedPlaintext, DecryptError> {
+    if !cipher_accepts_key_len(row.cipher, row.derived_key_len) {
+        return Err(DecryptError::BadParameters(format!(
+            "key length {} cannot be used with {:?}",
+            row.derived_key_len, row.cipher
+        )));
+    }
     let key = derive_key(row, password, limits)?;
     key.with_secret(|k| match row.cipher {
         Cipher::AesGcmW3c => decrypt_aes_gcm(k, row, blob),
