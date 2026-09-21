@@ -260,13 +260,32 @@ that capping's basis — rather than correcting either away. The original paragr
 was wrong when written, because it assumed both implementations failed the same
 way. Its instinct is available again for `m`, and not for `t`.
 
-### 7. Human-openable artifact set — **NOT STARTED, AND IT GATES THE RELEASE**
+### 7. Human-openable artifact set — **BUILT; THE VERDICT IT EXISTS FOR IS STILL OWED**
 
 `tests/goldens/validate_encrypt.py` drives UNO, which is **not** the path a
-double-click takes — no password dialog, no recovery prompt. Produce a durable
-`tests/artifacts/` directory plus a manifest (tuple, password, sha256, expected
-text, what a failure would mean) covering each profile and each boundary tuple,
-for a human to open in LibreOffice. That verdict outranks the harness.
+double-click takes — no password dialog, no recovery prompt. So
+`tests/artifacts/` now holds six sealed documents and a `MANIFEST.md` carrying
+each one's tuple, password, sha256, size, expected text, and **why that file is
+in the set** — plus a failure table mapping what a person would see to what it
+would mean, because "it did not open" is not a diagnosis.
+
+Three things about it are deliberate and easy to get wrong later:
+
+- **It does not ship.** `include` is an allowlist and no pattern names the
+  directory; `cargo package --list` confirms zero entries. These are evidence
+  for a maintainer, not something a consumer compiles.
+- **The generator reads back its own output** through the shipped CLI and checks
+  the text, so the set cannot be committed in a state this crate itself cannot
+  open. That is *not* the verdict — it exercises the same path the suite
+  already does — and `MANIFEST.md` says so in place rather than letting a green
+  generator read as a green release gate.
+- **"Each profile" reduces to one on the write side**, because `encrypt` writes
+  one (#59). The manifest is honest about that and lists the four encrypted
+  goldens as the read-side half, with their passwords, since those are the only
+  human-openable evidence for AES-CBC and Blowfish.
+
+`MANIFEST.md` ends with an empty verdict table. **An empty table means the set
+has not been opened by a human**, which is the state this gate is about.
 
 ## Off-plan work that landed in this line
 
