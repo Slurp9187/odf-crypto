@@ -60,6 +60,48 @@ split, and that neither variant maps to `EX_MALFORMED`. By this repo's own
 standard the guard itself is untested, and saying so is better than implying
 otherwise.
 
+**`DecryptError::Zip` no longer carries the manifest rewrite's serialization
+failures.** Closes [#48]. Its own doc admitted that *"despite the name"* it
+carried every quick-xml failure, and a name that needs a disclaimer is usually a
+name covering two things.
+
+The rewrite's four `write_event` sites are `DecryptError::Internal` now. Its
+writer is a `Vec<u8>`, whose `write_all` is `extend_from_slice` then `Ok(())`, so
+no manifest byte can make them fail — a failure there would blame the package
+for a broken invariant of ours, and the CLI would print exit 6, *"malformed or
+hostile package"*, for it. `encrypt::build_manifest` already mapped the identical
+call to `Internal` with that reasoning written out; two files making one call and
+giving two answers was the defect, and encrypt was right.
+
+**The rewrite's parse failure stays `Zip`, stays un-elided, and now says why.**
+It can carry an element name taken from the document, unbounded — the same shape
+`DetectError::Inconsistent` was elided for. #48 asked for the reachability to be
+*established* rather than assumed, because an elision implies a live threat.
+
+Three independent adversarial searches found no input that `classify` accepts and
+the rewrite then refuses: 1058 structured mutations of a complete per-entry
+manifest, 2,000,000 differential quick-xml token strings across the two readers'
+configurations, and an audit of whether the two paths can resolve to different
+zip members at all. The mechanism is that `parse_manifest` maps **any** read
+error to an empty row list — plus three conditions the rewrite does not have —
+so rows existing means no read error occurred, and no rows means `Mode::Plain`,
+which `decrypt` refuses with `NotEncrypted` before the rewrite runs. The two
+readers differ only in `expand_empty_elements`, and in quick-xml 0.38.4 an
+expanded empty element is pushed onto `opened_starts` and popped by the next read
+*without consuming input*, so the stack every end-tag check consults is identical
+in both modes at every byte boundary.
+
+**That argument is version-scoped, so a test holds it rather than prose.**
+`classify_accepting_a_manifest_implies_the_rewrite_accepts_it` asserts the
+implication directly over a mutation corpus, and asserts its own coverage on both
+sides so it cannot pass vacuously. Verified by breaking the mechanism it rests
+on — changing `parse_manifest` from *discard every row on a read error* to *keep
+the rows collected so far* makes it fail immediately with `REACHABLE`. A
+dependency bump that falsifies the argument now fails the build instead of
+quietly reopening the hole.
+
+[#48]: https://github.com/Slurp9187/odf-crypto/issues/48
+
 **`decrypt`'s remaining allocations sized from untrusted input no longer abort.**
 Closes [#51], and completes what the Argon2 fix above started. The inflate slot
 for a wholesome package, the inflate slot for each member of a per-entry package,
