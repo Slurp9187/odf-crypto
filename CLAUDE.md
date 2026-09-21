@@ -72,6 +72,7 @@ Nothing here restates these. Read them where they live.
 | Changelog invariants, the open/cut release flow, tag mechanics | the **global** `changelog-protocol` skill. [`.claude/skills/odf-crypto-changelog-protocol/SKILL.md`](.claude/skills/odf-crypto-changelog-protocol/SKILL.md) holds only this repo's answers and defers the reasoning there |
 | Why `MIT OR Apache-2.0` is sound against LibreOffice and odfdecrypt | [`docs/LICENSING.md`](docs/LICENSING.md) |
 | Design record for each arc | `docs/plans/<feature>-<yyyy-mm-dd>.md` |
+| The README section order shared with `msoffice-crypto`, and its three slots | [`.claude/skills/odf-crypto-readme-spine/SKILL.md`](.claude/skills/odf-crypto-readme-spine/SKILL.md) |
 | The 54 detection findings, including the 2 refuted | [`docs/audits/classify-lo-fidelity-2026-09-01.md`](docs/audits/classify-lo-fidelity-2026-09-01.md) |
 
 ## Features
