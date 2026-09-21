@@ -40,8 +40,22 @@ cipher stack is opt-in. See [Features](#features).
 was. That asymmetry is an effort gap rather than a judgement — wholesome
 Argon2id/AES-GCM is what current LibreOffice saves by default, so it is what a
 new file should be, and nothing has yet needed a writer for the older two. If
-you need one, say so on the tracker; the primitives are already here, because
-`decrypt` uses them.
+you need one, say so on [the tracker][59]; the primitives are already here,
+because `decrypt` uses them.
+
+**An effort gap in both rows, Blowfish included** — which is worth saying,
+because a 64-bit block cipher looks like something a writer ought to decline.
+Current LibreOffice still *writes* `BLOWFISH_CFB_8`: `objstor.cxx:356-362` sets
+it, SHA-1 and PBKDF2 under the comment *"the default values, that should be used
+for ODF1.1 and older formats"*, and the write path admits exactly three ciphers
+with Blowfish among them (`ZipPackage.cxx:1875-1878`). Pick ODF 1.1 as your save
+format and that is what you get. A refusal here would refuse what the reference
+implementation writes from its own Save dialog — and this crate takes its
+definition of correct from that implementation, so it is not ours to declare.
+The 64-bit block is a property of the cipher and a reason to weigh it, not a
+reason for this crate to decide for you.
+
+[59]: https://github.com/Slurp9187/odf-crypto/issues/59
 
 PGP-encrypted packages are detected and reported (`Classification::pgp_keys`) but
 not decrypted — `DecryptError::UnsupportedPgp`. **That one is not an effort

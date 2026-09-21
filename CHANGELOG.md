@@ -118,6 +118,24 @@ The description gains `.ods` and `.odp` for the same reason, and loses a
 repetition it should not have had: it read *"…package encryption detection,
 decryption and encryption"*.
 
+**The "effort gap, not judgement" claim now carries its proof, and it covers
+Blowfish explicitly.** A 64-bit block cipher looks like something a writer ought
+to decline, so the README said why it is not declined here: current LibreOffice
+still *writes* `BLOWFISH_CFB_8` when the save target is ODF 1.1 or older —
+`objstor.cxx:356-362` sets it under the comment *"the default values, that should
+be used for ODF1.1 and older formats"*, and `ZipPackage.cxx:1875-1878` admits
+exactly three ciphers on write with Blowfish among them.
+
+Refusing it would refuse what the reference implementation writes from its own
+Save dialog. For a crate that takes its definition of correct from that
+implementation, that is a conformance question rather than a judgement call —
+which is the distinction the sibling crate reaches the opposite conclusion from,
+correctly, because its authority is a *specification* and a specification obliges
+no writer to implement all of it.
+
+Raised by the `msoffice-crypto` session as a question about one row of a two-row
+sentence. Answered from the LibreOffice tree rather than from block sizes.
+
 ## [0.1.0-rc.6] - 2026-09-21
 
 ### Fixed
