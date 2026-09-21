@@ -11,6 +11,57 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.7] - Unreleased
+
+### Documentation
+
+**The README's examples are compiled on every CI run.** Nothing checked them
+before — rustdoc documents `src/`, and never opens `README.md`, so an example
+naming a field that had been renamed would have reached a reader with no warning.
+One item at the end of `src/lib.rs` fixes it:
+
+```rust
+#[cfg(all(doctest, feature = "crypto-ops"))]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+```
+
+`cfg(doctest)` is set only while rustdoc **collects** doctests, never while it
+**builds** documentation, so `cargo test --doc` checks the examples and docs.rs
+renders none of the README. `cfg(test)` would be silently wrong: it is not set
+during collection, so the examples would never run while the item still looked
+like a check. Gated on `crypto-ops`, the smallest feature set under which all
+four compile; CI's `test (crypto-ops)` and `test (cli)` jobs both reach it, which
+is what stops the item being inert — and an inert check reads exactly like a
+passing one.
+
+Doctests go 18 → 22. The four examples already had the shape this needs, a
+`fn main() -> Result<…>` rather than hidden `#` lines, so no example changed.
+
+**Found by turning it on: `README.md`'s sample `odf-crypto classify` output was a
+live Rust doctest.** Its fence carried no language tag, and rustdoc treats an
+untagged fence as Rust — so a block of terminal output was compiled and *run*, and
+failed. Tagged ```` ```text ````. Worth stating as a rule rather than a fix: **an
+untagged fence in this README is an executable test**, and the next one added
+without a tag will be too.
+
+The four `rust` fences became `rust,no_run`. They are complete programs that read
+`document.odt`, so they must compile without executing; a doctest that opens a
+file no machine has fails everywhere. This is the one visible change to the
+README's source, and it is the reason the examples could stay as they were.
+
+**The guard was proved by breaking it**, per this repo's rule that a test which
+passes both ways is decoration. Renaming `odf12_fatal` to `odf12_fatl` in the
+README gave:
+
+```text
+test src\lib.rs - ReadmeDoctests (line 180) - compile ... FAILED
+error[E0609]: no field `odf12_fatl` on type `Classification`
+```
+
+which is exactly the defect class this catches: a README describing an API that
+has since moved. Restored afterwards.
+
 ## [0.1.0-rc.6] - 2026-09-21
 
 ### Fixed

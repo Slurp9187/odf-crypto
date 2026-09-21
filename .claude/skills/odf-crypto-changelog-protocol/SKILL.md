@@ -56,7 +56,7 @@ curl -s https://crates.io/api/v1/crates/odf-crypto/versions \
   | python -c "import sys,json;print(' '.join(v['num'] for v in json.load(sys.stdin)['versions']))"
 ```
 
-Published through `0.1.0-rc.4`. `rc.5` is cut but unpublished, which is the expected
+Published through `0.1.0-rc.6`. `rc.7` is open and unpublished, which is the expected
 transient state the global skill describes, not a violation.
 
 ## What a bump touches
