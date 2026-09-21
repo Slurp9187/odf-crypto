@@ -15,6 +15,64 @@ LibreOffice citation and a reproduction for each.
 
 ### Fixed
 
+**New: `DecryptLimits` and `decrypt_with_limits` — generous defaults, and the
+full format range one line away.** The ceilings on what a *package* may ask for
+are values a caller controls now, not constants they cannot reach.
+
+```rust
+decrypt(bytes, password)                                      // the defaults
+decrypt_with_limits(bytes, pw, DecryptLimits::default()
+    .with_argon2_max_t(64))                                   // raise one knob
+decrypt_with_limits(bytes, pw, DecryptLimits::PERMISSIVE)     // the whole format
+```
+
+| field | default | LibreOffice writes |
+| --- | --- | --- |
+| `argon2_max_t` | **10** | 3 |
+| `argon2_max_m_kib` | **1 GiB** | 64 MiB |
+| `argon2_max_p` | **16** | 4 |
+| `pbkdf2_max_iter` | **10,000,000** | 600,000 |
+
+The Argon2 figures are Bitwarden's published maxima — an application's limits on
+its own user's slider, adopted for the one case where this crate is in the same
+position: a number arriving from outside. **They refuse nothing any real
+producer writes.** `PERMISSIVE` sets each field to the manifest attribute's `i32`
+width, which is everything the format can express; the cipher (`m >= 8p`) and the
+host still refuse what they cannot run.
+
+**`t` gained a ceiling on the read path and lost one on the write path**, which
+is the same split `0.1.0-rc.6` already made for `m`. It was `1 << 16` on both.
+
+- Read: **10**. #69 declined to lower it because a "plausible" number would be
+  freshly invented. Bitwarden's 10 is not invented — it is a shipping product's
+  published maximum, chosen after a 1024-pass experiment locked testers out of
+  their vaults for half an hour. That is the justification #69 said was missing.
+- Write: the field width. A cost a caller picks for their own machine is theirs,
+  exactly as `ARGON2_MAX_M_COST_KIB_WRITE` concluded.
+
+**`p` gained a read ceiling at 16.** Before this the only bound was
+`argon2::Params::MAX_P_COST` = 16,777,215 — the cipher's limit, not a judgement
+about untrusted input.
+
+**Why `t` mattered more than its own number suggests.** Argon2's cost is roughly
+`t × m`, and this crate bounded each axis alone without ever looking at the
+product. At `t ≤ 65536` with `m ≤ 1 GiB` a manifest could ask for ~350,000×
+LibreOffice's own work — about **33 hours**, extrapolated from a measured 54.5 s
+at `t = 30, m = 1 GiB`, on a call that cannot be interrupted. At `t = 10` the
+product is ~53×, or roughly 18 seconds, which finally puts it in the same order
+as the PBKDF2 budget measured above on the other KDF.
+
+**Corrected: `ParamsReason::OutOfRange` documented the opposite of what it now
+means.** It read *"This crate declined … do not report it as a format
+violation"*, which was true while `Argon2Params::new` had policy caps. Both are
+gone from the write path, so what remains there is the **format's** rule —
+`positiveInteger` refuses `0` and negatives, and the attribute's `i32` width
+bounds above. A refusal on that side now means the tuple cannot be written into a
+manifest at all, which is the reverse of the old caveat. The policy caps live on
+`DecryptLimits`, where a number arrives from outside and a caller can overrule
+us. Flagged as minor by the audit on [#73](https://github.com/Slurp9187/odf-crypto/pull/73) and left then; a failing test made it
+unavoidable, which is the better outcome.
+
 **`PBKDF2_MAX_ITER` has a measured budget, and moves to 10,000,000.** Closes
 [#68]. It was `1 << 23` (8,388,608), derived by analogy from LibreOffice's
 *write* default of 600,000 — a figure that does not constrain readers, in a bound

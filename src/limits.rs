@@ -28,7 +28,8 @@
 //! | `PBKDF2_MIN_ITER`, `DERIVED_KEY_MIN_LEN` | **policy** | the schema permits `0` and LO accepts it |
 //! | `ARGON2_MAX_M_COST_KIB_WRITE` | hard | `i32::MAX`, the manifest field's width — a caller's own choice |
 //! | `ARGON2_MAX_M_COST_KIB_READ` | **policy** | 1 GiB — what an *untrusted* manifest may spend |
-//! | `ARGON2_MAX_T_COST` | **policy** | kept deliberately: a DoS bound on `t × m`, not a margin |
+//! | `ARGON2_MAX_T_COST_READ`, `ARGON2_MAX_P_COST_READ` | **policy** | 10 and 16, the `t × m` product — overridable |
+//! | `ARGON2_MAX_T_COST_WRITE` | hard | `i32::MAX`, the field width — a caller's own choice |
 //! | `PBKDF2_MAX_ITER` | **policy** | ~19–33 s for one row, measured — see its own docs |
 //! | `MAX_ENCRYPTED_ENTRIES` | policy | nothing in the format caps manifest rows |
 //! | `MANIFEST_READ_CAP`, `MIMETYPE_CEILING` | policy | resource bounds of ours |
@@ -180,36 +181,46 @@ mod crypto {
     /// requires all three `> 0` for a complete row; decrypt re-checks so a
     /// future caller of [`crate::kdf::derive_argon2id`] cannot skip that.
     pub(crate) const ARGON2_MIN_T_COST: u32 = 1;
-    /// Inclusive ceiling on Argon2 `t`. **Policy, kept deliberately** — a
-    /// sanity bound against the expensive direction, not a margin.
+    /// Default ceiling on Argon2 `t` for a **manifest** — the read path.
+    /// Overridable per call; see [`crate::DecryptLimits`].
     ///
-    /// It never had a memory-safety basis: `t` buys time, allocates nothing,
-    /// and `try_reserve` cannot help. `65536` is ~21,800× the `t=3` LibreOffice
-    /// writes, so the decrypt plan's "each >16× anything LO writes" line
-    /// described `m` and was stretched over `t`. It is not a margin and this
-    /// no longer claims to be one.
+    /// **10, and it was `1 << 16` until `0.1.0-rc.6`.** LibreOffice writes
+    /// `t = 3`; RFC 9106 recommends 1 or 3; OWASP says 1–5. 65536 was ~21,800×
+    /// anything real, and #69 declined to lower it on the grounds that a
+    /// "plausible" number would be freshly invented. 10 is not invented: it is
+    /// Bitwarden's published maximum, chosen after a 1024-pass experiment locked
+    /// testers out of their vaults for half an hour. A documented figure from a
+    /// shipping password product is the justification #69 said was missing.
     ///
-    /// **Why keep a bound nothing legitimate reaches.** Because the question is
-    /// `t = 3` against `t = u32::MAX`, and the answer changed when
-    /// [`ARGON2_MAX_M_COST_KIB_WRITE`] stopped being a policy cap. Argon2's cost
-    /// is roughly `t × m`, so on the **write** path — where `m` is now bounded
-    /// only by the host — this is the finite one.
+    /// **Why it mattered more than the number suggests.** Argon2's cost is
+    /// roughly `t × m`, and this crate bounded each axis alone without ever
+    /// looking at the product. With `t ≤ 65536` and `m ≤ 1 GiB` a manifest could
+    /// ask for ~350,000× LibreOffice's own work — about 33 hours, extrapolated
+    /// from a measured 54.5 s at `t = 30, m = 1 GiB`. At `t = 10` the same
+    /// product is ~53×, seconds rather than hours, which is finally the same
+    /// order as [`PBKDF2_MAX_ITER`]'s measured budget on the other KDF.
+    pub(crate) const ARGON2_MAX_T_COST_READ: u32 = 10;
+    /// Ceiling on Argon2 `t` when **this crate's caller** chose it — the write
+    /// path. **`hard`**: the manifest field's own width, as for
+    /// [`ARGON2_MAX_M_COST_KIB_WRITE`].
     ///
-    /// It is **not** the read path's defence, and an earlier draft of this doc
-    /// claimed it was. `t = 65536` is ~21,800× LibreOffice's `t = 3`, and the
-    /// paragraph below argues nothing legitimate reaches it; a bound nothing
-    /// reaches bounds no attacker either. What protects `decrypt` from a hostile
-    /// cost is [`ARGON2_MAX_M_COST_KIB_READ`], which is why that one stayed.
+    /// Not 10. The read cap above protects against a number a *file* picked;
+    /// this one would only second-guess the caller about their own machine,
+    /// which is what `0.1.0-rc.6` removed for `m` and would be inconsistent to
+    /// re-impose here. Bitwarden's 10 is an **application** limiting its user's
+    /// slider; odf-crypto is the library underneath such an application, and
+    /// the slider is the caller's to bound.
+    pub(crate) const ARGON2_MAX_T_COST_WRITE: u32 = i32::MAX as u32;
+    /// Default ceiling on Argon2 `p` (lanes) for a **manifest**. Overridable;
+    /// see [`crate::DecryptLimits`].
     ///
-    /// **Not lowered to a "plausible" range**, though RFC 9106 recommends `t`
-    /// of 1 or 3 and OWASP 1–5. Picking 32 or 64 would mint a fresh
-    /// under-founded number and would start refusing a caller who followed
-    /// RFC 9106 step 10 — *raise `t` until the time budget is met* — on a
-    /// machine with CPU to spare. The owner's *never block a construct* ruling
-    /// is about **weak** tuples; a ceiling on the expensive direction is
-    /// denial-of-service defence, which is a different axis. Lowering is the
-    /// option that needs a measurement; keeping does not.
-    pub(crate) const ARGON2_MAX_T_COST: u32 = 1 << 16;
+    /// **16**, Bitwarden's published maximum, and new in `0.1.0-rc.6` — before
+    /// it the only bound was `argon2::Params::MAX_P_COST`, which is `0xFFFFFF`
+    /// (16,777,215) and is the cipher's limit rather than a judgement about
+    /// untrusted input. LibreOffice writes `p = 4`; RFC 9106 recommends 4.
+    /// Lanes past the core count add coordination rather than strength, so this
+    /// refuses nothing a real producer writes.
+    pub(crate) const ARGON2_MAX_P_COST_READ: u32 = 16;
     /// Inclusive floor on Argon2 `m`, in KiB. **Spec**: `positiveInteger`, and
     /// LibreOffice checks `0 < m`. Deliberately looser than argon2's own
     /// `MIN_M_COST` of 8, so *"zero is not a positive integer"* (the format's

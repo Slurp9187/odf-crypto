@@ -6,7 +6,9 @@ use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 use crate::classify::classify;
-use crate::decrypt::{classification_metadata_unchanged, decrypt, AllocationSite, DecryptError};
+use crate::decrypt::{
+    classification_metadata_unchanged, decrypt, decrypt_with_limits, AllocationSite, DecryptError,
+};
 use crate::test_support::{
     append_stored_member, load_golden, pgp_two_row_zip, read_member, zip_namelist,
     NONASCII_PASSWORD, PASSWORD,
@@ -922,7 +924,7 @@ fn argon2_block_buffer_reports_host_capacity_not_an_abort() {
         1,                                                // t: minimum iterations
         crate::limits::ARGON2_MAX_M_COST_KIB_READ as i32, // 1 GiB: the read-path ceiling
         1,                                                // p: minimum lanes
-        crate::limits::ARGON2_MAX_M_COST_KIB_READ,        // the ceiling decrypt passes
+        &crate::DecryptLimits::default(),                 // the ceilings decrypt passes
         &mut out,
     );
     let requested_bytes = match result {
@@ -1202,6 +1204,104 @@ fn the_pbkdf2_ceiling_is_nists_figure_not_a_round_exponent() {
         10_000_000,
         "NIST SP 800-132 5.2's own example; `1 << 23` = 8_388_608 refused it.          Pinning the exact value also pins that it is above the 600_000          LibreOffice writes -- clippy rejects that as a separate assertion,          because both sides are consts and it is decided at compile time."
     );
+}
+
+// --- DecryptLimits: the override, and what the defaults refuse --------------
+
+/// The defaults must not refuse anything LibreOffice writes. If they do, the
+/// crate has stopped being able to open real files, which is the only failure
+/// mode that matters here.
+#[test]
+fn the_default_limits_accept_every_real_libreoffice_golden() {
+    for name in [
+        "lo-wholesome-gcm-argon2.odt",
+        "lo-legacy-aes-cbc.odt",
+        "aoo-blowfish-pbkdf2.odt",
+        "lo-opens-our-encrypt-output.odt",
+    ] {
+        let pw = if name.contains("nonascii") {
+            NONASCII_PASSWORD
+        } else {
+            PASSWORD
+        };
+        decrypt(&load_golden(name), pw)
+            .unwrap_or_else(|e| panic!("{name}: default limits must open real output: {e}"));
+    }
+}
+
+/// A cost above the defaults is refused, and the SAME file opens once the
+/// caller raises the ceiling. That pairing is the whole point: the refusal is
+/// this crate declining, not the file being malformed.
+#[test]
+fn a_raised_ceiling_opens_what_the_default_refuses() {
+    // t = 12 is above the default of 10 and far below anything expensive.
+    fn set_argon2_t_to_12(xml: &[u8]) -> Vec<u8> {
+        String::from_utf8_lossy(xml)
+            .replace(
+                "loext:argon2-iterations=\"3\"",
+                "loext:argon2-iterations=\"12\"",
+            )
+            .into_bytes()
+    }
+    let blob = mutate_zip(
+        "lo-wholesome-gcm-argon2.odt",
+        None,
+        None,
+        Some(set_argon2_t_to_12 as Rewrite),
+    );
+
+    // The fixture has to still be a complete Argon2 row, or this proves nothing.
+    let class = classify(&blob).expect("still classifies");
+    assert!(matches!(
+        class.encrypted_entries[0].kdf,
+        Kdf::Argon2id { t: 12, .. }
+    ));
+
+    let err = decrypt(&blob, PASSWORD).expect_err("12 is above the default ceiling of 10");
+    assert!(
+        matches!(err, DecryptError::BadParameters(_)),
+        "a ceiling of ours is BadParameters, got {err:?}"
+    );
+
+    // Same bytes, raised ceiling. It will not decrypt -- the password no longer
+    // matches a manifest whose t was rewritten -- but it must get PAST the
+    // ceiling, which is what WrongPassword proves and BadParameters would not.
+    let err = decrypt_with_limits(
+        &blob,
+        PASSWORD,
+        crate::DecryptLimits::default().with_argon2_max_t(16),
+    )
+    .expect_err("the rewritten manifest cannot actually decrypt");
+    assert!(
+        matches!(err, DecryptError::WrongPassword),
+        "raising the ceiling must let the derivation run, got {err:?}"
+    );
+}
+
+/// `PERMISSIVE` is not "no limits" -- the cipher and the host still refuse.
+#[test]
+fn permissive_still_defers_to_the_cipher_and_the_host() {
+    let l = crate::DecryptLimits::PERMISSIVE;
+    assert_eq!(l.argon2_max_t, i32::MAX as u32);
+    assert_eq!(l.argon2_max_m_kib, i32::MAX as u32);
+
+    // argon2's own floor, which no ceiling of ours can waive.
+    let salt = [0u8; 16];
+    let mut out = [0u8; 32];
+    let err = crate::kdf::derive_argon2id(b"probe", &salt, 1, 8, 4, &l, &mut out)
+        .expect_err("m = 8 with p = 4 is below argon2's own m >= 8p");
+    assert!(matches!(err, crate::kdf::KdfError::Params(_)), "{err:?}");
+}
+
+/// The defaults are the constants, so raising one in `limits.rs` cannot leave
+/// the documented table behind.
+#[test]
+fn the_defaults_are_the_constants() {
+    let d = crate::DecryptLimits::default();
+    assert_eq!(d.argon2_max_t, 10);
+    assert_eq!(d.argon2_max_m_kib, 1 << 20);
+    assert_eq!(d.argon2_max_p, 16);
+    assert_eq!(d.pbkdf2_max_iter, 10_000_000);
 }
 
 // --- CLI exit-code tripwire (#40) ----------------------------------------

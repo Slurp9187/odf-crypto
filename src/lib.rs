@@ -109,7 +109,7 @@ pub use types::{
 };
 
 #[cfg(feature = "crypto-ops")]
-pub use decrypt::{decrypt, AllocationSite, DecryptError};
+pub use decrypt::{decrypt, decrypt_with_limits, AllocationSite, DecryptError, DecryptLimits};
 #[cfg(feature = "crypto-ops")]
 pub use encrypt::{
     encrypt, encrypt_with_params, Argon2Axis, Argon2Params, EncryptError, ParamsReason,

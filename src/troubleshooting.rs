@@ -32,13 +32,38 @@
 //! | 1. the format forbids it | OASIS or LibreOffice says no | bounds labelled `spec` / `LibreOffice` |
 //! | 2. the cipher or KDF cannot run it | a block size, an IV length, `argon2`'s own `m >= 8p` | bounds labelled `hard` |
 //! | 3. **this host** cannot afford it | not this variant at all | [`crate::DecryptError::HostCannotAllocate`] |
-//! | 4. spec-legal, runnable, **and this crate declined** | a policy cap of ours | bounds labelled `policy` |
+//! | 4. spec-legal, runnable, **and this crate declined** | a policy cap of ours | bounds labelled `policy` — and see below |
 //!
 //! **Case 4 is the one worth knowing about**, because reporting a policy cap as
 //! case 1 tells a user their file is invalid when it is not. These are ours,
 //! and the format permits more: `PBKDF2_MAX_ITER`, `ARGON2_MAX_T_COST`,
 //! `MAX_ENCRYPTED_ENTRIES`, and the payload ceilings. A file refused by one of
 //! them may open perfectly in LibreOffice.
+//!
+//! **Case 4 is the one you can do something about.** Since `0.1.0-rc.6` the
+//! policy caps that apply to a package's own cost parameters are values on
+//! [`crate::DecryptLimits`], not constants you cannot reach:
+//!
+//! ```
+//! # #[cfg(feature = "crypto-ops")] {
+//! use odf_crypto::{decrypt_with_limits, DecryptLimits};
+//!
+//! # fn demo(bytes: &[u8], pw: &str) -> Result<(), odf_crypto::DecryptError> {
+//! // Raise one ceiling, having decided this file is worth it.
+//! let plain = decrypt_with_limits(bytes, pw, DecryptLimits::default().with_argon2_max_t(64))?;
+//! # let _ = plain;
+//! # Ok(())
+//! # }
+//! # }
+//! ```
+//!
+//! The defaults refuse nothing LibreOffice writes — `t = 3`, `m = 64 MiB`,
+//! `p = 4`, at most 600,000 PBKDF2 iterations, all comfortably inside them — so
+//! a file that trips one came from somewhere else. `DecryptLimits::PERMISSIVE`
+//! accepts everything the format can express, and is a decision to spend
+//! whatever an unknown file asks for: a single Argon2 row at the format's
+//! widths extrapolates to about **33 hours**, and `decrypt` cannot be
+//! interrupted.
 //!
 //! Argon2 memory split in two in `0.1.0-rc.6` and is on the list only for the
 //! direction you are reading about here. A manifest's `m` is still capped at

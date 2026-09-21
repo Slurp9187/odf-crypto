@@ -31,8 +31,9 @@ use crate::classify::{classify, member_matches_path, zip_entry_name};
 use crate::kdf::KdfError;
 use crate::limits::{
     AES_BLOCK_LEN, AES_CBC_IV_LEN, AES_GCM_IV_LEN, AES_GCM_TAG_LEN, ARGON2_MAX_M_COST_KIB_READ,
-    BLOWFISH_IV_LEN, CHECKSUM_WINDOW, CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN,
-    DERIVED_KEY_MIN_LEN, INFLATE_CEILING, MAX_ENCRYPTED_ENTRIES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
+    ARGON2_MAX_P_COST_READ, ARGON2_MAX_T_COST_READ, BLOWFISH_IV_LEN, CHECKSUM_WINDOW,
+    CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN, DERIVED_KEY_MIN_LEN, INFLATE_CEILING,
+    MAX_ENCRYPTED_ENTRIES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
 };
 use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext};
 use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode};
@@ -319,6 +320,129 @@ fn try_copy_of(src: &[u8], site: AllocationSite) -> Result<Vec<u8>, DecryptError
     Ok(v)
 }
 
+/// Ceilings [`decrypt`] applies to cost parameters **a package chose**.
+///
+/// A manifest names how much work its key derivation takes, and `decrypt` must
+/// do that work before it can tell whether the password is even right. So the
+/// file, not the caller, picks the cost of an attempt. These are the defaults
+/// that bounds it, and [`decrypt_with_limits`] is how a caller who knows what
+/// they are opening raises them.
+///
+/// **The defaults refuse nothing any real producer writes.** LibreOffice's own
+/// output is `t = 3`, `m = 64 MiB`, `p = 4`, and at most 600,000 PBKDF2
+/// iterations — every one comfortably inside these.
+///
+/// | field | default | LibreOffice writes |
+/// | --- | --- | --- |
+/// | [`argon2_max_t`](Self::argon2_max_t) | 10 | 3 |
+/// | [`argon2_max_m_kib`](Self::argon2_max_m_kib) | 1 GiB | 64 MiB |
+/// | [`argon2_max_p`](Self::argon2_max_p) | 16 | 4 |
+/// | [`pbkdf2_max_iter`](Self::pbkdf2_max_iter) | 10,000,000 | 600,000 |
+///
+/// The Argon2 defaults are Bitwarden's published maxima. They are an
+/// application's limits on its own user's slider, adopted here for the one case
+/// where this crate is in the same position: a number arriving from outside.
+///
+/// # Why `t` and `m` are not independent
+///
+/// Argon2's cost is roughly `t × m`, and bounding each alone does not bound the
+/// product. Before `0.1.0-rc.6` this crate allowed `t ≤ 65536` with
+/// `m ≤ 1 GiB` — about **350,000× LibreOffice's own work**, extrapolating to
+/// ~33 hours from a measured 54.5 s at `t = 30, m = 1 GiB`. Neither ceiling
+/// looked wrong on its own. At `t = 10` the product is ~53×, which is seconds.
+///
+/// # Raising them
+///
+/// ```
+/// # #[cfg(feature = "crypto-ops")] {
+/// use odf_crypto::{decrypt_with_limits, DecryptLimits};
+///
+/// # fn demo(bytes: &[u8], pw: &str) -> Result<(), odf_crypto::DecryptError> {
+/// // A file from a tool that derives harder than LibreOffice does.
+/// let limits = DecryptLimits::default().with_argon2_max_t(64);
+/// let plain = decrypt_with_limits(bytes, pw, limits)?;
+///
+/// // Or: accept anything the format can express. Opt in knowingly --
+/// // on an untrusted file this is a decision to spend whatever it asks for.
+/// let plain = decrypt_with_limits(bytes, pw, DecryptLimits::PERMISSIVE)?;
+/// # let _ = plain;
+/// # Ok(())
+/// # }
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DecryptLimits {
+    /// Inclusive ceiling on `loext:argon2-iterations`.
+    pub argon2_max_t: u32,
+    /// Inclusive ceiling on `loext:argon2-memory`, in KiB.
+    pub argon2_max_m_kib: u32,
+    /// Inclusive ceiling on `loext:argon2-lanes`.
+    pub argon2_max_p: u32,
+    /// Inclusive ceiling on `manifest:iteration-count` for a PBKDF2 row.
+    pub pbkdf2_max_iter: u32,
+}
+
+impl Default for DecryptLimits {
+    fn default() -> Self {
+        Self {
+            argon2_max_t: ARGON2_MAX_T_COST_READ,
+            argon2_max_m_kib: ARGON2_MAX_M_COST_KIB_READ,
+            argon2_max_p: ARGON2_MAX_P_COST_READ,
+            pbkdf2_max_iter: PBKDF2_MAX_ITER,
+        }
+    }
+}
+
+impl DecryptLimits {
+    /// Everything the format can express: each field at the width of the
+    /// manifest attribute behind it.
+    ///
+    /// **This is not "no limits".** The cipher still refuses what it cannot run
+    /// (`m >= 8p`, `p <= argon2::Params::MAX_P_COST`) and the host still refuses
+    /// what it cannot allocate, as [`DecryptError::HostCannotAllocate`]. What it
+    /// removes is this crate's judgement about how much work a file may ask for.
+    ///
+    /// Measured on one laptop, with these: a single Argon2 row at
+    /// `t = 65536, m = 1 GiB` extrapolates to ~33 hours, and `decrypt` cannot be
+    /// interrupted. Reach for it when you know the producer, not to make a
+    /// stubborn file open.
+    pub const PERMISSIVE: Self = Self {
+        argon2_max_t: i32::MAX as u32,
+        argon2_max_m_kib: i32::MAX as u32,
+        argon2_max_p: i32::MAX as u32,
+        pbkdf2_max_iter: i32::MAX as u32,
+    };
+
+    /// Raise or lower the Argon2 `t` ceiling.
+    #[must_use]
+    pub fn with_argon2_max_t(mut self, t: u32) -> Self {
+        self.argon2_max_t = t;
+        self
+    }
+
+    /// Raise or lower the Argon2 `m` ceiling, in KiB.
+    #[must_use]
+    pub fn with_argon2_max_m_kib(mut self, m_kib: u32) -> Self {
+        self.argon2_max_m_kib = m_kib;
+        self
+    }
+
+    /// Raise or lower the Argon2 `p` ceiling.
+    #[must_use]
+    pub fn with_argon2_max_p(mut self, p: u32) -> Self {
+        self.argon2_max_p = p;
+        self
+    }
+
+    /// Raise or lower the PBKDF2 iteration ceiling.
+    #[must_use]
+    pub fn with_pbkdf2_max_iter(mut self, iter: u32) -> Self {
+        self.pbkdf2_max_iter = iter;
+        self
+    }
+}
+
 /// Decrypt an LO-encrypted ODF package to the plaintext ODF zip LibreOffice
 /// would open after a correct password.
 ///
@@ -367,6 +491,22 @@ fn try_copy_of(src: &[u8], site: AllocationSite) -> Result<Vec<u8>, DecryptError
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
+    decrypt_with_limits(bytes, password, DecryptLimits::default())
+}
+
+/// [`decrypt`], with the ceilings on what a package may ask for under the
+/// caller's control. See [`DecryptLimits`].
+///
+/// # Errors
+///
+/// Identical to [`decrypt`]. A cost parameter outside `limits` is
+/// [`DecryptError::BadParameters`], which says *this crate declined*, not that
+/// the file is malformed — with `limits` raised, the same file may open.
+pub fn decrypt_with_limits(
+    bytes: &[u8],
+    password: &str,
+    limits: DecryptLimits,
+) -> Result<Vec<u8>, DecryptError> {
     if password.is_empty() {
         return Err(DecryptError::EmptyPassword);
     }
@@ -414,7 +554,7 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
         let n = inflated_len(row.size)?;
         let (index, _) = member_for_archive(&mut archive, &row.path)?;
         let ciphertext = read_member_at(&mut archive, index)?;
-        let compressed = decrypt_member(row, password, &ciphertext)?;
+        let compressed = decrypt_member(row, password, &ciphertext, &limits)?;
         // The inflated package IS the public return value, so it leaves the
         // wrapper here; only the deflated intermediate was ever wrapped. It is
         // still sized up front rather than grown: the reallocation residue
@@ -434,7 +574,7 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
         let n = inflated_len(row.size)?;
         let (index, member) = member_for_archive(&mut archive, &row.path)?;
         let ciphertext = read_member_at(&mut archive, index)?;
-        let compressed = decrypt_member(row, password, &ciphertext)?;
+        let compressed = decrypt_member(row, password, &ciphertext, &limits)?;
         // Wrapped inside the closure that produces it, not on the next line:
         // the skill's rule is that the function creating sensitive material
         // hands back the wrapper, and a panic between the two statements would
@@ -577,7 +717,11 @@ fn kdf_error(e: KdfError) -> DecryptError {
     }
 }
 
-fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, DecryptError> {
+fn derive_key(
+    row: &EntryEncryption,
+    password: &str,
+    limits: &DecryptLimits,
+) -> Result<DerivedKey, DecryptError> {
     let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
     if !(DERIVED_KEY_MIN_LEN..=DERIVED_KEY_MAX_LEN).contains(&n) {
@@ -594,9 +738,10 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
                     let iters = u32::try_from(*iterations).map_err(|_| {
                         DecryptError::BadParameters(format!("iterations {iterations}"))
                     })?;
-                    if !(PBKDF2_MIN_ITER..=PBKDF2_MAX_ITER).contains(&iters) {
+                    if !(PBKDF2_MIN_ITER..=limits.pbkdf2_max_iter).contains(&iters) {
                         return Err(DecryptError::BadParameters(format!(
-                            "iterations {iters} outside {PBKDF2_MIN_ITER}..={PBKDF2_MAX_ITER}"
+                            "iterations {iters} outside {PBKDF2_MIN_ITER}..={}",
+                            limits.pbkdf2_max_iter
                         )));
                     }
                     pbkdf2_hmac::<Sha1>(sk_bytes, salt, iters, derived_bytes);
@@ -606,16 +751,8 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
                     // Shared with `encrypt`, which chooses the same tuple rather
                     // than reading it: `crate::kdf` is where the manifest's
                     // hostile-parameter guards live, so both directions get them.
-                    crate::kdf::derive_argon2id(
-                        sk_bytes,
-                        salt,
-                        *t,
-                        *m,
-                        *p,
-                        ARGON2_MAX_M_COST_KIB_READ,
-                        derived_bytes,
-                    )
-                    .map_err(kdf_error)
+                    crate::kdf::derive_argon2id(sk_bytes, salt, *t, *m, *p, limits, derived_bytes)
+                        .map_err(kdf_error)
                 }
                 // Screened out at the top of `decrypt`, ~140 lines and one
                 // function away. That distance is the whole argument for a
@@ -635,8 +772,9 @@ fn decrypt_member(
     row: &EntryEncryption,
     password: &str,
     blob: &[u8],
+    limits: &DecryptLimits,
 ) -> Result<DeflatedPlaintext, DecryptError> {
-    let key = derive_key(row, password)?;
+    let key = derive_key(row, password, limits)?;
     key.with_secret(|k| match row.cipher {
         Cipher::AesGcmW3c => decrypt_aes_gcm(k, row, blob),
         Cipher::AesCbcW3c => decrypt_aes_cbc(k, row, blob),
