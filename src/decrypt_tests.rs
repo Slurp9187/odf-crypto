@@ -1443,3 +1443,87 @@ fn key_length_is_screened_before_the_kdf_runs() {
         other => panic!("expected BadParameters, got {other:?}"),
     }
 }
+
+/// Every fault that can be decided from the manifest and the member must live in
+/// `screen_before_deriving`, because that is the function proven to run ahead of
+/// the KDF by `key_length_is_screened_before_the_kdf_runs`.
+///
+/// The ordering is established once, there, and inherited by everything inside
+/// the screen — so this test does not repeat it six times. What it checks is
+/// membership: that each of these is decided *in* the screen rather than by the
+/// cipher afterwards, which is where they all sat before #79.
+#[test]
+fn every_pre_key_fault_is_decided_in_the_screen() {
+    use crate::decrypt::screen_before_deriving;
+    use crate::types::{Checksum, Cipher, EntryEncryption, StartKeyAlg};
+
+    fn row(cipher: Cipher, iv: Vec<u8>, key_len: i32) -> EntryEncryption {
+        EntryEncryption {
+            path: "encrypted-package".into(),
+            cipher,
+            kdf: Kdf::Pbkdf2 {
+                iterations: 100_000,
+                salt: vec![0u8; 16],
+            },
+            start_key: StartKeyAlg::Sha256,
+            checksum: Checksum::None,
+            size: 64,
+            iv,
+            derived_key_len: key_len,
+        }
+    }
+    let gcm_ok = vec![0u8; 12];
+    // A well-formed GCM member: the IV repeated up front, then tag-sized filler.
+    let mut body = gcm_ok.clone();
+    body.extend_from_slice(&[0u8; 16]);
+
+    // The baseline must pass, or every case below would pass for the wrong reason.
+    assert!(screen_before_deriving(&row(Cipher::AesGcmW3c, gcm_ok.clone(), 32), &body).is_ok());
+
+    let cases: Vec<(&str, EntryEncryption, Vec<u8>)> = vec![
+        (
+            "key length 64",
+            row(Cipher::AesGcmW3c, gcm_ok.clone(), 64),
+            body.clone(),
+        ),
+        (
+            "GCM IV length",
+            row(Cipher::AesGcmW3c, vec![0u8; 11], 32),
+            body.clone(),
+        ),
+        (
+            "shorter than IV+tag",
+            row(Cipher::AesGcmW3c, gcm_ok.clone(), 32),
+            vec![0u8; 20],
+        ),
+        (
+            "inconsistent IV",
+            row(Cipher::AesGcmW3c, vec![9u8; 12], 32),
+            body.clone(),
+        ),
+        (
+            "CBC IV length",
+            row(Cipher::AesCbcW3c, vec![0u8; 15], 32),
+            vec![0u8; 32],
+        ),
+        (
+            "not a block multiple",
+            row(Cipher::AesCbcW3c, vec![0u8; 16], 32),
+            vec![0u8; 31],
+        ),
+        (
+            "Blowfish IV length",
+            row(Cipher::BlowfishCfb8, vec![0u8; 7], 16),
+            vec![0u8; 32],
+        ),
+    ];
+    for (expected, r, blob) in cases {
+        match screen_before_deriving(&r, &blob) {
+            Err(DecryptError::BadParameters(msg)) => assert!(
+                msg.contains(expected),
+                "expected {expected:?} from the screen, got {msg:?}"
+            ),
+            other => panic!("expected {expected:?} to be screened, got {other:?}"),
+        }
+    }
+}

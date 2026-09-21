@@ -89,8 +89,26 @@ spend, on a path that runs *before* the password can be checked. The same shape
 as the Argon2 memory ceiling `DecryptLimits` exists for: the file chooses the
 cost.
 
-`decrypt_member` now screens the length against the row's cipher before calling
-`derive_key`.
+`decrypt_member` now calls `screen_before_deriving`, which decides **everything
+a row can be refused for without a key** — and the key length was only one of
+seven. The other six sat behind the KDF too, each costing a full derivation to
+report something an integer comparison settles:
+
+| check | cipher |
+| --- | --- |
+| `manifest:key-size` against the cipher | all three |
+| IV length | all three |
+| member shorter than IV + tag | AES-GCM |
+| member's leading IV disagrees with the manifest's | AES-GCM |
+| member empty or not a block multiple | AES-CBC |
+
+Found by asking whether the fix was complete rather than whether it worked. A
+bad IV length still bought a full derivation — up to whatever `DecryptLimits`
+allows — which is the same severity as `key-size` in absolute terms; `key-size`
+merely added a 2× multiplier on top.
+
+**The error messages are unchanged**, so only the moment of the refusal moves —
+not any text a caller might already be matching on.
 
 **No package's outcome changes — only when the refusal arrives.** The screen
 accepts and refuses exactly the set the cipher does. LibreOffice derives first

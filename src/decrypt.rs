@@ -814,18 +814,66 @@ fn cipher_accepts_key_len(cipher: Cipher, n: i32) -> bool {
     }
 }
 
-fn decrypt_member(
-    row: &EntryEncryption,
-    password: &str,
-    blob: &[u8],
-    limits: &DecryptLimits,
-) -> Result<DeflatedPlaintext, DecryptError> {
+/// Everything a row can be refused for **without deriving a key**.
+///
+/// `decrypt` must derive before it can tell whether the password is even right,
+/// so a manifest names the cost of its own rejection. Any check whose inputs are
+/// already in hand therefore belongs in front of the KDF, not behind it — and all
+/// of these were behind it: the cipher's key length (issue #79), the IV length,
+/// and the two member-shape tests. Each cost a full derivation to report
+/// something knowable from an integer comparison.
+///
+/// **The messages are unchanged, deliberately.** Only the moment of the refusal
+/// moves, so no outcome and no error text a caller might already be matching on
+/// changes with it.
+///
+/// The cipher functions still carry these checks. They are unreachable through
+/// this path and kept anyway, because `decrypt_aes_gcm` indexes `blob` by a
+/// length one of them establishes — a non-local invariant is a poor thing to hang
+/// "the library does not panic" on. Each is labelled where it sits.
+fn screen_before_deriving(row: &EntryEncryption, blob: &[u8]) -> Result<(), DecryptError> {
     if !cipher_accepts_key_len(row.cipher, row.derived_key_len) {
         return Err(DecryptError::BadParameters(format!(
             "key length {} cannot be used with {:?}",
             row.derived_key_len, row.cipher
         )));
     }
+    match row.cipher {
+        Cipher::AesGcmW3c => {
+            if row.iv.len() != AES_GCM_IV_LEN {
+                return Err(DecryptError::BadParameters("GCM IV length".into()));
+            }
+            if blob.len() < AES_GCM_IV_LEN + AES_GCM_TAG_LEN {
+                return Err(DecryptError::BadParameters("shorter than IV+tag".into()));
+            }
+            if blob[..AES_GCM_IV_LEN] != row.iv[..] {
+                return Err(DecryptError::BadParameters("inconsistent IV".into()));
+            }
+        }
+        Cipher::AesCbcW3c => {
+            if row.iv.len() != AES_CBC_IV_LEN {
+                return Err(DecryptError::BadParameters("CBC IV length".into()));
+            }
+            if blob.is_empty() || blob.len() % AES_BLOCK_LEN != 0 {
+                return Err(DecryptError::BadParameters("not a block multiple".into()));
+            }
+        }
+        Cipher::BlowfishCfb8 => {
+            if row.iv.len() != BLOWFISH_IV_LEN {
+                return Err(DecryptError::BadParameters("Blowfish IV length".into()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn decrypt_member(
+    row: &EntryEncryption,
+    password: &str,
+    blob: &[u8],
+    limits: &DecryptLimits,
+) -> Result<DeflatedPlaintext, DecryptError> {
+    screen_before_deriving(row, blob)?;
     let key = derive_key(row, password, limits)?;
     key.with_secret(|k| match row.cipher {
         Cipher::AesGcmW3c => decrypt_aes_gcm(k, row, blob),
@@ -839,6 +887,8 @@ fn decrypt_aes_gcm(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
+    // Unreachable via `decrypt_member`, which screens this before deriving; see
+    // `screen_before_deriving`. Kept as this function's own precondition.
     if row.iv.len() != AES_GCM_IV_LEN {
         return Err(DecryptError::BadParameters("GCM IV length".into()));
     }
@@ -888,6 +938,8 @@ fn decrypt_aes_cbc(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
+    // Unreachable via `decrypt_member`, which screens this before deriving; see
+    // `screen_before_deriving`. Kept as this function's own precondition.
     if row.iv.len() != AES_CBC_IV_LEN {
         return Err(DecryptError::BadParameters("CBC IV length".into()));
     }
@@ -933,6 +985,8 @@ fn decrypt_blowfish_cfb64(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
+    // Unreachable via `decrypt_member`, which screens this before deriving; see
+    // `screen_before_deriving`. Kept as this function's own precondition.
     if row.iv.len() != BLOWFISH_IV_LEN {
         return Err(DecryptError::BadParameters("Blowfish IV length".into()));
     }

@@ -221,7 +221,7 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-228 of them: 151 library, 20 CLI unit, 35 CLI end-to-end, 22 doctests. All must
+229 of them: 152 library, 20 CLI unit, 35 CLI end-to-end, 22 doctests. All must
 pass in every feature configuration.
 
 **Count test functions, not passing tests.** `cargo test`'s summary line omits
