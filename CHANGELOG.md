@@ -190,6 +190,68 @@ back-dating itself, carries the two off-plan items above rather than absorbing
 them, and leaves the open decision on the three unmeasured policy caps where it
 belongs, with the maintainer.
 
+**Breaking: `EncryptError::AlreadyEncrypted` is split in two.** It fired on any
+package `classify` did not call `Mode::Plain`, and `Mode::PerEntry` is
+`!encrypted_entries.is_empty()` (`classify.rs:319`) — wholly independent of
+`package_encrypted`, which is LibreOffice's `HasEncryptedEntries` latch and is
+set only by a row resolving to `content.xml` or `encrypted-package`
+(`ZipPackage.cxx:435-446`). So a package whose complete rows sit on other
+members was refused as *"package is already encrypted"* when **LibreOffice opens
+it without prompting for a password**. The message was a claim about the file
+that the specifying implementation contradicts.
+
+`AlreadyEncrypted` now means the latch is set. The new
+`EncryptError::PartiallyEncrypted` means rows exist without one. Both still
+refuse — wrapping a package whose members are already ciphertext produces a file
+whose inner members nothing can open — and both still map to CLI exit 5. What
+changed is which claim is made, not what a script should do.
+
+**The #40 guard caught this on its first real variant**, which is the evidence it
+was built for: adding `PartiallyEncrypted` failed the build with
+`error[E0004]: non-exhaustive patterns: &EncryptError::PartiallyEncrypted not
+covered` at the library tripwire, before any exit code could silently fall
+through `encrypt_exit`'s `_` arm. That is the fourth variant added since that
+wildcard existed, and the first that could not slip past it.
+
+**Five scope justifications were re-argued, and two of them were wrong rather
+than merely thin.**
+
+*The PGP refusal said "later arc",* which implies unscheduled work. The real
+argument is that it is not expressible: `decrypt(bytes, password)` has no surface
+a private key can arrive through — PGP unwrapping wants a keyring, an agent
+socket or a smartcard PIN — and an OpenPGP stack would dwarf the 25-crate default
+the crate is built around. `classify` already surfaces the wrapped key material
+for a caller who has an implementation.
+
+*Per-entry write closed on "no concrete reason to target an older ODF version".*
+That is demand, asserted: unfalsifiable from inside the repo, and it reads as a
+decision against the work when the truth is that nobody has built it. The crate
+ships goldens of three read profiles and writes one. Replaced with an effort/gap
+statement naming what exists and what does not, stated in the README where a
+reader will meet it, and filed as [#59].
+
+*`m_bHasNonEncryptedEntries` was omitted on a circular argument* — it cited *our
+own* `decrypt`'s copy-through as evidence nobody needs the flag. Re-argued from
+LibreOffice, **and the conclusion flipped**: the flag is live upstream.
+`sfx2/source/doc/objmisc.cxx:1028-1063` reads it, and on ODF ≥ 1.2, when
+`HasEncryptedEntries && HasNonEncryptedEntries`, LibreOffice raises
+`ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and calls `disallowMacroExecution()` — a
+security decision, not bookkeeping. `Classification` exposes one half of that
+predicate and not the other, so a consumer **cannot tell whether LibreOffice
+would warn**. Recorded as a known limitation and filed as [#60].
+
+*`lib.rs` and the README asserted scope with no reason on the public surface.*
+Both now say why, and say that the two exclusions are not the same kind: per-entry
+write is unbuilt, PGP is inexpressible.
+
+Both plan files are amended in place rather than corrected to match the code, per
+`CLAUDE.md`: the detection plan records that its own justification was circular
+and reached the wrong conclusion, and the encrypt plan records that its close
+condition was demand rather than a reason.
+
+[#59]: https://github.com/Slurp9187/odf-crypto/issues/59
+[#60]: https://github.com/Slurp9187/odf-crypto/issues/60
+
 [#40]: https://github.com/Slurp9187/odf-crypto/issues/40
 [#51]: https://github.com/Slurp9187/odf-crypto/issues/51
 [#52]: https://github.com/Slurp9187/odf-crypto/pull/52

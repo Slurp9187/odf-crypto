@@ -64,10 +64,11 @@ fn s1_classify_failure_is_reported_as_classify() {
     );
 }
 
-/// A PGP package is `Mode::PerEntry`, so `AlreadyEncrypted` covers it -- the
-/// same refusal, reached without `encrypt` needing a PGP notion of its own
-/// (plan §4: `AlreadyEncrypted` "covers PerEntry, Wholesome, and PGP rows
-/// alike"). Nothing pinned that claim.
+/// A PGP package is `Mode::PerEntry` **with the latch set**, so it is
+/// `AlreadyEncrypted` rather than `PartiallyEncrypted` -- the same refusal,
+/// reached without `encrypt` needing a PGP notion of its own. The latch is what
+/// decides between the two now, so this test also pins which side of that split
+/// a PGP package falls on, which the old single variant could not express.
 #[test]
 fn s1_pgp_package_is_already_encrypted() {
     let pgp = crate::test_support::pgp_two_row_zip();
@@ -80,6 +81,82 @@ fn s1_pgp_package_is_already_encrypted() {
         matches!(err, EncryptError::AlreadyEncrypted),
         "expected AlreadyEncrypted, got {err:?}"
     );
+}
+
+/// The split #4 of the rc.5 plan's §4 produced, and the case that forced it.
+///
+/// A package whose only complete `encryption-data` row sits on a member that is
+/// neither `content.xml` nor `encrypted-package` gets `Mode::PerEntry` --
+/// `classify.rs`'s mode is `!encrypted_entries.is_empty()` -- while
+/// `package_encrypted` stays false, because that latch is LibreOffice's
+/// `HasEncryptedEntries` and only a row on one of those two members sets it
+/// (`ZipPackage.cxx:435-446`).
+///
+/// **LibreOffice opens this without prompting.** So the old single
+/// `AlreadyEncrypted`, whose message is "package is already encrypted", was
+/// telling a caller something the specifying implementation contradicts. The
+/// refusal itself was never in question and has not changed.
+#[test]
+fn s1_encrypted_rows_without_a_latch_are_partially_encrypted() {
+    let manifest = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2">
+ <manifest:file-entry manifest:full-path="/" manifest:version="1.2" manifest:media-type="{MIME_TEXT}"/>
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+ <manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml" manifest:size="64">
+  <manifest:encryption-data manifest:checksum-type="{sha1_1k}" manifest:checksum="{b64}">
+   <manifest:algorithm manifest:algorithm-name="{aes}" manifest:initialisation-vector="{b64}"/>
+   <manifest:start-key-generation manifest:start-key-generation-name="{sha1}"/>
+   <manifest:key-derivation manifest:key-derivation-name="{pbkdf2}" manifest:salt="{b64}" manifest:iteration-count="1024" manifest:key-size="32"/>
+  </manifest:encryption-data>
+ </manifest:file-entry>
+</manifest:manifest>
+"#,
+        sha1_1k = crate::uris::SHA1_1K_NAME,
+        aes = crate::uris::AES256_URL,
+        sha1 = crate::uris::SHA1_NAME,
+        pbkdf2 = crate::uris::PBKDF2_NAME,
+        b64 = crate::test_support::B64,
+    );
+    let pkg = zip_with(&[
+        ("mimetype", MIME_TEXT.as_bytes()),
+        ("META-INF/manifest.xml", manifest.as_bytes()),
+        ("content.xml", b"x"),
+        ("styles.xml", b"y"),
+    ]);
+
+    // The premise, asserted rather than assumed -- if classify ever stopped
+    // producing this shape the test below would pass for the wrong reason.
+    let class = classify(&pkg).expect("constructed package classifies");
+    assert_eq!(class.mode, Mode::PerEntry, "rows exist, so PerEntry");
+    assert!(
+        !class.package_encrypted,
+        "no row on content.xml or encrypted-package, so no latch"
+    );
+    assert!(!class.encrypted_entries.is_empty());
+
+    let err = encrypt(&pkg, PASSWORD).unwrap_err();
+    assert!(
+        matches!(err, EncryptError::PartiallyEncrypted),
+        "expected PartiallyEncrypted, got {err:?}"
+    );
+    // The distinction is in the message, which is the whole point of the split.
+    assert!(
+        err.to_string().contains("without prompting"),
+        "message must not claim the package is encrypted: {err}"
+    );
+}
+
+/// The other side of the split: with a latch row, the claim is true and the
+/// variant stays `AlreadyEncrypted`. Both still refuse; only the claim differs.
+#[test]
+fn s1_a_latched_package_is_still_already_encrypted() {
+    let sealed = encrypt(&load_golden("lo-unencrypted.odt"), PASSWORD).expect("seals");
+    assert!(classify(&sealed).expect("classifies").package_encrypted);
+    assert!(matches!(
+        encrypt(&sealed, PASSWORD).unwrap_err(),
+        EncryptError::AlreadyEncrypted
+    ));
 }
 
 // --- S2: exact emit table (plan §2) ---
@@ -968,6 +1045,7 @@ fn every_encrypt_error_variant_is_accounted_for_in_the_cli_exit_map() {
         match e {
             EncryptError::Classify(_) => (),
             EncryptError::AlreadyEncrypted => (),
+            EncryptError::PartiallyEncrypted => (),
             EncryptError::Odf12Fatal => (),
             EncryptError::EmptyPassword => (),
             EncryptError::Random(_) => (),

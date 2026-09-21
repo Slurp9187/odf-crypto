@@ -370,6 +370,10 @@ fn the_encrypt_exit_map_is_the_documented_one() {
     for (e, want) in [
         (EncryptError::Classify(DetectError::NotZip), EX_NOT_ODF),
         (EncryptError::AlreadyEncrypted, EX_REFUSED),
+        // Same code as AlreadyEncrypted, deliberately: both mean "wrong file,
+        // do not retry". What the split fixed is which claim is made about the
+        // file, not what a script should do about it.
+        (EncryptError::PartiallyEncrypted, EX_REFUSED),
         (EncryptError::Odf12Fatal, EX_REFUSED),
         (EncryptError::EmptyPassword, EX_REFUSED),
         (EncryptError::Mimetype(String::new()), EX_MALFORMED),

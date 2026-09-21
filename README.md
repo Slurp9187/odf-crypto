@@ -272,8 +272,21 @@ LibreOffice keeps for compatibility (`tdf#114939`). The repository carries the
 analysis in `tests/goldens/sha1_star.py`; `tests/goldens/lo-odf11-nonascii-password.odt`
 is the fixture that exercises it.
 
+**This crate reads three profiles and writes one.** The table above is what
+`decrypt` accepts; `encrypt` always writes the first row, whatever the input
+was. That asymmetry is an effort gap rather than a judgement — wholesome
+Argon2id/AES-GCM is what current LibreOffice saves by default, so it is what a
+new file should be, and nothing has yet needed a writer for the older two. If
+you need one, say so on the tracker; the primitives are already here, because
+`decrypt` uses them.
+
 PGP-encrypted packages are detected and reported (`Classification::pgp_keys`) but
-not decrypted — `DecryptError::UnsupportedPgp`.
+not decrypted — `DecryptError::UnsupportedPgp`. **That one is not an effort
+gap.** `decrypt(bytes, password)` has no surface a private key could arrive
+through: PGP unwrapping needs a keyring, an agent socket or a smartcard PIN, not
+a password string, and an OpenPGP stack would dwarf the 25-crate default this
+crate is built around. `classify` hands you the wrapped key material so a caller
+who already has an OpenPGP implementation can do the unwrap.
 
 ## Features
 
