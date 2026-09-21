@@ -697,9 +697,17 @@ fn argon2_hostile_parameters_are_bad_parameters_not_a_panic() {
 /// A hostile `manifest:key-size` used to reach `vec![0u8; n]` before any cipher had
 /// a chance to reject the length. `derived_key_len` is an `i32`, so the worst case
 /// is a ~2 GiB allocation followed by a PBKDF2 over all of it - a hang no `Result`
-/// can report. `derive_key` now bounds the length first and returns
-/// `BadParameters` without allocating. `classify` is checked to pass the value
-/// through unchanged, so the guard - not the parser - is what this exercises.
+/// can report. `derive_key` bounds the length before allocating and returns
+/// `BadParameters`. `classify` is checked to pass the value through unchanged, so
+/// the guard - not the parser - is what this exercises.
+///
+/// **The refusal moved earlier in `0.1.0-rc.7` and the message changed with it**
+/// (issue #79). `decrypt_member` now screens the length against the *cipher*
+/// before calling `derive_key` at all, so a 2,000,000,000-byte key is refused by
+/// `cipher_accepts_key_len` and never reaches the range check that used to report
+/// it. The assertion follows the message rather than being loosened to accept
+/// both: two guards sit on this input now, and a test that passes whichever fires
+/// would stop noticing if the first one were removed.
 #[test]
 fn hostile_derived_key_len_is_refused_before_allocating() {
     fn huge_key_size(xml: &[u8]) -> Vec<u8> {
@@ -715,9 +723,10 @@ fn hostile_derived_key_len_is_refused_before_allocating() {
         "fixture must carry the hostile key-size"
     );
     match decrypt(&bytes, PASSWORD) {
-        Err(DecryptError::BadParameters(msg)) => {
-            assert!(msg.contains("derived_key_len"), "unexpected message: {msg}")
-        }
+        Err(DecryptError::BadParameters(msg)) => assert!(
+            msg.contains("key length 2000000000"),
+            "unexpected message: {msg}"
+        ),
         other => panic!("expected BadParameters, got {other:?}"),
     }
 }
@@ -1347,4 +1356,174 @@ fn every_decrypt_error_variant_is_accounted_for_in_the_cli_exit_map() {
         }
     }
     accounted_for(&DecryptError::NotEncrypted);
+}
+
+/// The screen in `decrypt_member` must accept and refuse exactly what the cipher
+/// does. Anything else is a fidelity change wearing a performance fix's clothes:
+/// too strict refuses a package LibreOffice opens, too loose puts the old
+/// derive-then-refuse cost straight back.
+///
+/// Constructs the real ciphers at every length rather than restating their rules.
+/// A hand-copied constraint is a proxy for the dependency's actual behaviour, and
+/// this repo's recurring defect is a proxy quietly taking the property's name.
+#[test]
+fn screen_matches_what_the_cipher_accepts() {
+    use crate::types::Cipher;
+    use aes::{Aes128, Aes192, Aes256};
+    use aes_gcm::aead::consts::U12;
+    use aes_gcm::{AesGcm, KeyInit};
+    use blowfish::Blowfish;
+    use cfb_mode::cipher::KeyIvInit;
+
+    for n in 0i32..=80 {
+        let k = vec![0u8; n as usize];
+        let actual = |c: Cipher| match c {
+            // The union of the three arms `decrypt_aes_gcm` dispatches to.
+            Cipher::AesGcmW3c => {
+                AesGcm::<Aes128, U12>::new_from_slice(&k).is_ok()
+                    || AesGcm::<Aes192, U12>::new_from_slice(&k).is_ok()
+                    || AesGcm::<Aes256, U12>::new_from_slice(&k).is_ok()
+            }
+            Cipher::AesCbcW3c => {
+                cbc::Decryptor::<Aes128>::new_from_slices(&k, &[0u8; 16]).is_ok()
+                    || cbc::Decryptor::<Aes192>::new_from_slices(&k, &[0u8; 16]).is_ok()
+                    || cbc::Decryptor::<Aes256>::new_from_slices(&k, &[0u8; 16]).is_ok()
+            }
+            Cipher::BlowfishCfb8 => {
+                cfb_mode::BufDecryptor::<Blowfish>::new_from_slices(&k, &[0u8; 8]).is_ok()
+            }
+        };
+        for c in [Cipher::AesGcmW3c, Cipher::AesCbcW3c, Cipher::BlowfishCfb8] {
+            assert_eq!(
+                crate::decrypt::cipher_accepts_key_len(c, n),
+                actual(c),
+                "screen and cipher disagree for {c:?} at key length {n}"
+            );
+        }
+    }
+}
+
+/// The screen runs *before* the key derivation, which is the entire fix.
+///
+/// Proved without a clock. The row carries two faults at once: a `key-size` of 64
+/// that no AES variant can take, and an `iteration-count` past
+/// `PBKDF2_MAX_ITER`. Each is reported by a different check, and the two checks
+/// sit on opposite sides of the KDF -- so **which error comes back says which ran
+/// first**. Before this fix the answer was the iteration message, because
+/// `derive_key` was reached first; it must now be the key-length one.
+///
+/// A timing assertion would have been the obvious test and a worse one: it
+/// measures the machine as much as the code, and it passes on a slow host for the
+/// wrong reason.
+#[test]
+fn key_length_is_screened_before_the_kdf_runs() {
+    let bytes = mutate_zip(
+        "lo-legacy-aes-cbc.odt",
+        None,
+        None,
+        Some(|xml: &[u8]| {
+            let s = rewrite_kdf_key_size(std::str::from_utf8(xml).unwrap(), "64");
+            set_pbkdf2_iterations(s.as_bytes(), "2147483647")
+        }),
+    );
+    let class = classify(&bytes).expect("classify passes both values through");
+    assert!(
+        class
+            .encrypted_entries
+            .iter()
+            .all(|e| e.derived_key_len == 64),
+        "fixture must carry the incompatible key-size"
+    );
+    match decrypt(&bytes, PASSWORD) {
+        Err(DecryptError::BadParameters(msg)) => assert!(
+            msg.contains("key length 64"),
+            "expected the key-length refusal, got {msg:?} -- an iteration message \
+             means the KDF was reached first and the screen did not run"
+        ),
+        other => panic!("expected BadParameters, got {other:?}"),
+    }
+}
+
+/// Every fault that can be decided from the manifest and the member must live in
+/// `screen_before_deriving`, because that is the function proven to run ahead of
+/// the KDF by `key_length_is_screened_before_the_kdf_runs`.
+///
+/// The ordering is established once, there, and inherited by everything inside
+/// the screen — so this test does not repeat it six times. What it checks is
+/// membership: that each of these is decided *in* the screen rather than by the
+/// cipher afterwards, which is where they all sat before #79.
+#[test]
+fn every_pre_key_fault_is_decided_in_the_screen() {
+    use crate::decrypt::screen_before_deriving;
+    use crate::types::{Checksum, Cipher, EntryEncryption, StartKeyAlg};
+
+    fn row(cipher: Cipher, iv: Vec<u8>, key_len: i32) -> EntryEncryption {
+        EntryEncryption {
+            path: "encrypted-package".into(),
+            cipher,
+            kdf: Kdf::Pbkdf2 {
+                iterations: 100_000,
+                salt: vec![0u8; 16],
+            },
+            start_key: StartKeyAlg::Sha256,
+            checksum: Checksum::None,
+            size: 64,
+            iv,
+            derived_key_len: key_len,
+        }
+    }
+    let gcm_ok = vec![0u8; 12];
+    // A well-formed GCM member: the IV repeated up front, then tag-sized filler.
+    let mut body = gcm_ok.clone();
+    body.extend_from_slice(&[0u8; 16]);
+
+    // The baseline must pass, or every case below would pass for the wrong reason.
+    assert!(screen_before_deriving(&row(Cipher::AesGcmW3c, gcm_ok.clone(), 32), &body).is_ok());
+
+    let cases: Vec<(&str, EntryEncryption, Vec<u8>)> = vec![
+        (
+            "key length 64",
+            row(Cipher::AesGcmW3c, gcm_ok.clone(), 64),
+            body.clone(),
+        ),
+        (
+            "GCM IV length",
+            row(Cipher::AesGcmW3c, vec![0u8; 11], 32),
+            body.clone(),
+        ),
+        (
+            "shorter than IV+tag",
+            row(Cipher::AesGcmW3c, gcm_ok.clone(), 32),
+            vec![0u8; 20],
+        ),
+        (
+            "inconsistent IV",
+            row(Cipher::AesGcmW3c, vec![9u8; 12], 32),
+            body.clone(),
+        ),
+        (
+            "CBC IV length",
+            row(Cipher::AesCbcW3c, vec![0u8; 15], 32),
+            vec![0u8; 32],
+        ),
+        (
+            "not a block multiple",
+            row(Cipher::AesCbcW3c, vec![0u8; 16], 32),
+            vec![0u8; 31],
+        ),
+        (
+            "Blowfish IV length",
+            row(Cipher::BlowfishCfb8, vec![0u8; 7], 16),
+            vec![0u8; 32],
+        ),
+    ];
+    for (expected, r, blob) in cases {
+        match screen_before_deriving(&r, &blob) {
+            Err(DecryptError::BadParameters(msg)) => assert!(
+                msg.contains(expected),
+                "expected {expected:?} from the screen, got {msg:?}"
+            ),
+            other => panic!("expected {expected:?} to be screened, got {other:?}"),
+        }
+    }
 }

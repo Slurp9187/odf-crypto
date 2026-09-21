@@ -724,6 +724,17 @@ fn derive_key(
 ) -> Result<DerivedKey, DecryptError> {
     let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
+    // Unreachable from the only current caller, and kept deliberately. Since #79
+    // `decrypt_member` screens this same field against the row's cipher, and every
+    // length that screen admits -- 16/24/32, or Blowfish's 4..=56 -- already sits
+    // inside this range, so nothing gets here to fail it.
+    //
+    // It stays because it is *this function's* precondition rather than that one's:
+    // `try_zeroed(n)` below allocates from `n`, and a second caller added later
+    // would otherwise inherit an unguarded `i32` straight from a manifest. Said
+    // out loud rather than left to be rediscovered, because an unreachable guard
+    // that reads as live is how the next person concludes the length is checked
+    // here and removes the screen.
     if !(DERIVED_KEY_MIN_LEN..=DERIVED_KEY_MAX_LEN).contains(&n) {
         return Err(DecryptError::BadParameters(format!(
             "derived_key_len {n} outside {DERIVED_KEY_MIN_LEN}..={DERIVED_KEY_MAX_LEN}"
@@ -768,12 +779,101 @@ fn derive_key(
     Ok(derived)
 }
 
+/// Can `cipher` take a derived key of `n` bytes?
+///
+/// Knowable from the manifest alone, which is the whole point: the cipher's own
+/// refusal arrives *after* the key derivation that produced the key it refuses,
+/// and a row is free to make that derivation expensive. PBKDF2 emits
+/// `ceil(dkLen / 20)` HMAC-SHA1 blocks, so `manifest:key-size="64"` against an
+/// AES row costs twice what 32 does and is then thrown away -- a multiplier the
+/// file was never entitled to spend. See issue #79.
+///
+/// **This is a cost screen, not a fidelity change.** It accepts and refuses
+/// exactly the set the cipher does, so no package's outcome moves; only the
+/// moment of the refusal does. LibreOffice derives first too -- `StaticGetCipher`
+/// tests `m_nDerivedKeySize < 0` and nothing else before deriving
+/// (`ZipFile.cxx:154-157`) -- and that is not a reason to keep the ordering,
+/// because what its behaviour binds is which packages are accepted, and the
+/// timing of an error inside this function is not something a package can
+/// observe.
+///
+/// Kept in step with the cipher by `screen_matches_what_the_cipher_accepts`,
+/// which constructs every variant at every length rather than trusting this
+/// list. A hand-maintained copy of another crate's constraint is a proxy, and
+/// proxies here drift silently.
+fn cipher_accepts_key_len(cipher: Cipher, n: i32) -> bool {
+    match cipher {
+        // NSS picks AES-128/192/256 from the derived key length, so these are the
+        // three the dispatch below can name -- see `decrypt_aes_gcm`.
+        Cipher::AesGcmW3c | Cipher::AesCbcW3c => matches!(n, 16 | 24 | 32),
+        // Blowfish takes a variable key. Measured against `blowfish` 0.9 rather
+        // than read off the algorithm: `4..=56`, which is what
+        // `DERIVED_KEY_MAX_LEN`'s own doc means by "56 is Blowfish's maximum key;
+        // 64 rounds it up".
+        Cipher::BlowfishCfb8 => (4..=56).contains(&n),
+    }
+}
+
+/// Everything a row can be refused for **without deriving a key**.
+///
+/// `decrypt` must derive before it can tell whether the password is even right,
+/// so a manifest names the cost of its own rejection. Any check whose inputs are
+/// already in hand therefore belongs in front of the KDF, not behind it — and all
+/// of these were behind it: the cipher's key length (issue #79), the IV length,
+/// and the two member-shape tests. Each cost a full derivation to report
+/// something knowable from an integer comparison.
+///
+/// **The messages are unchanged, deliberately.** Only the moment of the refusal
+/// moves, so no outcome and no error text a caller might already be matching on
+/// changes with it.
+///
+/// The cipher functions still carry these checks. They are unreachable through
+/// this path and kept anyway, because `decrypt_aes_gcm` indexes `blob` by a
+/// length one of them establishes — a non-local invariant is a poor thing to hang
+/// "the library does not panic" on. Each is labelled where it sits.
+fn screen_before_deriving(row: &EntryEncryption, blob: &[u8]) -> Result<(), DecryptError> {
+    if !cipher_accepts_key_len(row.cipher, row.derived_key_len) {
+        return Err(DecryptError::BadParameters(format!(
+            "key length {} cannot be used with {:?}",
+            row.derived_key_len, row.cipher
+        )));
+    }
+    match row.cipher {
+        Cipher::AesGcmW3c => {
+            if row.iv.len() != AES_GCM_IV_LEN {
+                return Err(DecryptError::BadParameters("GCM IV length".into()));
+            }
+            if blob.len() < AES_GCM_IV_LEN + AES_GCM_TAG_LEN {
+                return Err(DecryptError::BadParameters("shorter than IV+tag".into()));
+            }
+            if blob[..AES_GCM_IV_LEN] != row.iv[..] {
+                return Err(DecryptError::BadParameters("inconsistent IV".into()));
+            }
+        }
+        Cipher::AesCbcW3c => {
+            if row.iv.len() != AES_CBC_IV_LEN {
+                return Err(DecryptError::BadParameters("CBC IV length".into()));
+            }
+            if blob.is_empty() || blob.len() % AES_BLOCK_LEN != 0 {
+                return Err(DecryptError::BadParameters("not a block multiple".into()));
+            }
+        }
+        Cipher::BlowfishCfb8 => {
+            if row.iv.len() != BLOWFISH_IV_LEN {
+                return Err(DecryptError::BadParameters("Blowfish IV length".into()));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn decrypt_member(
     row: &EntryEncryption,
     password: &str,
     blob: &[u8],
     limits: &DecryptLimits,
 ) -> Result<DeflatedPlaintext, DecryptError> {
+    screen_before_deriving(row, blob)?;
     let key = derive_key(row, password, limits)?;
     key.with_secret(|k| match row.cipher {
         Cipher::AesGcmW3c => decrypt_aes_gcm(k, row, blob),
@@ -787,6 +887,8 @@ fn decrypt_aes_gcm(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
+    // Unreachable via `decrypt_member`, which screens this before deriving; see
+    // `screen_before_deriving`. Kept as this function's own precondition.
     if row.iv.len() != AES_GCM_IV_LEN {
         return Err(DecryptError::BadParameters("GCM IV length".into()));
     }
@@ -836,6 +938,8 @@ fn decrypt_aes_cbc(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
+    // Unreachable via `decrypt_member`, which screens this before deriving; see
+    // `screen_before_deriving`. Kept as this function's own precondition.
     if row.iv.len() != AES_CBC_IV_LEN {
         return Err(DecryptError::BadParameters("CBC IV length".into()));
     }
@@ -881,6 +985,8 @@ fn decrypt_blowfish_cfb64(
     row: &EntryEncryption,
     blob: &[u8],
 ) -> Result<DeflatedPlaintext, DecryptError> {
+    // Unreachable via `decrypt_member`, which screens this before deriving; see
+    // `screen_before_deriving`. Kept as this function's own precondition.
     if row.iv.len() != BLOWFISH_IV_LEN {
         return Err(DecryptError::BadParameters("Blowfish IV length".into()));
     }

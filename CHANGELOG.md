@@ -75,6 +75,68 @@ The description gains `.ods` and `.odp` for the same reason, and loses a
 repetition it should not have had: it read *"…package encryption detection,
 decryption and encryption"*.
 
+### Fixed
+
+**`decrypt` no longer runs a key derivation it is about to throw away.** Closes
+[#79]. `manifest:key-size` was range-checked against `1..=64` and then derived
+from; the **cipher's** constraint on that length was not applied until the cipher
+was constructed, one function later. For either AES profile that meant **61 of
+the 64 permitted values paid a full derivation and were then refused**.
+
+PBKDF2 emits `ceil(dkLen / 20)` HMAC-SHA1 blocks, so `key-size="64"` against an
+AES row cost twice what 32 does — a multiplier the file was never entitled to
+spend, on a path that runs *before* the password can be checked. The same shape
+as the Argon2 memory ceiling `DecryptLimits` exists for: the file chooses the
+cost.
+
+`decrypt_member` now calls `screen_before_deriving`, which decides **everything
+a row can be refused for without a key** — and the key length was only one of
+seven. The other six sat behind the KDF too, each costing a full derivation to
+report something an integer comparison settles:
+
+| check | cipher |
+| --- | --- |
+| `manifest:key-size` against the cipher | all three |
+| IV length | all three |
+| member shorter than IV + tag | AES-GCM |
+| member's leading IV disagrees with the manifest's | AES-GCM |
+| member empty or not a block multiple | AES-CBC |
+
+Found by asking whether the fix was complete rather than whether it worked. A
+bad IV length still bought a full derivation — up to whatever `DecryptLimits`
+allows — which is the same severity as `key-size` in absolute terms; `key-size`
+merely added a 2× multiplier on top.
+
+**The error messages are unchanged**, so only the moment of the refusal moves —
+not any text a caller might already be matching on.
+
+**No package's outcome changes — only when the refusal arrives.** The screen
+accepts and refuses exactly the set the cipher does. LibreOffice derives first
+too (`ZipFile.cxx:154-157` tests `< 0` and nothing else), and that is deliberately
+*not* treated as a reason to keep the ordering: what LibreOffice's behaviour binds
+is which packages are accepted, and the timing of an error inside one of our
+functions is not something a package can observe.
+
+Two tests, and the second is the one that matters:
+
+- `screen_matches_what_the_cipher_accepts` constructs every real cipher at every
+  length `0..=80` and asserts agreement, rather than restating the rules. A
+  hand-copied constraint is a proxy for the dependency's behaviour, and Blowfish's
+  actual range was **measured** at `4..=56` rather than assumed.
+- `key_length_is_screened_before_the_kdf_runs` proves the ordering **without a
+  clock**. The row carries two faults — a `key-size` no AES variant can take and
+  an `iteration-count` past the cap — reported by checks on opposite sides of the
+  KDF, so *which error comes back says which ran first*. Proved by removing the
+  screen: the message became `iterations 2147483647 outside 1..=10000000`.
+
+`derive_key`'s own `1..=64` check is now unreachable from that caller, since every
+length the screen admits already sits inside it. Kept, and **labelled unreachable
+in the source**: it is that function's own precondition ahead of `try_zeroed(n)`,
+and an unreachable guard that reads as live is how the next person concludes the
+length is checked there and deletes the screen.
+
+[#79]: https://github.com/Slurp9187/odf-crypto/issues/79
+
 ### Documentation
 
 **The README's examples are compiled on every CI run.** Nothing checked them
