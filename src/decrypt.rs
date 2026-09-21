@@ -400,15 +400,13 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     let manifest = read_member_by_path(&mut archive, MANIFEST_PATH)?;
 
     if class.mode == Mode::Wholesome {
-        let row = class
-            .encrypted_entries
-            .iter()
-            .find(|e| e.path == "encrypted-package")
-            .ok_or_else(|| {
-                DecryptError::BadParameters(
-                    "wholesome package missing encrypted-package row".into(),
-                )
-            })?;
+        // `Classification::wholesome_row` is this selection, and calling it
+        // rather than repeating it is the point: a consumer asking "what will
+        // decrypt use" gets the same answer by construction, where a second
+        // copy could drift. See that method's docs for why it is not `common`.
+        let row = class.wholesome_row().ok_or_else(|| {
+            DecryptError::BadParameters("wholesome package missing encrypted-package row".into())
+        })?;
         // Before `decrypt_member`, not after: `manifest:size` is attacker-controlled
         // and needs no key to check, so refusing it here keeps it in the same class
         // as the other pre-derivation screens -- nobody pays for a 64 MiB Argon2id

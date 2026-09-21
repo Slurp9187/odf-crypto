@@ -1657,3 +1657,146 @@ fn every_detect_error_variant_is_accounted_for_in_the_cli_exit_map() {
     }
     accounted_for(&DetectError::NotZip);
 }
+
+// --- #70: `common` is the latch row, not the payload row --------------------
+
+/// A wholesome manifest carrying a complete `content.xml` row **before** a
+/// complete `encrypted-package` row.
+///
+/// LibreOffice does not write this. It is constructible, which is the point:
+/// the latch is first-wins (`ZipPackage.cxx`), so `common` comes from
+/// `content.xml` while the `Wholesome` verdict comes from `encrypted-package`.
+fn two_row_wholesome(first_is_modern: bool) -> Vec<u8> {
+    let (a_cipher, a_kdf, b_cipher, b_kdf) = if first_is_modern {
+        (uris::AESGCM256_URL, "argon2", uris::AES256_URL, "pbkdf2")
+    } else {
+        (uris::AES256_URL, "pbkdf2", uris::AESGCM256_URL, "argon2")
+    };
+    let row = |path: &str, media: &str, cipher: &str, kdf: &str| {
+        let (kdf_attrs, checksum) = if kdf == "argon2" {
+            (
+                format!(
+                    r#"manifest:key-derivation-name="{}" manifest:salt="{B64}" manifest:argon2-iterations="3" manifest:argon2-memory="65536" manifest:argon2-lanes="4" manifest:key-size="32""#,
+                    uris::ARGON2ID_URL
+                ),
+                String::new(),
+            )
+        } else {
+            (
+                format!(
+                    r#"manifest:key-derivation-name="{}" manifest:salt="{B64}" manifest:iteration-count="1024" manifest:key-size="32""#,
+                    uris::PBKDF2_NAME
+                ),
+                format!(
+                    r#" manifest:checksum-type="{}" manifest:checksum="{B64}""#,
+                    uris::SHA1_1K_NAME
+                ),
+            )
+        };
+        format!(
+            r#" <manifest:file-entry manifest:full-path="{path}" manifest:media-type="{media}" manifest:size="64">
+  <manifest:encryption-data{checksum}>
+   <manifest:algorithm manifest:algorithm-name="{cipher}" manifest:initialisation-vector="{B64}"/>
+   <manifest:start-key-generation manifest:start-key-generation-name="{}"/>
+   <manifest:key-derivation {kdf_attrs}/>
+  </manifest:encryption-data>
+ </manifest:file-entry>
+"#,
+            uris::SHA256_URL
+        )
+    };
+    let manifest = manifest_wrap(
+        Some("1.4"),
+        &format!(
+            "{}{}",
+            row("content.xml", "text/xml", a_cipher, a_kdf),
+            row("encrypted-package", MIME_TEXT, b_cipher, b_kdf),
+        ),
+    );
+    zip_with(&[
+        ("mimetype", MIME_TEXT.as_bytes()),
+        ("META-INF/manifest.xml", manifest.as_bytes()),
+        ("content.xml", b"x"),
+        ("encrypted-package", b"y"),
+    ])
+}
+
+/// **The defect #70 was filed for**, pinned in the direction that is unsafe.
+///
+/// `common` reports the modern profile while the row `decrypt` acts on is
+/// AES-CBC/PBKDF2. A consumer gating a write path on "is this the profile we
+/// write" would pass a package whose payload is neither — which is exactly what
+/// `wholesome_row` exists to let them ask instead.
+#[test]
+fn common_can_report_a_profile_the_payload_does_not_have() {
+    let pkg = two_row_wholesome(true);
+    let class = classify(&pkg).expect("constructed package classifies");
+
+    assert_eq!(class.mode, Mode::Wholesome);
+    assert!(class.package_encrypted);
+
+    // The latch row: first in manifest order, and NOT the payload.
+    let latch = class
+        .common
+        .as_ref()
+        .expect("wholesome carries a latch row");
+    assert_eq!(latch.path, "content.xml");
+    assert_eq!(latch.cipher, Cipher::AesGcmW3c);
+
+    // The payload row: what `decrypt` will actually use.
+    let payload = class
+        .wholesome_row()
+        .expect("Wholesome implies a payload row");
+    assert_eq!(payload.path, "encrypted-package");
+    assert_eq!(payload.cipher, Cipher::AesCbcW3c);
+
+    // The whole point: they disagree, so reading the wrong one is a wrong answer.
+    assert_ne!(
+        latch.cipher, payload.cipher,
+        "fixture must actually exercise the divergence, or this test proves nothing"
+    );
+}
+
+/// The mirror image, so the test cannot pass by the fixture only ever being
+/// built one way round.
+#[test]
+fn the_divergence_runs_both_directions() {
+    let class = classify(&two_row_wholesome(false)).expect("classifies");
+    assert_eq!(
+        class.common.as_ref().expect("latch").cipher,
+        Cipher::AesCbcW3c
+    );
+    assert_eq!(
+        class.wholesome_row().expect("payload").cipher,
+        Cipher::AesGcmW3c
+    );
+}
+
+/// `wholesome_row` is `None` off the wholesome path, where there is no single
+/// payload row to name.
+#[test]
+fn wholesome_row_is_none_for_plain_and_per_entry() {
+    let plain = classify(&load_golden("lo-unencrypted.odt")).expect("plain");
+    assert_eq!(plain.mode, Mode::Plain);
+    assert!(plain.wholesome_row().is_none());
+
+    let per_entry = classify(&load_golden("lo-legacy-aes-cbc.odt")).expect("per-entry");
+    assert_eq!(per_entry.mode, Mode::PerEntry);
+    assert!(
+        per_entry.wholesome_row().is_none(),
+        "per-entry has no single payload row -- decrypt acts on every entry"
+    );
+    assert!(per_entry.common.is_some(), "but it still has a latch row");
+}
+
+/// On a package LibreOffice actually writes, the two agree — so the accessor is
+/// not a different answer in the normal case, only a correct one in the crafted
+/// case.
+#[test]
+fn latch_and_payload_agree_on_a_real_libreoffice_package() {
+    let class = classify(&load_golden("lo-wholesome-gcm-argon2.odt")).expect("real wholesome");
+    let latch = class.common.as_ref().expect("latch");
+    let payload = class.wholesome_row().expect("payload");
+    assert_eq!(latch.path, payload.path);
+    assert_eq!(latch.cipher, payload.cipher);
+}

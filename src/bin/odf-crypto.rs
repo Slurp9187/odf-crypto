@@ -306,7 +306,11 @@ fn classification_human(c: &Classification) -> String {
             &format!("{} (not decryptable by this tool)", c.pgp_keys.len()),
         );
     }
-    if let Some(row) = c.common.as_ref() {
+    // The payload row for a wholesome package, the latch row otherwise. Not
+    // `common` alone: on a crafted two-row wholesome manifest that reports the
+    // cipher of a row `decrypt` will not touch -- see
+    // `Classification::wholesome_row`.
+    if let Some(row) = c.wholesome_row().or(c.common.as_ref()) {
         line("cipher:", cipher_str(row.cipher));
         line("kdf:", &kdf_str(&row.kdf));
         line("start-key:", start_key_str(row.start_key));
@@ -341,7 +345,8 @@ fn classification_json(c: &Classification) -> String {
     );
     o.insert("pgp_keys".into(), json!(c.pgp_keys.len()));
     o.insert("encrypted_entries".into(), json!(c.encrypted_entries.len()));
-    match c.common.as_ref() {
+    // Same as the human output above: the row decrypt acts on, not the latch.
+    match c.wholesome_row().or(c.common.as_ref()) {
         Some(row) => {
             o.insert("cipher".into(), json!(cipher_str(row.cipher)));
             o.insert("kdf".into(), json!(kdf_str(&row.kdf)));

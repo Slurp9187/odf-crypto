@@ -11,6 +11,60 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.6] - Unreleased
+
+### Fixed
+
+**`Classification::wholesome_row()` — the row `decrypt` actually acts on.**
+Closes [#70]. `Classification::common` is the **latch** row, and for a
+[`Mode::Wholesome`] package that need not be the same row.
+
+`common` reproduces LibreOffice's `HasEncryptedEntries`, which is first-wins: the
+first accepted row resolving to `content.xml` **or** `encrypted-package`. Whether
+the package is wholesome is decided separately, by whether a complete
+`encrypted-package` row exists at all. A manifest carrying both therefore takes
+its verdict from one row and its `common` from the other:
+
+| row | cipher | kdf | |
+| --- | --- | --- | --- |
+| `content.xml` | AES-256-GCM | Argon2id | first, so this is `common` |
+| `encrypted-package` | AES-256-CBC | PBKDF2 | what `decrypt` uses |
+
+Reading `common` there reports the modern profile for a package whose payload is
+neither. LibreOffice does not write such a file; an attacker can. Constructed and
+run in both directions, so the fixture cannot pass by only ever being built one
+way round.
+
+**The behaviour is correct and did not change.** First-wins mirrors
+`ZipPackage.cxx`, and the latch assignment is byte-identical back through
+`0.1.0-rc.1`. What was wrong is that the public surface invited a reading it did
+not support: *"the common encryption data"* reads like the package's cipher
+stack, and `Mode::Wholesome`'s own docs call `encrypted-package` the payload.
+
+`decrypt` now **calls** the new accessor rather than repeating its selection, so
+a consumer asking *what will decrypt use* gets the same answer by construction.
+A second copy of that `find` is the drift this crate keeps finding elsewhere.
+
+**The CLI was reporting the wrong row.** `inspect`, in both its human and JSON
+output, read `common` for `cipher`, `kdf`, `start-key`, `checksum` and
+`key-size`. On a crafted two-row wholesome package it named a cipher `decrypt`
+would not touch. It now reports the payload row where there is one and the latch
+row otherwise.
+
+`wholesome_row()` returns `None` for `Mode::Plain` and — deliberately — for
+`Mode::PerEntry`, where there is no single payload row at all: `decrypt` acts on
+every entry in `encrypted_entries`. Naming a row there would be the same
+over-claim in the other direction.
+
+Found while answering an integration question from the `encrypted-file-vault`
+session, which had just shipped a write-path guard reading `common` for exactly
+this purpose. They reproduced it independently against `0.1.0-rc.4` and hit the
+same trap building the fixture: a non-GCM row with **no checksum** is rejected as
+incomplete, so the package classifies `PerEntry` and the divergence silently does
+not appear. Anyone constructing that shape needs the checksum on the PBKDF2 row.
+
+[#70]: https://github.com/Slurp9187/odf-crypto/issues/70
+
 ## [0.1.0-rc.5] - 2026-09-20
 
 ### Fixed
