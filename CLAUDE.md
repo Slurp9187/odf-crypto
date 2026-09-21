@@ -133,11 +133,21 @@ returns `HostCannotAllocate` instead of killing the process. Verified that the
 abort closed rather than moved: everything beneath that entry point in argon2
 0.5.3 is heap-free.
 
-**Others are still open**, and a ceiling is not a fix for them. The largest:
-`decrypt.rs`'s inflate slots and cipher buffers, sized from `manifest:size` and
-member lengths, each bounded at 1 GiB but summing across up to
-`MAX_ENCRYPTED_ENTRIES` rows with wrapped plaintext live throughout. They are
-tracked, not forgotten — see the issue linked from `CHANGELOG.md`'s rc.5 entry.
+`decrypt.rs`'s own allocations followed in the same release: the inflate slots,
+the cipher buffers and the derived-key buffer all go through `try_reserve_exact`
+now, and the error variant gained an `AllocationSite` because its message said
+*"for key derivation"* unconditionally and that stopped being true.
+
+**Two sites remain open, and both are named in the code rather than left to be
+rediscovered.** `read_member_at`'s `read_to_end` grows a ciphertext buffer
+infallibly — `std::io::Read` offers no fallible form, and pre-sizing it from the
+zip header was written and rejected, because the header is the attacker's number
+too and a member claiming 1 GiB while delivering ten bytes would then cost a real
+1 GiB. `ZipArchive::new` preallocates from a count the file supplies; `zip` caps
+it near 4.5x the input by its own consistency check, which is mitigation and not
+ours to close. Recording *why* a site stays open is the requirement — an
+undocumented residual reads as an oversight, and the next person closes it the
+wrong way.
 
 **So: an allocation whose size comes from untrusted input must be fallible.**
 Reach for `Vec::try_reserve` and an API that accepts caller-provided storage
@@ -210,7 +220,7 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-195 of them: 128 library, 20 CLI unit, 35 CLI end-to-end, 12 doctests. All must
+198 of them: 131 library, 20 CLI unit, 35 CLI end-to-end, 12 doctests. All must
 pass in every feature configuration.
 
 **And CI runs all three**, which was not true until PR #54. The `clippy` and

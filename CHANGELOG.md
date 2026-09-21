@@ -60,11 +60,72 @@ split, and that neither variant maps to `EX_MALFORMED`. By this repo's own
 standard the guard itself is untested, and saying so is better than implying
 otherwise.
 
-**The other aborting allocations are recorded, not fixed** — the inflate slots
-and cipher buffers in `decrypt.rs`, each bounded at 1 GiB but summing across up
-to 4096 rows with wrapped plaintext live throughout. Filed as [#51]. Note
-`MemberPlaintext::try_new_with`'s `try_` names the *fill*, not the allocation;
-it is the site most likely to be mistaken for already-safe.
+**`decrypt`'s remaining allocations sized from untrusted input no longer abort.**
+Closes [#51], and completes what the Argon2 fix above started. The inflate slot
+for a wholesome package, the inflate slot for each member of a per-entry package,
+the buffer every cipher decrypts in place, and the derived-key buffer are all
+allocated with `try_reserve_exact` now and return
+`DecryptError::HostCannotAllocate` instead of calling `handle_alloc_error`.
+
+Every one of them ran with at least one `secure-gate` wrapper live, and the
+per-entry loop holds up to `MAX_ENCRYPTED_ENTRIES` of them at once — so an abort
+there did not merely kill the process, it killed it with every member decrypted
+so far sitting unwiped, because an abort skips unwinding and `Drop` is this
+crate's only zeroizing primitive.
+
+**`MemberPlaintext::try_new_with` was the trap, exactly as [#51] predicted.** Its
+`try_` names the *fill*; its body is `vec![0u8; len]` (secure-gate 0.9.0-rc.12,
+`dynamic.rs`), an infallible allocation sized from `manifest:size`. The
+replacement keeps the property it was chosen for — the wrapper is built before
+the fill, so a give-up part-way through leaves its bytes inside something that
+zeroizes them — and adds the fallible allocation, because `Dynamic::new`
+transfers the buffer rather than copying it.
+
+**AES-GCM now decrypts in place**, like the CBC and Blowfish paths already did.
+`Aead::decrypt` allocated the plaintext itself, with a `Vec::from` inside `aead`
+sized from the member's length, infallibly and outside any wrapper until it
+returned. `decrypt_in_place` writes over a buffer allocated here and truncates
+the tag away, so there is no second allocation and the plaintext never exists
+unwrapped.
+
+**Breaking: `DecryptError::HostCannotAllocate` gained a `site` field**, of the
+new public type `AllocationSite`. Not symmetry for its own sake — the variant's
+`Display` read *"host could not allocate N bytes for key derivation"*
+unconditionally, which was true while key derivation was the only fallible
+allocation here and became a **false statement** about four other sites the
+moment they were added. The variant's own doc predicted this field and said the
+break would be accepted; this is that moment. `EncryptError::HostCannotAllocate`
+is deliberately left alone: it has one such allocation, its message is accurate,
+and a single-variant enum there would be shape-matching with nothing behind it.
+
+**Two sites stay open, and say so where they live.** `read_member_at`'s
+`read_to_end` grows a ciphertext buffer infallibly; `std::io::Read` exposes no
+fallible form, and pre-sizing it from the zip header was written and **rejected**
+— the header is the attacker's number too, so a member declaring 1 GiB and
+delivering ten bytes would then cost a real 1 GiB where today it costs ten bytes,
+trading an abort the package cannot otherwise provoke for an allocation it can.
+`ZipArchive::new` preallocates its central directory from a count the file
+supplies; `zip`'s own end-of-central-directory consistency check caps that near
+4.5× the input length, which is mitigation rather than a closed path and is not
+ours to close. It is also the one site a detection-only consumer reaches.
+
+**Two ceilings lost their stated basis, the same way `ARGON2_MAX_M_COST_KIB`
+did.** `inflated_len`'s doc argued `INFLATE_CEILING` from *"`vec![0u8; huge]`
+aborts the caller's process"*; that is no longer what happens. What survives is
+real and is now stated as the whole of it: screening a negative or untruncatable
+`i64` before the cast, and answering an absurd claim with a comparison rather
+than an allocation attempt and a KDF. `PAYLOAD_CEILING` carries the same note.
+Neither was widened here — that is the same open decision as the Argon2 one, and
+taking it quietly in a doc comment is how the last one got lost.
+
+**The guard was tested by breaking it**, and this one is deterministic where the
+Argon2 test is not. `try_reserve_exact` refuses a request whose byte count
+overflows before asking the allocator for anything, so
+`try_reserve_exact_refuses_an_impossible_request` fires on every host rather than
+only on a small one. Swapping the helper back to `vec![0u8; n]` makes it die
+inside `raw_vec` with `capacity overflow`; restoring it makes it return `Err` and
+pass. The `#[ignore]`d 1 GiB test still covers the other half — the allocator
+itself saying no — and neither test stands in for the other.
 
 **The exit-code contract is guarded, in the only place exhaustiveness works.**
 Closes [#40]. Exit codes are a contract — 4 means *wrong password, try again*,
