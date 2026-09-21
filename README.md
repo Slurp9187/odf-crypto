@@ -21,6 +21,41 @@ open.
 
 > **Pre-release.** This is `0.1.0-rc.7`. The API may change before `0.1.0`.
 
+## What it does
+
+| What you have | Detect | Decrypt | Encrypt |
+| --- | --- | --- | --- |
+| AES-256-GCM + Argon2id — what current LibreOffice writes | ✅ | ✅ | ✅ |
+| AES-CBC + PBKDF2 — older LibreOffice | ✅ | ✅ | ❌ |
+| Blowfish-CFB + PBKDF2 — ODF 1.1 | ✅ | ✅ | ❌ |
+| PGP-wrapped package | ✅ | ❌ | ❌ |
+| Unencrypted package | ✅ | n/a | ✅ |
+| **Needs** | the default build | `crypto-ops` | `crypto-ops` |
+
+Detection is the entire default build and links no cryptography at all; the
+cipher stack is opt-in. See [Features](#features).
+
+**This crate reads three profiles and writes one.** The grid above is what
+`decrypt` accepts; `encrypt` always writes the first row, whatever the input
+was. That asymmetry is an effort gap rather than a judgement — wholesome
+Argon2id/AES-GCM is what current LibreOffice saves by default, so it is what a
+new file should be, and nothing has yet needed a writer for the older two. If
+you need one, say so on the tracker; the primitives are already here, because
+`decrypt` uses them.
+
+PGP-encrypted packages are detected and reported (`Classification::pgp_keys`) but
+not decrypted — `DecryptError::UnsupportedPgp`. **That one is not an effort
+gap.** `decrypt(bytes, password)` has no surface a private key could arrive
+through: PGP unwrapping needs a keyring, an agent socket or a smartcard PIN, not
+a password string, and an OpenPGP stack would dwarf the 25-crate default this
+crate is built around. `classify` hands you the wrapped key material so a caller
+who already has an OpenPGP implementation can do the unwrap.
+
+**Writing a profile is not the same as LibreOffice opening the result.** Those
+are two claims, and the second is the one that matters to whoever has to read
+the file afterwards. It is evidenced separately — see
+[How it's verified](#how-its-verified).
+
 ## Install
 
 ```toml
@@ -34,6 +69,24 @@ odf-crypto = { version = "0.1.0-rc.7", features = ["crypto-ops"] }
 
 Pre-release versions are not matched by ordinary requirements — name the full
 version as above; `"0.1"` will not resolve to it.
+
+## Supported algorithms
+
+| Cipher (`Cipher`) | KDF (`Kdf`) | Start key (`StartKeyAlg`) | Typical producer |
+| --- | --- | --- | --- |
+| `AesGcmW3c` — AES-GCM | `Argon2id { t, m, p }` | `Sha256` | Current LibreOffice |
+| `AesCbcW3c` — AES-CBC | `Pbkdf2 { iterations, salt }` | `Sha256` / `Sha1` | Legacy LibreOffice |
+| `BlowfishCfb8` — Blowfish-CFB | `Pbkdf2 { iterations, salt }` | `Sha1` | Apache OpenOffice, older ODF |
+
+Derived key length (128/192/256) is carried on `EntryEncryption::derived_key_len`.
+Entry integrity is `Checksum::Sha1_1K` or `Checksum::Sha256_1K` over the first
+1 KiB, matching LibreOffice.
+
+The SHA-1 start-key path also handles LibreOffice's four-candidate fallback
+ladder, including `rtl_digest_SHA1` — a deliberately non-conforming SHA-1 that
+LibreOffice keeps for compatibility (`tdf#114939`). The repository carries the
+analysis in `tests/goldens/sha1_star.py`; `tests/goldens/lo-odf11-nonascii-password.odt`
+is the fixture that exercises it.
 
 ## Usage
 
@@ -254,40 +307,6 @@ and writes go to a temporary in the destination directory and are renamed over
 the target, so an interrupted run cannot leave a half-written `.odt` that looks
 complete. `-o -` writes to stdout.
 
-## Supported algorithms
-
-| Cipher (`Cipher`) | KDF (`Kdf`) | Start key (`StartKeyAlg`) | Typical producer |
-| --- | --- | --- | --- |
-| `AesGcmW3c` — AES-GCM | `Argon2id { t, m, p }` | `Sha256` | Current LibreOffice |
-| `AesCbcW3c` — AES-CBC | `Pbkdf2 { iterations, salt }` | `Sha256` / `Sha1` | Legacy LibreOffice |
-| `BlowfishCfb8` — Blowfish-CFB | `Pbkdf2 { iterations, salt }` | `Sha1` | Apache OpenOffice, older ODF |
-
-Derived key length (128/192/256) is carried on `EntryEncryption::derived_key_len`.
-Entry integrity is `Checksum::Sha1_1K` or `Checksum::Sha256_1K` over the first
-1 KiB, matching LibreOffice.
-
-The SHA-1 start-key path also handles LibreOffice's four-candidate fallback
-ladder, including `rtl_digest_SHA1` — a deliberately non-conforming SHA-1 that
-LibreOffice keeps for compatibility (`tdf#114939`). The repository carries the
-analysis in `tests/goldens/sha1_star.py`; `tests/goldens/lo-odf11-nonascii-password.odt`
-is the fixture that exercises it.
-
-**This crate reads three profiles and writes one.** The table above is what
-`decrypt` accepts; `encrypt` always writes the first row, whatever the input
-was. That asymmetry is an effort gap rather than a judgement — wholesome
-Argon2id/AES-GCM is what current LibreOffice saves by default, so it is what a
-new file should be, and nothing has yet needed a writer for the older two. If
-you need one, say so on the tracker; the primitives are already here, because
-`decrypt` uses them.
-
-PGP-encrypted packages are detected and reported (`Classification::pgp_keys`) but
-not decrypted — `DecryptError::UnsupportedPgp`. **That one is not an effort
-gap.** `decrypt(bytes, password)` has no surface a private key could arrive
-through: PGP unwrapping needs a keyring, an agent socket or a smartcard PIN, not
-a password string, and an OpenPGP stack would dwarf the 25-crate default this
-crate is built around. `classify` hands you the wrapped key material so a caller
-who already has an OpenPGP implementation can do the unwrap.
-
 ## Features
 
 There are two builds, and no feature flag turns anything off — the default is
@@ -315,11 +334,95 @@ pulled an identical dependency graph, so the split cost a build configuration
 and bought nothing a linker does not already do for a consumer that never calls
 `encrypt`.
 
+## How it's verified
+
+Fidelity to LibreOffice is this crate's only substantive claim, so the evidence
+for it ships with the crate rather than living in a CI log.
+
+**Six goldens, every one real LibreOffice output.** `tests/goldens/*.odt` were
+produced by a local LibreOffice — check `meta:generator`, all six read 26.2.1.2 —
+and they ship *inside the published tarball*, so the crate can verify its own
+fidelity claim from the artifact a consumer actually downloads. That includes
+`aoo-blowfish-pbkdf2.odt`, whose `aoo-` prefix names the ODF 1.1 Blowfish format
+family rather than its producer; there is no Apache OpenOffice-produced evidence
+here, so the corpus proves fidelity to LibreOffice and to the format, not
+agreement between two independent writers.
+
+**A round trip through LibreOffice, not merely through us.**
+`lo-opens-our-encrypt-output.odt` is what LibreOffice saved after being handed a
+package this crate wrote. That is the difference between *we can read what we
+write* and *the reference implementation can*.
+
+**A human opened the artifacts by double-click.** The UNO harness that drives
+LibreOffice is not the path a double-click takes — no password dialog, no
+recovery prompt — so `tests/artifacts/` exists to be opened by hand, with a
+manifest naming the password and expected text for each. Recorded verdict:
+2026-09-20, LibreOffice 26.2.1.2 on Windows 11 build 26200, all six prompted for
+a password, accepted it, rendered the expected text, and raised no recovery bar.
+That verdict outranks the harness.
+
+**226 tests, passing in every feature configuration** — 149 library, 20 CLI
+unit, 35 CLI end-to-end, 22 doctests. All three builds run in CI, not just the
+two that are cheap.
+
+**The examples below are among those doctests.** Every ` ```rust ` block in this
+file is compiled on each CI run, so an example naming an item that has since
+moved fails the build instead of reaching you.
+
+**A 54-finding audit against LibreOffice source** — 39 confirmed, 2 refuted, the
+rest narrowed. [The record](https://github.com/Slurp9187/odf-crypto/blob/main/docs/audits/classify-lo-fidelity-2026-09-01.md)
+carries the upstream citation and a reproduction for each, including the two it
+could not substantiate.
+
+## Security
+
+**Key material zeroizes on drop.** The password digest and every derived key are
+held in [`secure-gate`](https://crates.io/crates/secure-gate) wrappers, which is
+this crate's only zeroizing primitive; no bare `Vec<u8>` holds a key between
+derivation and use. Plaintext crosses the public API as a plain `Vec<u8>` on
+purpose — a wrapper in the signature would conscript an exact dependency version
+on every consumer, and the caller receives the bytes either way.
+
+**The library does not abort your process.** No `panic!`, `unwrap` or `expect`
+on any non-test path — and, the part that is easy to miss, an allocation sized
+from an untrusted manifest field goes through `Vec::try_reserve_exact` and
+returns `DecryptError::HostCannotAllocate` rather than reaching
+`handle_alloc_error`. That is not tidiness: an abort skips unwinding, so `Drop`
+never runs, so the keys above are **not** wiped. Two allocation sites remain
+outside this, and both are named in the source together with the reason they
+stay open.
+
+**The file chooses what opening it costs.** `decrypt` has to derive the key
+before it can tell whether the password was even right, so a manifest's Argon2
+and PBKDF2 parameters are acted on before anything about the file is trusted.
+Measured: a 7 KiB package rewritten to ask for 8 GiB of Argon2 memory took 29
+minutes to report a wrong password. So `decrypt` applies default ceilings —
+chosen to refuse nothing any real producer writes — and `decrypt_with_limits`
+lets a caller who knows their input raise them, up to `DecryptLimits::PERMISSIVE`.
+
+**Passwords never reach `argv`.** There is deliberately no `--password VALUE`
+flag; a process listing is world-readable. See
+[Passwords never come from the command line](#passwords-never-come-from-the-command-line).
+
+**What this does not do.** It will not tell you a password is weak. It cannot
+distinguish a wrong password from tampered ciphertext — both surface as
+`WrongPassword`, and on the AES-CBC and Blowfish profiles the checksum covers
+only the first 1 KiB, so damage past that appears as an inflate failure instead.
+And it is not a hardened implementation of the ciphers themselves: those are the
+RustCrypto crates, and inherit their properties rather than this crate's.
+
 ## MSRV
 
 Rust **1.85**.
 
-## Attribution
+## Sibling crate
+
+[**`msoffice-crypto`**](https://github.com/Slurp9187/msoffice-crypto) does for
+Microsoft Office what this crate does for OpenDocument — same method, same
+author, different format family. The two READMEs share a section order so that
+knowing one file tells you where to look in the other.
+
+## Acknowledgements
 
 This crate is an independent implementation. Its behaviour was derived from the
 published OpenDocument format and from studying how existing implementations

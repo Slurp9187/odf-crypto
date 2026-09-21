@@ -65,6 +65,59 @@ error[E0609]: no field `odf12_fatl` on type `Classification`
 which is exactly the defect class this catches: a README describing an API that
 has since moved. Restored afterwards.
 
+**The README follows a section order shared with `msoffice-crypto`.** The two
+crates are siblings — same method, same author, different format family — and
+until now a reader who knew one file had to relearn the other. The spine is
+eleven headings in the same words and the same order; where the crates genuinely
+differ, the difference is a **named slot** rather than a file quietly carrying an
+extra heading.
+
+odf-crypto fills one slot (`## Supported algorithms`, the cipher/KDF/start-key
+decomposition, which has no analogue in a format whose axes are hash × keyBits)
+and declares two empty. One of those is *"why this one rather than an existing
+implementation"*: msoffice-crypto needs it because four implementations already
+exist, and this crate does not — measured, not assumed, by searching crates.io
+for `odf`, `opendocument`, `odt` and `libreoffice`, 80 results of which only this
+crate mentions encryption at all.
+
+Four new sections, and one reshaped:
+
+- **`## What it does`** — a ✅/❌ capability grid at position two. "Reads three
+  profiles, writes one" was a true sentence two-thirds of the way down a 356-line
+  file; it is now a column. The paragraphs explaining *why* the gap exists, and
+  why PGP is a different kind of gap, moved up to sit under it.
+- **`## How it's verified`** — the goldens, the LibreOffice round trip, the
+  human double-click verdict, the test counts and the audit, gathered in one
+  place instead of being scattered through the prose.
+- **`## Security`** — new. Zeroize-on-drop, why the no-abort rule is about
+  `Drop` and not tidiness, why a *file* chooses what opening it costs, and an
+  explicit list of what the crate does **not** do.
+- **`## Sibling crate`** — a reciprocal pointer, each crate describing the other
+  in parallel words.
+- `## Attribution` is now `## Acknowledgements`, matching the spine.
+
+Nothing was cut. Two words changed: the renamed heading, and "the table above"
+becoming "the grid above" where a paragraph moved.
+
+**The audit link is absolute.** It points into `docs/`, which `include` does not
+ship, so a relative link would have resolved on GitHub and 404'd from docs.rs
+and crates.io — the one place a reader following a fidelity claim is most likely
+to be standing.
+
+### Changed
+
+**Crate keywords and description, for discoverability by file extension.**
+`keywords` traded `encryption` for `odt`. Five is the crates.io maximum, so this
+was a swap rather than an addition, and the measurement decided it: searching the
+registry returns this crate first for `odf` and `libreoffice` and fifth for
+`opendocument`, but **not in the first twenty for `odt`** — while `encryption`
+is both the most contested term on the registry and already present in the
+description, which crates.io also indexes.
+
+The description gains `.ods` and `.odp` for the same reason, and loses a
+repetition it should not have had: it read *"…package encryption detection,
+decryption and encryption"*.
+
 ## [0.1.0-rc.6] - 2026-09-21
 
 ### Fixed
