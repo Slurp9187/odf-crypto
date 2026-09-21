@@ -17,9 +17,7 @@ use sha1::digest::Output;
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
-use crate::limits::{
-    ARGON2_MAX_T_COST, ARGON2_MIN_M_COST_KIB, ARGON2_MIN_P_COST, ARGON2_MIN_T_COST,
-};
+use crate::limits::{ARGON2_MIN_M_COST_KIB, ARGON2_MIN_P_COST, ARGON2_MIN_T_COST};
 use crate::sensitive::PasswordDigest;
 use crate::types::StartKeyAlg;
 
@@ -128,15 +126,16 @@ pub(crate) fn derive_argon2id(
     t: i32,
     m: i32,
     p: i32,
-    max_m_kib: u32,
+    limits: &crate::DecryptLimits,
     out: &mut [u8],
 ) -> Result<(), KdfError> {
     let t = u32::try_from(t).map_err(|_| KdfError::Params(format!("argon2 iterations {t}")))?;
     let m = u32::try_from(m).map_err(|_| KdfError::Params(format!("argon2 memory {m}")))?;
     let p = u32::try_from(p).map_err(|_| KdfError::Params(format!("argon2 lanes {p}")))?;
-    if !(ARGON2_MIN_T_COST..=ARGON2_MAX_T_COST).contains(&t) {
+    if !(ARGON2_MIN_T_COST..=limits.argon2_max_t).contains(&t) {
         return Err(KdfError::Params(format!(
-            "argon2 iterations {t} outside {ARGON2_MIN_T_COST}..={ARGON2_MAX_T_COST}"
+            "argon2 iterations {t} outside {ARGON2_MIN_T_COST}..={}",
+            limits.argon2_max_t
         )));
     }
     // `max_m_kib` is the caller's, not this function's, and that asymmetry is
@@ -145,12 +144,16 @@ pub(crate) fn derive_argon2id(
     // verified; `encrypt` passes `..._WRITE`, the field's own width, because
     // the caller chose to spend their own memory. This function cannot know
     // which threat model it is in. Its callers can.
-    if !(ARGON2_MIN_M_COST_KIB..=max_m_kib).contains(&m) {
+    if !(ARGON2_MIN_M_COST_KIB..=limits.argon2_max_m_kib).contains(&m) {
         return Err(KdfError::Params(format!(
-            "argon2 memory {m} KiB outside {ARGON2_MIN_M_COST_KIB}..={max_m_kib}"
+            "argon2 memory {m} KiB outside {ARGON2_MIN_M_COST_KIB}..={}",
+            limits.argon2_max_m_kib
         )));
     }
-    if !(ARGON2_MIN_P_COST..=Params::MAX_P_COST).contains(&p) {
+    // Both: ours (a judgement about untrusted input, overridable) and argon2's
+    // (what the cipher can run, not overridable). Checking ours first means the
+    // message names whichever is actually tighter.
+    if !(ARGON2_MIN_P_COST..=limits.argon2_max_p.min(Params::MAX_P_COST)).contains(&p) {
         return Err(KdfError::Params(format!("argon2 lanes {p}")));
     }
     let params = Params::new(m, t, p, Some(out.len()))

@@ -919,13 +919,18 @@ fn the_refusal_reason_names_whose_rule_it_was() {
     // crate declined". Reporting our own policy bound as a rule of argon2 or
     // of ODF would be a lie a consumer renders as authoritative.
     //
-    // OURS: the ODF manifest schema types these as unbounded positiveInteger
-    // and LibreOffice checks only `0 < t`, so nothing but this crate refuses
-    // a large t.
-    match Argon2Params::new(i32::MAX, 65536, 4) {
+    // THE FORMAT'S: `positiveInteger` has no upper facet, so a large `t` is
+    // accepted here since rc.6 -- a cost the caller picked for their own
+    // machine is theirs. What `OutOfRange` reports on this path now is the
+    // format's own floor.
+    assert!(
+        Argon2Params::new(i32::MAX, 65536, 4).is_ok(),
+        "the write path stopped capping t in rc.6; the read path's cap is          DecryptLimits::argon2_max_t"
+    );
+    match Argon2Params::new(0, 65536, 4) {
         Err(EncryptError::Params(ParamsReason::OutOfRange { axis, got, .. })) => {
             assert_eq!(axis, Argon2Axis::T);
-            assert_eq!(got, i32::MAX);
+            assert_eq!(got, 0, "zero is not a positiveInteger");
         }
         other => panic!("expected OutOfRange on t, got {other:?}"),
     }
@@ -1118,12 +1123,12 @@ fn the_t_ceiling_still_refuses_the_expensive_direction() {
     // accept and the reject case makes the test self-referential: it would pass
     // at 32, at 4, at anything. #69's decision was specifically NOT to lower it,
     // so the test has to pin the value, which means naming it.
-    assert_eq!(crate::limits::ARGON2_MAX_T_COST, 65_536);
+    assert_eq!(crate::limits::ARGON2_MAX_T_COST_WRITE, i32::MAX as u32);
     assert!(
         Argon2Params::new(65_536, 65536, 4).is_ok(),
-        "the ceiling itself is inclusive"
+        "a caller's own t is theirs to pick"
     );
-    let err = Argon2Params::new(65_537, 65536, 4).expect_err("one past the ceiling is refused");
+    let err = Argon2Params::new(-1, 65536, 4).expect_err("negative is not a positive integer");
     assert!(
         matches!(
             err,

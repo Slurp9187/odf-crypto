@@ -21,7 +21,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify;
 use crate::limits::{
-    AES_GCM_IV_LEN, ARGON2_MAX_M_COST_KIB_WRITE, ARGON2_MAX_T_COST, ARGON2_MIN_M_COST_KIB,
+    AES_GCM_IV_LEN, ARGON2_MAX_M_COST_KIB_WRITE, ARGON2_MAX_T_COST_WRITE, ARGON2_MIN_M_COST_KIB,
     ARGON2_MIN_P_COST, ARGON2_MIN_T_COST, DEFLATE_CEILING, MIMETYPE_CEILING,
 };
 use crate::sensitive::{DeflatedPlaintext, DerivedKey};
@@ -143,15 +143,22 @@ impl core::fmt::Display for Argon2Axis {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParamsReason {
-    /// **This crate declined.** The value is outside the range `odf-crypto`
-    /// acts on.
+    /// The value is outside the range `odf-crypto` acts on.
     ///
-    /// This is a policy bound of ours, and it is worth being blunt about that:
-    /// the ODF manifest schema types these attributes as unbounded
-    /// `positiveInteger`, and LibreOffice validates the Argon2 triple only as
-    /// `0 < t && 0 < m && 0 < p`. So a tuple refused here may be perfectly
-    /// legal and perfectly openable elsewhere. Do not report it as a format
-    /// violation.
+    /// **What that range is changed in `0.1.0-rc.6`, and this doc used to say
+    /// the opposite.** It read *"this is a policy bound of ours — do not report
+    /// it as a format violation"*, which was true when
+    /// [`Argon2Params::new`] capped `t` at `1 << 16` and `m` at 1 GiB. Both
+    /// policy caps are gone from the write path: a cost you choose for your own
+    /// machine is yours to choose. What is left here is the **format's** own
+    /// rule — `positiveInteger`, so `0` and negatives are refused, and the
+    /// manifest attribute's `i32` width above.
+    ///
+    /// So on this side a refusal now means the tuple **cannot be written into a
+    /// manifest at all**, which is the opposite of the old caveat. The policy
+    /// caps still exist where a number arrives from outside: see
+    /// [`crate::DecryptLimits`], which bounds what `decrypt` will act on and is
+    /// overridable per call.
     #[error("{axis} = {got} is outside {min}..={max}, the range this crate acts on")]
     OutOfRange {
         /// Which axis was out of range.
@@ -273,8 +280,13 @@ impl Argon2Params {
                 max,
             })
         };
-        if !(ARGON2_MIN_T_COST..=ARGON2_MAX_T_COST).contains(&u32::try_from(t).unwrap_or(0)) {
-            return Err(ours(Argon2Axis::T, t, ARGON2_MIN_T_COST, ARGON2_MAX_T_COST));
+        if !(ARGON2_MIN_T_COST..=ARGON2_MAX_T_COST_WRITE).contains(&u32::try_from(t).unwrap_or(0)) {
+            return Err(ours(
+                Argon2Axis::T,
+                t,
+                ARGON2_MIN_T_COST,
+                ARGON2_MAX_T_COST_WRITE,
+            ));
         }
         if !(ARGON2_MIN_M_COST_KIB..=ARGON2_MAX_M_COST_KIB_WRITE)
             .contains(&u32::try_from(m_kib).unwrap_or(0))
@@ -685,7 +697,13 @@ pub fn encrypt_with_params(
                 params.t,
                 params.m_kib,
                 params.p,
-                ARGON2_MAX_M_COST_KIB_WRITE,
+                // The write path's own ceilings, not `DecryptLimits::default()`:
+                // these are the caller's numbers about their own machine, so
+                // only the field widths and the cipher bound them. Same
+                // reasoning as `ARGON2_MAX_M_COST_KIB_WRITE`'s own doc.
+                &crate::DecryptLimits::PERMISSIVE
+                    .with_argon2_max_t(ARGON2_MAX_T_COST_WRITE)
+                    .with_argon2_max_m_kib(ARGON2_MAX_M_COST_KIB_WRITE),
                 key,
             )
             .map_err(
