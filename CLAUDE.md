@@ -210,7 +210,7 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-189 of them: 125 library, 17 CLI unit, 35 CLI end-to-end, 12 doctests. All must
+195 of them: 128 library, 20 CLI unit, 35 CLI end-to-end, 12 doctests. All must
 pass in every feature configuration.
 
 **And CI runs all three**, which was not true until PR #54. The `clippy` and
@@ -303,6 +303,22 @@ hidden argument purely so a caller reaching for it gets the reason rather than
 Exit codes are a contract: 4 means *wrong password, try again*, 5 means
 *refused, you had the wrong file*. A CLI that returns 1 for everything cannot be
 scripted.
+
+**The guard is in two halves and needs both**, because `DetectError`,
+`DecryptError` and `EncryptError` are `#[non_exhaustive]` and the binary is a
+separate crate from the library defining them. rustc therefore *requires* the
+`_` arm in `decrypt_exit`, and a new variant falls through it silently — which
+is what #40 was filed for. A canary written beside the mapping inherits the same
+required `_` arm and is blind to the same thing: measured, with a throwaway
+variant present the binary built clean and all three of its canaries passed
+20/20.
+
+So *correctness* lives in `src/bin/odf-crypto_tests.rs` — each variant asserted
+against its documented code — and *completeness* lives in the library, where the
+attribute does not apply: `every_*_variant_is_accounted_for_in_the_cli_exit_map`
+in `classify_tests.rs`, `decrypt_tests.rs` and `encrypt_tests.rs` have no `_` arm
+and stop compiling when a variant appears. Neither half catches what the other
+does.
 
 ## Plans record reversals
 

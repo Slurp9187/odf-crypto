@@ -1619,3 +1619,41 @@ fn pictures_photo_insert_then_folder_row_does_not_poison() {
     assert!(class.odf_version.is_none());
     assert!(class.media_type.is_none());
 }
+
+// --- CLI exit-code tripwire (#40) ----------------------------------------
+
+/// Every [`DetectError`] variant has an exit code assigned in `src/bin/odf-crypto.rs`
+/// -- approximated by "every variant is named in the match below", because the
+/// real property is not observable from where the mapping lives.
+///
+/// The binary is a separate crate from this one, and [`DetectError`] is
+/// `#[non_exhaustive]`, so rustc *requires* `detect_exit` to carry a `_` arm.
+/// A variant added tomorrow compiles, falls through that arm, and silently
+/// becomes EX_MALFORMED -- which is the whole of #40. A canary written beside
+/// the mapping inherits the same `_` arm and cannot catch it either; measured,
+/// not assumed (E0004: "`odf_crypto::DetectError` is marked as non-exhaustive, so a
+/// wildcard `_` is necessary to match exhaustively").
+///
+/// Inside the defining crate the attribute does not apply, so this match needs
+/// no `_` arm and does not have one. That is the entire mechanism.
+///
+/// **If this stopped compiling, you added a variant.** Give it an exit code in
+/// `detect_exit`, add it to `the_detect_exit_map_is_the_documented_one` in `src/bin/odf-crypto_tests.rs`, then name
+/// it here.
+///
+/// It maps to `()` deliberately. A number here would be a second copy of the
+/// mapping, free to drift from the one the binary actually runs: this half
+/// checks that every variant is *considered*, the binary's half checks that
+/// each one is *right*.
+#[test]
+fn every_detect_error_variant_is_accounted_for_in_the_cli_exit_map() {
+    fn accounted_for(e: &DetectError) {
+        match e {
+            DetectError::NotZip => (),
+            DetectError::MissingManifest => (),
+            DetectError::Zip(_) => (),
+            DetectError::Inconsistent(_) => (),
+        }
+    }
+    accounted_for(&DetectError::NotZip);
+}
