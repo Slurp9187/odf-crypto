@@ -232,7 +232,15 @@ pub struct Argon2Params {
 
 impl Argon2Params {
     /// What current LibreOffice writes: `t = 3`, `m = 65536` KiB (64 MiB),
-    /// `p = 4` (`objstor.cxx:349-399`). The tuple [`encrypt`] uses.
+    /// `p = 4` — `oArgon2Args.emplace(3, (1<<16), 4)` in
+    /// `package/source/zippackage/ZipPackage.cxx`, on the branch taken when the
+    /// KDF is Argon2id. The tuple [`encrypt`] uses.
+    ///
+    /// This used to cite `objstor.cxx:349-399`, which is where LibreOffice
+    /// chooses Argon2id *over PBKDF2* and never names a tuple at all. The
+    /// numbers were right and the citation was not, which is the failure mode
+    /// `CLAUDE.md` means by *check the code, not the doc* — a reader following
+    /// it to confirm `65536` would not have found it.
     pub const LIBREOFFICE_DEFAULT: Self = Self {
         t: WHOLESOME.argon2_t,
         m_kib: WHOLESOME.argon2_m_kib,

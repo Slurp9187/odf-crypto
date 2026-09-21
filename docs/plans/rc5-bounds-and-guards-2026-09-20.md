@@ -1,4 +1,4 @@
-Status: **In flight (`0.1.0-rc.5`)** — 4 of 7 items shipped, 1 partial, 2 not started · Authored 2026-09-20 · **Written into the repo late**, after three of its items had already landed; see *How this plan got here* · Shipped so far: [#52](https://github.com/Slurp9187/odf-crypto/pull/52) (§1, §6), `507d8a0` (§2's first half), plus two off-plan items — [#54](https://github.com/Slurp9187/odf-crypto/pull/54) and [#55](https://github.com/Slurp9187/odf-crypto/pull/55)
+Status: **In flight (`0.1.0-rc.5`)** — every item shipped; §7's human verdict is the one thing outstanding · Authored 2026-09-20 · **Written into the repo late**, after three of its items had already landed; see *How this plan got here* · Shipped so far: [#52](https://github.com/Slurp9187/odf-crypto/pull/52) (§1, §6), `507d8a0` (§2's first half), plus two off-plan items — [#54](https://github.com/Slurp9187/odf-crypto/pull/54) and [#55](https://github.com/Slurp9187/odf-crypto/pull/55)
 
 Consumes [docs/plans/odf-encryption-decrypt-2026-09-02.md](odf-encryption-decrypt-2026-09-02.md) and [docs/plans/odf-encryption-encrypt-2026-09-03.md](odf-encryption-encrypt-2026-09-03.md), both Shipped. §1 and §2 below reverse decisions recorded in the first of those; the reversals are written into *that* file as well, not only here.
 
@@ -188,7 +188,7 @@ instruction (`odf-encryption-encrypt-2026-09-03.md:169`) that `DEFLATE_CEILING`
 is *hygiene, not a security boundary*, which the current shared-constant comment
 contradicts.
 
-### 3. Error taxonomy: add the missing fourth case — **HALF SHIPPED**
+### 3. Error taxonomy: add the missing fourth case — **SHIPPED**
 
 A consumer could not distinguish: (1) the format forbids it, (2) the cipher/KDF
 cannot run it, (3) this host cannot afford it, (4) **spec-legal, implementable,
@@ -204,9 +204,19 @@ released version ever carried the wrong shape and no migration was manufactured.
 8. Non-breaking, because the reason type was `#[non_exhaustive]` from the start —
 which is what held this to one break rather than two.
 
-**Outstanding:** the split §1 surfaces between *the format forbids it* and *we
-decline*, and [#48](https://github.com/Slurp9187/odf-crypto/issues/48)'s
-`DecryptError::Zip`.
+**Shipped in rc.5, second half:** [#48](https://github.com/Slurp9187/odf-crypto/issues/48)'s
+`DecryptError::Zip`. The rewrite's **serialization** failures are `Internal` now,
+matching `encrypt::build_manifest`, which had it right. Its **parse** failure
+stays `Zip` and un-elided, on a measured argument that the path is unreachable
+rather than on an elision implying a live threat — three independent adversarial
+searches found no input `classify` accepts and the rewrite refuses, and because
+the argument is scoped to quick-xml 0.38.4 a test pins it rather than prose.
+
+The split §1 surfaced between *the format forbids it* and *we decline* is carried
+by `limits.rs`'s labelling and `ParamsReason`, not by a further error variant: a
+consumer needing to know whose rule refused a value reads it there, and
+`BadParameters` stays one verdict about the manifest. §5's first section is the
+decision tree for exactly that question.
 
 ### 4. Fix the scope justifications; change no behaviour — **SHIPPED**
 
@@ -258,7 +268,7 @@ cannot see). The original five:
   about the file, not what a script does about it.
 - `lib.rs:32` / `README.md:255` assert scope with no reason on the public surface.
 
-### 5. A troubleshooting guide, organised by symptom — **NOT STARTED**
+### 5. A troubleshooting guide, organised by symptom — **SHIPPED**
 
 The typed reasons in §3 tell a caller *which* case they hit, not what to do about
 it. That belongs on one page organised by **symptom** — how a stuck developer
