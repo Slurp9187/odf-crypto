@@ -302,6 +302,25 @@ condition was demand rather than a reason.
 
 ### Documentation
 
+**The release gate is discharged: a human opened the artifact set.**
+`tests/artifacts/`'s six sealed documents were double-clicked in **LibreOffice
+26.2.1.2 (X86_64)** on **Windows 11 build 26200** on 2026-09-20, the password
+typed at LibreOffice's own prompt. Every one prompted, accepted the password and
+rendered `S1 real unencrypted ODT.` — no recovery bar, no repair prompt.
+
+That is the thing nothing in this repository could produce. The artifact
+generator reads its own output back through this crate's CLI, and
+`validate_encrypt.py` drives LibreOffice over UNO with the password handed across
+as a property. Neither goes near the password dialog and neither would notice a
+recovery bar, and both had been green for the whole arc — which is exactly why
+the plan gated the release on a person rather than on either of them.
+
+Recorded in `tests/artifacts/MANIFEST.md` against the LibreOffice version and OS
+it was done on, because that bounds staleness more sharply than a date does. The
+verdict covers **those exact bytes**: `encrypt` draws a fresh salt and IV per
+call, so regenerating the set moves every sha256 and the row would then describe
+files nobody opened.
+
 **A troubleshooting page ships on docs.rs, organised by symptom.**
 `odf_crypto::troubleshooting` is a doc-only module — `//!` docs, no items, no
 runtime cost — covering six symptoms: `BadParameters` and whose rule it was;

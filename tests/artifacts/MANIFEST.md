@@ -76,6 +76,14 @@ Add a line per session. An empty table below means **this set has not been
 opened by a human**, which is the state the plan gates the release on — not
 a formality, and not something a green CI run substitutes for.
 
+The table is not empty. The row below is the `0.1.0-rc.5` gate, and it covers
+**these exact bytes**: regenerating the set invalidates it, because every sha256
+above changes and the claim would then describe files nobody opened.
+
+What it establishes that no automated check here can: LibreOffice's **own
+password dialog** accepted the password, and no recovery or repair bar appeared.
+Both are paths UNO never takes.
+
 | date | LibreOffice version | OS | files opened | result |
 | --- | --- | --- | --- | --- |
-| | | | | |
+| 2026-09-20 | 26.2.1.2 (X86_64), Build ID `620(Build:2)`, UI render Skia/Vulkan, VCL `win`, locale en-US | Windows 11 X86_64 build 26200 | **all six**, double-clicked from the file manager | **PASS.** Every one prompted for a password, accepted it, and rendered `S1 real unencrypted ODT.` No recovery bar, no repair prompt. |
