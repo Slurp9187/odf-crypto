@@ -5,7 +5,7 @@ use std::io::{Cursor, Read, Write};
 
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{
-    aead::{consts::U12, Aead, KeyInit},
+    aead::{consts::U12, AeadInPlace, KeyInit},
     Aes128Gcm, Aes256Gcm, AesGcm, Nonce,
 };
 use blowfish::Blowfish;
@@ -113,18 +113,24 @@ pub enum DecryptError {
     /// allocation happens with the password digest and the derived key both
     /// live.
     ///
-    /// Key derivation is the first allocation here to become fallible rather
-    /// than the last; when the others follow, this will want a field naming
-    /// which allocation failed. That will be a breaking change to the variant
-    /// and is accepted — [`DecryptError`] itself is `#[non_exhaustive]`, but
-    /// the variant is not, deliberately: a variant nobody outside the crate
-    /// can construct is a variant nobody outside the crate can write a test
-    /// against, and the binary's own exit-code test needs to construct it.
-    #[error("host could not allocate {requested_bytes} bytes for key derivation")]
+    /// Key derivation was the first allocation here to become fallible, and an
+    /// earlier version of this doc predicted that when the others followed, the
+    /// variant would want a field naming which one failed. They followed in
+    /// `0.1.0-rc.5`, and [`AllocationSite`] is that field. It was a breaking
+    /// change to the variant and was accepted.
+    ///
+    /// [`DecryptError`] itself is `#[non_exhaustive]`, but the variant is not,
+    /// deliberately: a variant nobody outside the crate can construct is a
+    /// variant nobody outside the crate can write a test against, and the
+    /// binary's own exit-code test needs to construct it.
+    #[error("host could not allocate {requested_bytes} bytes for {site}")]
     HostCannotAllocate {
-        /// The size `argon2` asked for: `manifest:argon2-memory` rounded to
-        /// whole blocks — the package's own number, not a ceiling of this
-        /// crate's.
+        /// Which allocation could not be made.
+        site: AllocationSite,
+        /// The size that could not be obtained — in every case a number the
+        /// package itself supplied, not a ceiling of this crate's:
+        /// `manifest:argon2-memory` rounded to whole blocks, `manifest:size`,
+        /// `manifest:key-size`, or a member's own length.
         requested_bytes: usize,
     },
     /// The decrypted stream was not valid DEFLATE, or did not inflate to the
@@ -148,6 +154,113 @@ pub enum DecryptError {
     /// elided to a bound.
     #[error("zip error: {0}")]
     Zip(String),
+}
+
+/// Which allocation a [`DecryptError::HostCannotAllocate`] refers to.
+///
+/// Diagnostic, not a decision: every site means the same thing to a caller —
+/// retrying, or retrying on a machine with more free memory, is meaningful, and
+/// re-downloading the file is not. It exists because the message was wrong
+/// without it. Until `0.1.0-rc.5` the variant's `Display` read *"for key
+/// derivation"* unconditionally, which was true while key derivation was the
+/// only fallible allocation here and became a false statement the moment the
+/// others followed.
+///
+/// Deliberately not shaped like [`ParamsReason`]. That type answers *whose rule
+/// refused this* — a policy bound of ours against a requirement of the cipher's
+/// — which a consumer renders differently and may act on. This answers *where*,
+/// which nobody acts on.
+///
+/// [`ParamsReason`]: crate::ParamsReason
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AllocationSite {
+    /// The KDF's own working memory: Argon2id's block buffer, sized from
+    /// `manifest:argon2-memory`.
+    KeyDerivation,
+    /// The derived-key buffer, sized from `manifest:key-size`.
+    ///
+    /// Bounded to `1..=64` before it is allocated, so on any host that can run
+    /// this crate at all it is unreachable — and it is allocated fallibly
+    /// anyway, because that bound is the thing under review. A ceiling that
+    /// happens to keep an infallible allocation from failing is not a reason
+    /// for the allocation to be infallible: widening it would make this
+    /// reachable again with no diff at this line to notice.
+    DerivedKey,
+    /// The inflate slot for one member of a per-entry package, sized from that
+    /// row's `manifest:size`.
+    ///
+    /// The one site where the **sum** matters rather than the individual
+    /// request: each row is bounded at 1 GiB, a package may hold up to
+    /// `MAX_ENCRYPTED_ENTRIES` of them, and every earlier member's plaintext is
+    /// still wrapped and live when a later one is allocated.
+    MemberPlaintext,
+    /// The inflate slot for a wholesome package's `encrypted-package` member,
+    /// sized from `manifest:size`.
+    PackagePlaintext,
+    /// The buffer a member's ciphertext is copied into so it can be decrypted
+    /// in place, sized from that member's own length.
+    CipherBuffer,
+}
+
+impl core::fmt::Display for AllocationSite {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Exhaustive on purpose, with no `_` arm, for the reason
+        // `Argon2Axis`'s Display gives: `#[non_exhaustive]` binds downstream
+        // crates and not this one, so a new site fails to compile here until it
+        // is given a name rather than rendering as something else.
+        f.write_str(match self {
+            Self::KeyDerivation => "key derivation",
+            Self::DerivedKey => "the derived-key buffer",
+            Self::MemberPlaintext => "a decrypted package member",
+            Self::PackagePlaintext => "the decrypted package",
+            Self::CipherBuffer => "a cipher buffer",
+        })
+    }
+}
+
+/// A zero-filled `Vec<u8>` of exactly `n` bytes, allocated **fallibly**.
+///
+/// `vec![0u8; n]` and `Vec::with_capacity(n)` route failure through
+/// `handle_alloc_error`, which *aborts* — whatever the panic strategy, because
+/// an abort is not a panic. Every caller of this function is inside at least one
+/// live `secure-gate` wrapper, and an abort skips unwinding, so `Drop` never
+/// runs and the crate's only zeroizing primitive does not happen. See
+/// `CLAUDE.md`, *The library does not panic*.
+///
+/// `n` comes from the package in every case, which is why a ceiling is not the
+/// fix: a guessed one refuses a host that could have coped and still aborts one
+/// that could not.
+fn try_zeroed(n: usize, site: AllocationSite) -> Result<Vec<u8>, DecryptError> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n)
+        .map_err(|_| DecryptError::HostCannotAllocate {
+            site,
+            requested_bytes: n,
+        })?;
+    // Load-bearing: `try_reserve_exact` has already secured the capacity, so
+    // this only sets the length. It cannot reallocate, so it cannot reach the
+    // infallible path this function exists to avoid.
+    v.resize(n, 0);
+    Ok(v)
+}
+
+/// [`try_zeroed`] for a buffer that starts as a copy of `src` rather than as
+/// zeros — the cipher paths, which decrypt in place.
+///
+/// `src.to_vec()` is the infallible spelling, and is what those sites used.
+fn try_copy_of(src: &[u8], site: AllocationSite) -> Result<Vec<u8>, DecryptError> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(src.len())
+        .map_err(|_| DecryptError::HostCannotAllocate {
+            site,
+            requested_bytes: src.len(),
+        })?;
+    // Capacity is already secured for exactly this many bytes, so the extend
+    // cannot grow the buffer. That matters twice: it cannot abort, and it
+    // cannot abandon an unwiped block behind a wrapper that is about to own it.
+    v.extend_from_slice(src);
+    Ok(v)
 }
 
 /// Decrypt an LO-encrypted ODF package to the plaintext ODF zip LibreOffice
@@ -217,6 +330,15 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
     }
     ensure_encrypted_entry_count(class.encrypted_entries.len(), MAX_ENCRYPTED_ENTRIES)?;
 
+    // KNOWN RESIDUAL, third party (#51). `ZipArchive::new` preallocates its
+    // central-directory vector from a count the file supplies, infallibly.
+    // `zip` bounds it by rejecting a directory whose claimed entries cannot fit
+    // the input (`spec.rs`, the end-of-central-directory consistency check),
+    // which caps the damage near 4.5x the input length rather than at
+    // `u16::MAX`-times-nothing -- mitigation, not a closed path, and not ours
+    // to close. It runs before any wrapper here is live, which is why it sits
+    // at the bottom of this list; `classify` reaches the same call, and a
+    // detection-only consumer reaches it there.
     let mut archive =
         ZipArchive::new(Cursor::new(bytes)).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     let manifest = read_member_by_path(&mut archive, MANIFEST_PATH)?;
@@ -245,7 +367,7 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
         // `inflate_into` exists to remove is the caller's document either way,
         // and a plain `Vec` that is never resized abandons nothing.
         return compressed.with_secret(|c| {
-            let mut out = vec![0u8; n];
+            let mut out = try_zeroed(n, AllocationSite::PackagePlaintext)?;
             inflate_into(c, &mut out)?;
             Ok(out)
         });
@@ -265,8 +387,26 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<u8>, DecryptError> {
         // otherwise drop inflated member plaintext as a plain `Vec`. (The
         // wholesome path above is the exception on purpose -- there the
         // inflated package *is* the public return value.)
-        let inflated = compressed
-            .with_secret(|c| MemberPlaintext::try_new_with(n, |slot| inflate_into(c, slot)))?;
+        let inflated = compressed.with_secret(|c| -> Result<_, DecryptError> {
+            // Not `MemberPlaintext::try_new_with`, which this used to call: its
+            // `try_` names the *fill*, and its body is `vec![0u8; len]`
+            // (secure-gate 0.9.0-rc.12, `dynamic.rs`) -- an infallible
+            // allocation sized from `manifest:size`, which is the site #51
+            // called the one most likely to be mistaken for already-safe.
+            //
+            // The wrapper is still built before the fill, which is the property
+            // `try_new_with` was chosen for: an `inflate_into` that gives up
+            // part-way leaves its bytes inside a wrapper that zeroizes them on
+            // drop. Allocating the slot first and moving it in with `new` keeps
+            // that and adds the fallible allocation, because `new` transfers
+            // the buffer rather than copying it.
+            let mut slot = MemberPlaintext::new(try_zeroed(n, AllocationSite::MemberPlaintext)?);
+            // `&mut buf[..]` and not `buf`: `with_secret_mut` hands out the
+            // `Vec` itself, so a slice is what makes growth -- and the unwiped
+            // block a realloc would abandon -- inexpressible here.
+            slot.with_secret_mut(|buf| inflate_into(c, &mut buf[..]))?;
+            Ok(slot)
+        })?;
         plain.insert(member, inflated);
     }
 
@@ -309,6 +449,24 @@ fn read_member_at(
     let mut file = archive
         .by_index(index)
         .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
+    // KNOWN RESIDUAL, and deliberately not closed (#51). `read_to_end` grows
+    // this buffer, infallibly, up to the ceiling the `take` imposes -- so on a
+    // host that cannot afford it the process aborts here rather than returning,
+    // with every earlier member's plaintext wrapper still live.
+    //
+    // Pre-sizing it from the zip header (`file.size()`) and a `try_reserve_exact`
+    // was written and rejected: the header is the attacker's number too, so a
+    // member declaring 1 GiB and delivering ten bytes would then cost a real
+    // 1 GiB allocation where today it costs ten bytes. That trades an abort
+    // this package could not otherwise provoke for an allocation it can, which
+    // is a worse bargain than the one it fixes.
+    //
+    // What makes it tolerable rather than merely unfixed: `buf` is ciphertext.
+    // It is neither wrapped nor worth wrapping, so the abort costs the process
+    // and not the wiping of THIS buffer -- only of the others already live.
+    // `std::io::Read` exposes no fallible `read_to_end`, so closing it properly
+    // needs a hand-rolled read loop over `try_reserve`, which is the shape to
+    // reach for if this stops being tolerable.
     let mut buf = Vec::new();
     file.by_ref()
         .take(CIPHERTEXT_READ_CEILING as u64 + 1)
@@ -358,9 +516,10 @@ fn member_for_archive(
 fn kdf_error(e: KdfError) -> DecryptError {
     match e {
         KdfError::Params(s) => DecryptError::BadParameters(s),
-        KdfError::HostCannotAllocate { requested_bytes } => {
-            DecryptError::HostCannotAllocate { requested_bytes }
-        }
+        KdfError::HostCannotAllocate { requested_bytes } => DecryptError::HostCannotAllocate {
+            site: AllocationSite::KeyDerivation,
+            requested_bytes,
+        },
     }
 }
 
@@ -373,7 +532,7 @@ fn derive_key(row: &EntryEncryption, password: &str) -> Result<DerivedKey, Decry
         )));
     }
     let n = n as usize;
-    let mut derived = DerivedKey::new(vec![0u8; n]);
+    let mut derived = DerivedKey::new(try_zeroed(n, AllocationSite::DerivedKey)?);
     sk.with_secret(|sk_bytes| {
         derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
             match &row.kdf {
@@ -443,22 +602,33 @@ fn decrypt_aes_gcm(
     type Aes192Gcm = AesGcm<Aes192, U12>;
     let nonce = Nonce::from_slice(&row.iv);
     let ct = &blob[AES_GCM_IV_LEN..];
-    let out = match key.len() {
-        16 => Aes128Gcm::new_from_slice(key)
-            .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
-            .decrypt(nonce, ct),
-        24 => Aes192Gcm::new_from_slice(key)
-            .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
-            .decrypt(nonce, ct),
-        32 => Aes256Gcm::new_from_slice(key)
-            .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
-            .decrypt(nonce, ct),
-        n => return Err(DecryptError::BadParameters(format!("AES key length {n}"))),
-    };
-    // The aead crate hands back a fresh Vec; moving it into the wrapper copies
-    // nothing, and the buffer is zeroized when the wrapper drops.
-    out.map(DeflatedPlaintext::new)
+    // Decrypted in place inside the wrapper, as the CBC and Blowfish paths
+    // already were. `Aead::decrypt` -- what this used to call -- allocates the
+    // plaintext itself, with a `Vec::from` inside `aead` sized from the
+    // member's own length: an infallible allocation, made while the derived key
+    // is live, and one no ceiling of ours sits in front of.
+    // `decrypt_in_place` writes over a buffer we allocated fallibly and
+    // truncates the tag away, so there is no second allocation and the
+    // plaintext never exists outside the wrapper.
+    let mut pt = DeflatedPlaintext::new(try_copy_of(ct, AllocationSite::CipherBuffer)?);
+    pt.with_secret_mut(|b| -> Result<(), DecryptError> {
+        match key.len() {
+            16 => Aes128Gcm::new_from_slice(key)
+                .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
+                .decrypt_in_place(nonce, b"", b),
+            24 => Aes192Gcm::new_from_slice(key)
+                .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
+                .decrypt_in_place(nonce, b"", b),
+            32 => Aes256Gcm::new_from_slice(key)
+                .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
+                .decrypt_in_place(nonce, b"", b),
+            n => return Err(DecryptError::BadParameters(format!("AES key length {n}"))),
+        }
+        // Unchanged: a failed tag check is a wrong key, and GCM cannot tell
+        // that from tampering.
         .map_err(|_| DecryptError::WrongPassword)
+    })?;
+    Ok(pt)
 }
 
 fn decrypt_aes_cbc(
@@ -475,7 +645,7 @@ fn decrypt_aes_cbc(
     // Decrypted in place, so the buffer is wrapped before the first block is
     // turned into plaintext; the stripped padding bytes sit in spare capacity,
     // which the wrapper zeroizes too.
-    let mut buf = DeflatedPlaintext::new(blob.to_vec());
+    let mut buf = DeflatedPlaintext::new(try_copy_of(blob, AllocationSite::CipherBuffer)?);
     buf.with_secret_mut(|b| -> Result<(), DecryptError> {
         // As in GCM: the variant follows the derived key length, not the URI's name.
         macro_rules! cbc_decrypt_with {
@@ -517,7 +687,7 @@ fn decrypt_blowfish_cfb64(
     type BfCfb64 = BufDecryptor<Blowfish>;
     let mut cipher = BfCfb64::new_from_slices(key, &row.iv)
         .map_err(|_| DecryptError::BadParameters("Blowfish key/IV".into()))?;
-    let mut pt = DeflatedPlaintext::new(blob.to_vec());
+    let mut pt = DeflatedPlaintext::new(try_copy_of(blob, AllocationSite::CipherBuffer)?);
     pt.with_secret_mut(|p| cipher.decrypt(p));
     pt.with_secret(|p| verify_checksum(row, p))?;
     Ok(pt)
@@ -594,14 +764,29 @@ fn inflate_into(compressed: &[u8], slot: &mut [u8]) -> Result<(), DecryptError> 
 
 /// Bound `manifest:size` before it becomes an allocation length.
 ///
-/// Under the grown-`Vec` inflate this was the decompressor's job: `INFLATE_CEILING`
-/// capped its output, and a hostile `manifest:size` only ever failed the length
-/// comparison afterwards. A sized slot moves the allocation ahead of the decode,
-/// so the bound has to move with it -- `size` is an `i64` the manifest controls,
-/// and `vec![0u8; huge]` aborts the caller's process rather than returning an
-/// error, which a library must not do. Same shape as
-/// `DERIVED_KEY_MIN_LEN..=DERIVED_KEY_MAX_LEN` guarding `manifest:key-size` ahead
-/// of `derive_key`'s allocation.
+/// **Its original reason is gone, and the same thing happened here as to
+/// `ARGON2_MAX_M_COST_KIB`.** This doc used to argue the ceiling like this: a
+/// sized slot moves the allocation ahead of the decode, `size` is an `i64` the
+/// manifest controls, and `vec![0u8; huge]` aborts the caller's process rather
+/// than returning an error. The first two clauses still hold. The third does
+/// not: the slot is allocated by [`try_zeroed`] now, so an unaffordable `size`
+/// returns [`DecryptError::HostCannotAllocate`] and the abort it was guarding
+/// against cannot happen.
+///
+/// What the check still does, and it is not nothing:
+///
+/// - **`size < 0` and the `i64` -> `usize` cast.** A negative `manifest:size`
+///   has no meaning and a 64-bit value cast on a 32-bit host truncates. That
+///   half is a correctness bound and is not up for review.
+/// - **Refusing absurd sizes before any work.** A row claiming a petabyte is
+///   answered by a comparison rather than by an allocation attempt and a KDF.
+///
+/// What it no longer does is prevent an abort, so `INFLATE_CEILING` itself is
+/// now a **policy** cap in exactly the sense `src/limits.rs` means, with the
+/// same open question over it: it refuses a host that could have coped, and no
+/// longer saves one that could not. Not widened here -- that is the same
+/// decision, and it belongs with the others rather than being taken quietly in
+/// a doc comment.
 fn inflated_len(size: i64) -> Result<usize, DecryptError> {
     if !(0..=INFLATE_CEILING as i64).contains(&size) {
         return Err(DecryptError::BadParameters(format!(

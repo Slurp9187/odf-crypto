@@ -6,7 +6,7 @@ use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 use crate::classify::classify;
-use crate::decrypt::{classification_metadata_unchanged, decrypt, DecryptError};
+use crate::decrypt::{classification_metadata_unchanged, decrypt, AllocationSite, DecryptError};
 use crate::test_support::{
     append_stored_member, load_golden, pgp_two_row_zip, read_member, zip_namelist,
     NONASCII_PASSWORD, PASSWORD,
@@ -937,11 +937,16 @@ fn argon2_block_buffer_reports_host_capacity_not_an_abort() {
 
 #[test]
 fn a_host_capacity_failure_is_not_a_bad_parameter() {
-    // The allocator refusal itself cannot be tested deterministically here:
+    // A refusal the ALLOCATOR makes still cannot be tested deterministically:
     // that needs a #[global_allocator] shim, and `unsafe_code = "forbid"` in
     // Cargo.toml makes one impossible -- `forbid` cannot be lifted by `allow`.
     // The ignored test above drives a real 1 GiB request and is the only thing
-    // that exercises `try_reserve_exact` failing, on a host small enough.
+    // that exercises the allocator itself saying no, on a host small enough.
+    //
+    // A refusal `try_reserve_exact` makes on its own IS deterministic, and
+    // `try_reserve_exact_refuses_an_impossible_request` below covers it on
+    // every host. Two different failures reaching one variant; neither test
+    // stands in for the other.
     //
     // Everything downstream of that refusal IS deterministic, and it is where
     // the damage would be done: a host failure reported as `BadParameters`
@@ -954,6 +959,7 @@ fn a_host_capacity_failure_is_not_a_bad_parameter() {
         matches!(
             mapped,
             DecryptError::HostCannotAllocate {
+                site: AllocationSite::KeyDerivation,
                 requested_bytes: 1_073_741_824
             }
         ),
@@ -964,6 +970,88 @@ fn a_host_capacity_failure_is_not_a_bad_parameter() {
     // than everything becoming HostCannotAllocate.
     let params = crate::decrypt::kdf_error(crate::kdf::KdfError::Params("argon2 t 0".into()));
     assert!(matches!(params, DecryptError::BadParameters(_)));
+}
+
+#[test]
+fn try_reserve_exact_refuses_an_impossible_request() {
+    // Deterministic on every host, and it is the guard firing rather than a
+    // proxy for it: `try_reserve_exact` rejects a request whose byte count
+    // overflows before it asks the allocator for anything, so no machine is
+    // large enough to make this pass by accident. The `#[ignore]`d 1 GiB test
+    // covers the other half -- the allocator itself refusing -- and cannot run
+    // on a well-provisioned box.
+    //
+    // What it proves is the property the change is for: an allocation sized
+    // from the package RETURNS instead of aborting. A `vec![0u8; n]` here would
+    // end the test process, not fail the test.
+    for site in [
+        AllocationSite::MemberPlaintext,
+        AllocationSite::PackagePlaintext,
+        AllocationSite::DerivedKey,
+        AllocationSite::CipherBuffer,
+    ] {
+        let got = crate::decrypt::try_zeroed(usize::MAX, site);
+        assert!(
+            matches!(
+                got,
+                Err(DecryptError::HostCannotAllocate { site: s, requested_bytes })
+                    if s == site && requested_bytes == usize::MAX
+            ),
+            "{site:?} must return, and must carry its own site, got {got:?}"
+        );
+    }
+}
+
+#[test]
+fn a_fallible_allocation_that_succeeds_is_exact_and_filled() {
+    // The success path of both helpers, because a guard that only ever returns
+    // Err would pass the test above and break every decrypt.
+    let zeroed = crate::decrypt::try_zeroed(64, AllocationSite::DerivedKey)
+        .expect("64 bytes is not a host-capacity failure");
+    assert_eq!(zeroed.len(), 64);
+    assert!(zeroed.iter().all(|b| *b == 0));
+    // Exact capacity is the half that matters for residue: a buffer with spare
+    // capacity would still be correct, but `try_reserve_exact` asking for more
+    // than it needs is worth catching here rather than in a heap dump.
+    assert_eq!(zeroed.capacity(), 64);
+
+    let copied = crate::decrypt::try_copy_of(b"abc", AllocationSite::CipherBuffer)
+        .expect("3 bytes is not a host-capacity failure");
+    assert_eq!(copied, b"abc");
+    assert_eq!(
+        copied.capacity(),
+        3,
+        "extend_from_slice must not have grown it"
+    );
+}
+
+#[test]
+fn every_allocation_site_renders_distinctly() {
+    // The site exists because the message was wrong without it -- the variant's
+    // Display said "for key derivation" unconditionally. Two sites sharing a
+    // string would put that back for one of them.
+    let sites = [
+        AllocationSite::KeyDerivation,
+        AllocationSite::DerivedKey,
+        AllocationSite::MemberPlaintext,
+        AllocationSite::PackagePlaintext,
+        AllocationSite::CipherBuffer,
+    ];
+    let mut seen: Vec<String> = sites.iter().map(|s| s.to_string()).collect();
+    seen.sort();
+    let before = seen.len();
+    seen.dedup();
+    assert_eq!(seen.len(), before, "two sites render the same: {seen:?}");
+
+    // And the rendered message names the site rather than the KDF.
+    let e = DecryptError::HostCannotAllocate {
+        site: AllocationSite::MemberPlaintext,
+        requested_bytes: 4096,
+    };
+    assert_eq!(
+        e.to_string(),
+        "host could not allocate 4096 bytes for a decrypted package member"
+    );
 }
 
 // --- CLI exit-code tripwire (#40) ----------------------------------------

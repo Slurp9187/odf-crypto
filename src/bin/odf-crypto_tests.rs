@@ -8,6 +8,11 @@
 
 use super::*;
 
+// Not added to the binary's own `use odf_crypto::{...}` list: the mapping
+// functions match `HostCannotAllocate { .. }`, so only these tests name the
+// site, and importing it there would be an unused import at `-D warnings`.
+use odf_crypto::AllocationSite;
+
 #[test]
 fn the_command_definition_is_internally_consistent() {
     // clap's own audit: catches a duplicate id, a group naming an argument that
@@ -264,6 +269,7 @@ fn host_capacity_is_not_reported_as_a_damaged_document() {
     // malformed for a memory failure. Pin both, and pin that it is NOT 6.
     assert_eq!(
         decrypt_exit(&DecryptError::HostCannotAllocate {
+            site: AllocationSite::MemberPlaintext,
             requested_bytes: 1 << 30
         }),
         EX_HOST_CAPACITY
@@ -276,6 +282,7 @@ fn host_capacity_is_not_reported_as_a_damaged_document() {
     );
     assert_ne!(
         decrypt_exit(&DecryptError::HostCannotAllocate {
+            site: AllocationSite::MemberPlaintext,
             requested_bytes: 1 << 30
         }),
         EX_MALFORMED,
@@ -340,6 +347,9 @@ fn the_decrypt_exit_map_is_the_documented_one() {
         (DecryptError::Internal(String::new()), EX_INTERNAL),
         (
             DecryptError::HostCannotAllocate {
+                // Any site; the exit code is a property of the variant, not of
+                // which allocation failed. `AllocationSite` is diagnostic.
+                site: AllocationSite::CipherBuffer,
                 requested_bytes: 1 << 40,
             },
             EX_HOST_CAPACITY,

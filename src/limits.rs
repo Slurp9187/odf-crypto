@@ -162,6 +162,15 @@ mod crypto {
     /// 1 GiB. Decrypt's inflate and ciphertext-read caps, and encrypt's deflate
     /// cap, all share this figure so a hostile `manifest:size` or STORED member
     /// cannot allocate past it on one path while another still would.
+    ///
+    /// **Policy, and its basis moved in `0.1.0-rc.5` the same way
+    /// [`ARGON2_MAX_M_COST_KIB`]'s did.** `decrypt`'s inflate slot is allocated
+    /// with `try_reserve_exact` now, so an unaffordable `manifest:size` returns
+    /// `HostCannotAllocate` rather than aborting, and this ceiling is no longer
+    /// what stands between a hostile size and the allocator. What survives is
+    /// screening a negative or untruncatable `i64` before the cast, and
+    /// answering an absurd claim with a comparison instead of an allocation
+    /// attempt. See `decrypt::inflated_len`.
     pub(crate) const PAYLOAD_CEILING: usize = 1 << 30;
     pub(crate) const INFLATE_CEILING: usize = PAYLOAD_CEILING;
     pub(crate) const CIPHERTEXT_READ_CEILING: usize = PAYLOAD_CEILING;
