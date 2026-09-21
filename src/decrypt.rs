@@ -160,17 +160,54 @@ pub enum DecryptError {
     /// damaged past the point those checks cover.
     #[error("inflate failed: {0}")]
     Inflate(String),
-    /// A zip failure, either reading the input or writing the rebuilt package.
-    /// Despite the name it also carries every quick-xml failure from the
-    /// manifest rewrite. The string is a diagnostic; do not match on it.
+    /// A zip failure, either reading the input or writing the rebuilt package
+    /// — plus the manifest rewrite's *parse* failure, which is the one thing
+    /// here that is not a zip error.
+    ///
+    /// The rewrite's *serialization* failures are no longer among them: they are
+    /// [`DecryptError::Internal`] as of `0.1.0-rc.5`, because they can only ever
+    /// report a broken invariant of ours, never anything about the package. The
+    /// doc used to say this variant carried *"every quick-xml failure"*, and
+    /// that sentence is what prompted the split — a name needing a disclaimer
+    /// is usually a name covering two things. The string is a diagnostic; do not
+    /// match on it.
     ///
     /// It may quote package-controlled text, so treat it as untrusted when
     /// logging or displaying it. The zip half cannot: those are rendered by an
     /// internal helper that quotes only text this crate chose, never the zip
     /// crate's own `Display`. The quick-xml half can —
     /// `IllFormedError::UnmatchedEndTag` carries an element name taken from the
-    /// manifest — and unlike [`crate::DetectError::Inconsistent`] it is not
+    /// manifest — and unlike [`crate::DetectError::Inconsistent`] it is **not**
     /// elided to a bound.
+    ///
+    /// # Why it is not elided
+    ///
+    /// Because the path is unreachable, and an elision would imply a live threat
+    /// where there is none. The argument, since a claim of unreachability has to
+    /// carry one:
+    ///
+    /// `strip_manifest` can only return this from its *read* side — its writer
+    /// is a `Vec<u8>`, whose `write_all` cannot fail. So a `Zip` from the rewrite
+    /// means `read_event_into` errored. But `manifest::parse_manifest` maps
+    /// **any** read error to an empty row list, plus three more conditions
+    /// `strip_manifest` does not have, so `parse_manifest` returning rows means
+    /// no read error occurred. Empty rows means `classify` reports
+    /// [`Mode::Plain`], and `decrypt` refuses that with
+    /// [`DecryptError::NotEncrypted`] long before the rewrite runs.
+    ///
+    /// The two readers are configured differently — `parse_manifest` sets
+    /// `expand_empty_elements`, the rewrite leaves it at its default — which is
+    /// the only way they could disagree about what is ill-formed. They cannot:
+    /// in quick-xml 0.38.4 an expanded empty element pushes onto `opened_starts`
+    /// and is popped by the next read *without consuming input*, so the stack
+    /// every end-tag check consults is identical in both modes at every byte
+    /// boundary.
+    ///
+    /// **That argument is version-scoped to quick-xml 0.38.4**, which is why
+    /// `classify_accepting_a_manifest_implies_the_rewrite_accepts_it` pins it
+    /// rather than leaving it as prose a dependency bump could quietly falsify.
+    /// If that test ever fails, this variant needs the elision
+    /// [`crate::DetectError::Inconsistent`] already has.
     #[error("zip error: {0}")]
     Zip(String),
 }
@@ -833,6 +870,18 @@ fn without_size(e: &BytesStart<'_>) -> BytesStart<'static> {
 fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(false);
+    // `io::Write for Vec<u8>` is infallible -- its `write_all` is
+    // `extend_from_slice` then `Ok(())` -- so the four `write_event` calls below
+    // cannot fail today. quick-xml's signature says they can (`writer.rs:193`
+    // returns `io::Result<()>`), and an `.expect()` here would abort a caller's
+    // process to report that quick-xml had changed its mind.
+    //
+    // `Internal`, not `Zip`: no manifest byte can make `extend_from_slice` fail,
+    // so a failure here would blame the package for a broken invariant of ours
+    // -- and the CLI would print exit 6, "malformed or hostile package", for it.
+    // Deliberately the same mapping, message and reasoning as
+    // `encrypt::build_manifest`, which had it right; two files making one call
+    // and giving two answers was the defect.
     let mut writer = Writer::new(Vec::new());
     let mut buf = Vec::new();
     let mut skip_depth = 0u32;
@@ -852,7 +901,7 @@ fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
                 }
                 writer
                     .write_event(Event::Start(without_size(&e)))
-                    .map_err(|e| DecryptError::Zip(e.to_string()))?;
+                    .map_err(|e| DecryptError::Internal(format!("manifest XML write: {e}")))?;
             }
             Ok(Event::End(e)) => {
                 if skip_depth > 0 {
@@ -861,7 +910,7 @@ fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
                 }
                 writer
                     .write_event(Event::End(e.into_owned()))
-                    .map_err(|e| DecryptError::Zip(e.to_string()))?;
+                    .map_err(|e| DecryptError::Internal(format!("manifest XML write: {e}")))?;
             }
             Ok(Event::Empty(e)) => {
                 if skip_depth > 0 {
@@ -874,7 +923,7 @@ fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
                 // carry manifest:size. Filtering only Start would leave those behind.
                 writer
                     .write_event(Event::Empty(without_size(&e)))
-                    .map_err(|e| DecryptError::Zip(e.to_string()))?;
+                    .map_err(|e| DecryptError::Internal(format!("manifest XML write: {e}")))?;
             }
             Ok(other) => {
                 if skip_depth > 0 {
@@ -882,8 +931,12 @@ fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
                 }
                 writer
                     .write_event(other)
-                    .map_err(|e| DecryptError::Zip(e.to_string()))?;
+                    .map_err(|e| DecryptError::Internal(format!("manifest XML write: {e}")))?;
             }
+            // Stays `Zip`, and stays un-elided. This is the READ side: its
+            // payload is document-derived, and it is the half #48 was about.
+            // The path is unreachable -- see `DecryptError::Zip`'s rustdoc for
+            // the argument and the test that keeps it honest.
             Err(e) => return Err(DecryptError::Zip(e.to_string())),
         }
     }
