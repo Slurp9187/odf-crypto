@@ -302,6 +302,49 @@ condition was demand rather than a reason.
 
 ### Documentation
 
+**A troubleshooting page ships on docs.rs, organised by symptom.**
+`odf_crypto::troubleshooting` is a doc-only module — `//!` docs, no items, no
+runtime cost — covering six symptoms: `BadParameters` and whose rule it was;
+`WrongPassword` when the password is right; LibreOffice refusing what `encrypt`
+wrote; which Argon2 cost to pick; error text the caller did not write; and
+`encrypt` refusing a file LibreOffice opens without prompting.
+
+By **symptom**, not by API, because arriving by API only works if you already
+know what is wrong. Its examples compile as doctests, so the advice cannot rot
+into describing behaviour the code no longer has, and it carries no `file:line`
+citations — they drift, and this repository has repaired the same citation table
+three times.
+
+Three things it says that are easy to get wrong, and that were verified against
+the code rather than assumed:
+
+**The 1 KiB checksum window is not universal.** AES-GCM's verdict is the AEAD
+tag over the *entire* ciphertext and it never consults `manifest:checksum` at
+all; only AES-CBC and Blowfish-CFB are decided by a checksum over the first
+`CHECKSUM_WINDOW` bytes. Treating all three the same — the obvious reading, since
+`verify_checksum` exists — is exactly the mistake the section prevents, and it
+changes what `WrongPassword` is evidence of.
+
+**Nothing in the library warns about a weak Argon2 tuple.**
+`Argon2Params::is_weaker_than_libreoffice` is a predicate a caller must *ask*.
+The CLI asks it and prints to stderr; a library has no terminal, so a wrapper
+that never calls it ships a weak file with no signal at all. "The crate will stop
+you doing something insecure" is false and worth saying so.
+
+**`!package_encrypted` is not a plaintext test.** It is LibreOffice's narrow
+`HasEncryptedEntries` latch; the plaintext test is `mode == Mode::Plain`. Using
+the former reproduces the exact confusion `AlreadyEncrypted` /
+`PartiallyEncrypted` was split apart to stop.
+
+**A citation on `Argon2Params::LIBREOFFICE_DEFAULT` was wrong and is corrected.**
+It cited `objstor.cxx:349-399` for the `(3, 65536, 4)` tuple. That range picks
+Argon2id *over PBKDF2* and never names a tuple; the literal is
+`oArgon2Args.emplace(3, (1<<16), 4)` in `ZipPackage.cxx`. The numbers were right
+and the citation was not — a reader following it to confirm `65536` would not
+have found it, which is what `CLAUDE.md` means by *check the code, not the doc*.
+Found while researching the Argon2 section, which is the argument for writing the
+page at all.
+
 **`CLAUDE.md` gains a fourth "Evidence, not assertion" rule: name the proxy when
 a rule tests one.** The recurring defect across this crate and its sibling is not
 a wrong check but one that silently swapped the property it cares about for a

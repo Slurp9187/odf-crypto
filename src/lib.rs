@@ -93,6 +93,15 @@ mod kdf;
 #[cfg(feature = "crypto-ops")]
 mod sensitive;
 
+// A doc-only module: `//!` docs, no items, no runtime cost. Gated on
+// `crypto-ops` because five of its six symptoms are about `decrypt` and
+// `encrypt`, whose types do not exist in a detection-only build -- an
+// intra-doc link to `DecryptError` there would not resolve. docs.rs builds
+// `--all-features`, so it is on the published page regardless.
+#[cfg(feature = "crypto-ops")]
+#[cfg_attr(docsrs, doc(cfg(feature = "crypto-ops")))]
+pub mod troubleshooting;
+
 pub use classify::classify;
 pub use types::{
     Checksum, Cipher, Classification, DetectError, EncryptedKey, EntryEncryption, Kdf, Mode,
