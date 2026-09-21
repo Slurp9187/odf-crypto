@@ -27,8 +27,11 @@ pub struct ReadmeDoctests;
 ```
 
 `cfg(doctest)` is set only while rustdoc **collects** doctests, never while it
-**builds** documentation, so `cargo test --doc` checks the examples and docs.rs
-renders none of the README. `cfg(test)` would be silently wrong: it is not set
+**builds** documentation, so `cargo test --doc` checks the examples and no part
+of the README reaches the rendered API pages. Verify that by grepping for a
+sentence only the README contains — **not** for `ReadmeDoctests`, which appears
+once in `doc/src/odf_crypto/lib.rs.html` on a *correct* setup, because rustdoc's
+source viewer renders the file verbatim including items it compiled out. `cfg(test)` would be silently wrong: it is not set
 during collection, so the examples would never run while the item still looked
 like a check. Gated on `crypto-ops`, the smallest feature set under which all
 four compile; CI's `test (crypto-ops)` and `test (cli)` jobs both reach it, which

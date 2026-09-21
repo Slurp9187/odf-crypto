@@ -118,9 +118,16 @@ pub use encrypt::{
 // Compiles every ```rust block in README.md, and renders none of it.
 //
 // `cfg(doctest)` is set only while rustdoc COLLECTS doctests, never while it
-// BUILDS documentation -- so `cargo test --doc` checks the examples and
-// `cargo doc` / docs.rs never sees this item. `cfg(test)` would be wrong: it is
+// BUILDS documentation -- so `cargo test --doc` checks the examples and no part
+// of README.md reaches the rendered API pages. `cfg(test)` would be wrong: it is
 // not set during collection, so the examples would never run.
+//
+// Precisely: the struct is absent from every page under `doc/odf_crypto/`, but
+// the NAME appears once in `doc/src/odf_crypto/lib.rs.html`, because rustdoc's
+// source viewer renders the file verbatim including items it compiled out. That
+// is expected and harmless -- the README's prose is what must not escape, and it
+// appears nowhere. So verify by grepping a README-only SENTENCE, not this
+// identifier: grepping the identifier reports a correct setup as broken.
 //
 // Gated on `crypto-ops` because that is the smallest feature set under which
 // all four examples compile: one needs only `classify`, the other three need
