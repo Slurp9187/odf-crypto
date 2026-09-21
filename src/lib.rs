@@ -29,7 +29,15 @@
 //!
 //! [`encrypt`] writes one profile: a single `encrypted-package` member, Argon2id
 //! `t=3, m=65536, p=4`, AES-256-GCM, a SHA-256 start key, no checksum, and
-//! `manifest:version="1.4"`. Per-entry writing and PGP wrapping are out of scope.
+//! `manifest:version="1.4"`. Per-entry writing and PGP wrapping are out of scope,
+//! and the two are out for different reasons worth stating on the surface rather
+//! than only in the plans:
+//!
+//! - **Per-entry write** is unbuilt, not impossible. `decrypt` reads AES-CBC and
+//!   Blowfish-CFB packages and this crate ships goldens of both, so the crate
+//!   can read three profiles and write one. That asymmetry is an effort gap.
+//! - **PGP wrapping** cannot be expressed by this API at all: a private key does
+//!   not arrive through `password: &str`. See [`DecryptError::UnsupportedPgp`].
 //!
 //! The Argon2id cost is the one part of that profile a caller may change, with
 //! [`encrypt_with_params`] and [`Argon2Params`] — `m=65536` is 64 MiB of working

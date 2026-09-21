@@ -1,4 +1,4 @@
-Status: **In flight (`0.1.0-rc.5`)** — 2 of 7 items shipped, 2 partial, 3 not started · Authored 2026-09-20 · **Written into the repo late**, after three of its items had already landed; see *How this plan got here* · Shipped so far: [#52](https://github.com/Slurp9187/odf-crypto/pull/52) (§1, §6), `507d8a0` (§2's first half), plus two off-plan items — [#54](https://github.com/Slurp9187/odf-crypto/pull/54) and [#55](https://github.com/Slurp9187/odf-crypto/pull/55)
+Status: **In flight (`0.1.0-rc.5`)** — 4 of 7 items shipped, 1 partial, 2 not started · Authored 2026-09-20 · **Written into the repo late**, after three of its items had already landed; see *How this plan got here* · Shipped so far: [#52](https://github.com/Slurp9187/odf-crypto/pull/52) (§1, §6), `507d8a0` (§2's first half), plus two off-plan items — [#54](https://github.com/Slurp9187/odf-crypto/pull/54) and [#55](https://github.com/Slurp9187/odf-crypto/pull/55)
 
 Consumes [docs/plans/odf-encryption-decrypt-2026-09-02.md](odf-encryption-decrypt-2026-09-02.md) and [docs/plans/odf-encryption-encrypt-2026-09-03.md](odf-encryption-encrypt-2026-09-03.md), both Shipped. §1 and §2 below reverse decisions recorded in the first of those; the reversals are written into *that* file as well, not only here.
 
@@ -208,9 +208,22 @@ which is what held this to one break rather than two.
 decline*, and [#48](https://github.com/Slurp9187/odf-crypto/issues/48)'s
 `DecryptError::Zip`.
 
-### 4. Fix the scope justifications; change no behaviour — **NOT STARTED**
+### 4. Fix the scope justifications; change no behaviour — **SHIPPED**
 
-The audit found the reasoning weak in five places and the decisions mostly sound:
+The audit found the reasoning weak in five places and the decisions mostly sound.
+All five are re-argued. **Two of the five turned out to be more than a wording
+fix**, which is the argument for doing this item at all rather than treating it
+as tidying:
+
+- `m_bHasNonEncryptedEntries`'s circular justification was not just circular, it
+  reached the **wrong conclusion** — see below.
+- `AlreadyEncrypted` could not be fixed by rewording, because the name was a
+  claim about the file. It was **split**, which is a breaking API change.
+
+Filed out of this item: [#59](https://github.com/Slurp9187/odf-crypto/issues/59)
+(the read/write profile asymmetry) and
+[#60](https://github.com/Slurp9187/odf-crypto/issues/60) (the flag a consumer
+cannot see). The original five:
 
 - **PGP refusal** (`decrypt.rs:61-65`) says *"later arc"*. The real argument is
   infeasibility and it is unstated: `decrypt(bytes, password)` has no surface
@@ -219,12 +232,30 @@ The audit found the reasoning weak in five places and the decisions mostly sound
   the audit.
 - **Per-entry write** (encrypt plan `:215`) closes on *"no concrete reason to
   target an older ODF version"* — that is demand, asserted, and the crate ships
-  goldens it can read and cannot write. Replace with an effort/gap statement and
-  file an issue so the asymmetry is visible rather than argued away.
+  goldens it can read and cannot write. Replaced with an effort/gap statement
+  naming what exists (every primitive, since `decrypt` uses them) and what does
+  not (per-member salt/IV, one `encryption-data` per member, `manifest:size` on
+  each). Filed as #59, and stated on the README so the asymmetry is visible to a
+  reader rather than only to the tracker.
 - **`m_bHasNonEncryptedEntries`** (detection plan `:270`) is circular: it cites
-  *our own* `decrypt`'s copy-through as evidence nobody needs the flag.
+  *our own* `decrypt`'s copy-through as evidence nobody needs the flag. **Re-argued
+  from LibreOffice, and the conclusion flipped.** The flag is live upstream:
+  `ZipPackage.cxx:446` sets it, and `SfxObjectShell::CheckEncryption_Impl`
+  (`sfx2/source/doc/objmisc.cxx:1028-1063`) reads it — on ODF >= 1.2, when
+  `HasEncryptedEntries && HasNonEncryptedEntries`, LibreOffice raises
+  `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and calls `disallowMacroExecution()`. A
+  security decision, not bookkeeping. `Classification` exposes one half of that
+  predicate and not the other, so a consumer cannot tell whether LibreOffice
+  would warn. Recorded as a known limitation and filed as #60.
 - **`AlreadyEncrypted`** (`encrypt.rs:260-263`) restates its condition instead of
-  justifying it, and over-claims.
+  justifying it, and over-claims. Verified: `Mode::PerEntry` is
+  `!encrypted_entries.is_empty()` (`classify.rs:319`), wholly independent of
+  `package_encrypted`, so a package with complete rows and no latch row is
+  refused as *"already encrypted"* while LibreOffice opens it **without
+  prompting**. **Split** into `AlreadyEncrypted` (the latch is set; LO would
+  prompt) and `PartiallyEncrypted` (rows but no latch; LO would not). Both still
+  refuse, and both still map to exit 5 — what changed is which claim is made
+  about the file, not what a script does about it.
 - `lib.rs:32` / `README.md:255` assert scope with no reason on the public surface.
 
 ### 5. A troubleshooting guide, organised by symptom — **NOT STARTED**

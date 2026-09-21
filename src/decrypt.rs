@@ -62,6 +62,25 @@ pub enum DecryptError {
     /// The package is PGP-wrapped. Screened across every encrypted row, not
     /// only the latch row. The wrapped key material is available from
     /// [`crate::Classification::pgp_keys`] for handing to an OpenPGP implementation.
+    ///
+    /// **Not "a later arc".** The plans said that for a while and it was the
+    /// wrong reason, because it implies the work is merely unscheduled. Two
+    /// things make it infeasible in *this* function rather than unscheduled:
+    ///
+    /// - **There is no surface to pass a key through.** The signature is
+    ///   `decrypt(bytes: &[u8], password: &str)`. A PGP-wrapped package is
+    ///   opened with a private key, which arrives as a keyring path, a
+    ///   passphrase over that key, an agent socket, or a smartcard PIN
+    ///   prompt -- none of which a `&str` password can carry, and none of
+    ///   which a library should invent a side channel for.
+    /// - **The cost is the crate's whole premise.** Detection-only is 25
+    ///   crates and the point of the default; an OpenPGP implementation is a
+    ///   dependency tree of a different order, for a path `classify` already
+    ///   reports without it.
+    ///
+    /// So the honest scope statement is *this API shape cannot express it*,
+    /// and the honest offer is the one above: `classify` surfaces the wrapped
+    /// key material, and a caller who has an OpenPGP stack does the unwrap.
     #[error("PGP-encrypted packages are not supported")]
     UnsupportedPgp,
     /// LibreOffice `LookForUnexpectedODF12Streams` plus a root version `>= 1.2`.

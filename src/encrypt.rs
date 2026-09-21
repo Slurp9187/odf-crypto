@@ -373,10 +373,41 @@ pub enum EncryptError {
     /// `classify()` itself rejected the input (not a zip, no manifest, ...).
     #[error("classification failed: {0}")]
     Classify(#[from] DetectError),
-    /// `classify(bytes)?.mode != Mode::Plain` -- covers `PerEntry`, `Wholesome`,
-    /// and PGP rows alike.
+    /// The package is encrypted and LibreOffice would prompt for a password:
+    /// `classify` set [`crate::Classification::package_encrypted`], the latch
+    /// LibreOffice calls `HasEncryptedEntries`. Covers `Wholesome`, `PerEntry`
+    /// with a latch row, and PGP rows alike.
+    ///
+    /// Split from [`EncryptError::PartiallyEncrypted`] in `0.1.0-rc.5`, because
+    /// one variant was making a claim about the file that LibreOffice does not
+    /// make -- see that variant.
     #[error("package is already encrypted")]
     AlreadyEncrypted,
+    /// The package holds complete `encryption-data` rows but **no latch row**,
+    /// so `classify` reports [`crate::Mode::PerEntry`] with
+    /// `package_encrypted == false`.
+    ///
+    /// **LibreOffice opens this without prompting for a password.** The latch is
+    /// set only by a row resolving to `content.xml` or `encrypted-package`
+    /// (`ZipPackage.cxx:435-446`), so a package whose only complete rows sit on
+    /// other members is not, to LibreOffice, an encrypted document -- it is a
+    /// document with encrypted streams in it. Reporting that as *"package is
+    /// already encrypted"* told a caller something the specifying implementation
+    /// contradicts.
+    ///
+    /// Still refused, and the refusal is the same one: wrapping a package whose
+    /// members are already ciphertext produces a file whose inner members
+    /// nothing can open. What changed is the name of what was detected, not the
+    /// decision. Both map to CLI exit 5.
+    ///
+    /// LibreOffice's own answer to this shape is worth knowing, because this
+    /// crate cannot give it: on ODF >= 1.2 with the latch *also* set, it raises
+    /// `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and disables macro execution
+    /// (`sfx2/source/doc/objmisc.cxx:1028-1063`).
+    #[error(
+        "package has encrypted entries but no latch row: LibreOffice opens it without prompting"
+    )]
+    PartiallyEncrypted,
     /// LibreOffice would not open this plaintext package (`odf12_fatal`):
     /// unexpected streams and a root version `>= 1.2`. Refuse before Argon2id
     /// rather than wrapping a document LO rejects.
@@ -602,7 +633,14 @@ pub fn encrypt_with_params(
     }
     let class = classify(bytes)?;
     if class.mode != Mode::Plain {
-        return Err(EncryptError::AlreadyEncrypted);
+        // The latch, not the row count. `package_encrypted` is LibreOffice's
+        // `HasEncryptedEntries`, and it is what decides whether LO prompts --
+        // so it is what decides which refusal is true of this file.
+        return Err(if class.package_encrypted {
+            EncryptError::AlreadyEncrypted
+        } else {
+            EncryptError::PartiallyEncrypted
+        });
     }
     if class.odf12_fatal {
         return Err(EncryptError::Odf12Fatal);

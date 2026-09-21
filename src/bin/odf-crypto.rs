@@ -620,9 +620,10 @@ fn decrypt_exit(e: &DecryptError) -> u8 {
 fn encrypt_exit(e: &EncryptError) -> u8 {
     match e {
         EncryptError::Classify(d) => detect_exit(d),
-        EncryptError::AlreadyEncrypted | EncryptError::Odf12Fatal | EncryptError::EmptyPassword => {
-            EX_REFUSED
-        }
+        EncryptError::AlreadyEncrypted
+        | EncryptError::PartiallyEncrypted
+        | EncryptError::Odf12Fatal
+        | EncryptError::EmptyPassword => EX_REFUSED,
         EncryptError::Mimetype(_) | EncryptError::Deflate(_) | EncryptError::Zip(_) => EX_MALFORMED,
         // The caller typed a bad --argon2-* value; the document is fine. This
         // variant reached the `_` arm below when it was added, which is the
