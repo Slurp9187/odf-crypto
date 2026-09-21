@@ -1,4 +1,4 @@
-Status: **All seven items shipped (`0.1.0-rc.5`, 2026-09-21); §7's human verdict is the one thing outstanding, and it gates the release** · Authored 2026-09-20 · **Written into the repo late**, after three of its items had already landed; see *How this plan got here* · §1 and §6 [#52](https://github.com/Slurp9187/odf-crypto/pull/52) · §2 `507d8a0` then [#58](https://github.com/Slurp9187/odf-crypto/pull/58) · §3 rc.4's `ParamsReason`, then [#58](https://github.com/Slurp9187/odf-crypto/pull/58) and [#62](https://github.com/Slurp9187/odf-crypto/pull/62) · §4 [#61](https://github.com/Slurp9187/odf-crypto/pull/61) · §5 [#64](https://github.com/Slurp9187/odf-crypto/pull/64) · §7 [#63](https://github.com/Slurp9187/odf-crypto/pull/63) · off-plan: [#54](https://github.com/Slurp9187/odf-crypto/pull/54), [#55](https://github.com/Slurp9187/odf-crypto/pull/55)
+Status: **Complete (`0.1.0-rc.5`, 2026-09-20). All seven items shipped and §7's human verdict is in: all six artifacts opened by double-click in LibreOffice 26.2.1.2, password typed at its own prompt, correct text, no recovery bar. The release gate is discharged; cutting rc.5 remains a separate, explicit decision.** · Authored 2026-09-20 · **Written into the repo late**, after three of its items had already landed; see *How this plan got here* · §1 and §6 [#52](https://github.com/Slurp9187/odf-crypto/pull/52) · §2 `507d8a0` then [#58](https://github.com/Slurp9187/odf-crypto/pull/58) · §3 rc.4's `ParamsReason`, then [#58](https://github.com/Slurp9187/odf-crypto/pull/58) and [#62](https://github.com/Slurp9187/odf-crypto/pull/62) · §4 [#61](https://github.com/Slurp9187/odf-crypto/pull/61) · §5 [#64](https://github.com/Slurp9187/odf-crypto/pull/64) · §7 [#63](https://github.com/Slurp9187/odf-crypto/pull/63) · off-plan: [#54](https://github.com/Slurp9187/odf-crypto/pull/54), [#55](https://github.com/Slurp9187/odf-crypto/pull/55)
 
 Consumes [docs/plans/odf-encryption-decrypt-2026-09-02.md](odf-encryption-decrypt-2026-09-02.md) and [docs/plans/odf-encryption-encrypt-2026-09-03.md](odf-encryption-encrypt-2026-09-03.md), both Shipped. §1 and §2 below reverse decisions recorded in the first of those; the reversals are written into *that* file as well, not only here.
 
@@ -306,7 +306,7 @@ that capping's basis — rather than correcting either away. The original paragr
 was wrong when written, because it assumed both implementations failed the same
 way. Its instinct is available again for `m`, and not for `t`.
 
-### 7. Human-openable artifact set — **BUILT; THE VERDICT IT EXISTS FOR IS STILL OWED**
+### 7. Human-openable artifact set — **SHIPPED, AND THE VERDICT IS IN**
 
 `tests/goldens/validate_encrypt.py` drives UNO, which is **not** the path a
 double-click takes — no password dialog, no recovery prompt. So
@@ -330,8 +330,20 @@ Three things about it are deliberate and easy to get wrong later:
   goldens as the read-side half, with their passwords, since those are the only
   human-openable evidence for AES-CBC and Blowfish.
 
-`MANIFEST.md` ends with an empty verdict table. **An empty table means the set
-has not been opened by a human**, which is the state this gate is about.
+`MANIFEST.md`'s verdict table is no longer empty. **2026-09-20, LibreOffice
+26.2.1.2 (X86_64) on Windows 11 build 26200: all six double-clicked, password
+typed at LibreOffice's own prompt, `S1 real unencrypted ODT.` rendered every
+time, no recovery or repair bar.**
+
+That is the thing no check in this repository could produce. The generator reads
+its output back through this crate's CLI, and `validate_encrypt.py` drives UNO
+with the password handed across as a property — neither goes near the password
+dialog, and neither would notice a recovery bar. Both had been green for the
+whole arc.
+
+**The verdict covers those exact bytes.** Regenerating the set invalidates it,
+because `encrypt` draws a fresh salt and IV per call: every sha256 moves and the
+row would then describe files nobody opened.
 
 ## Off-plan work that landed in this line
 
@@ -373,7 +385,9 @@ is not.
   By this repo's own standard the guard is untested, and saying so is better than
   implying otherwise.
 - Round-trip the goldens and confirm byte-identical output, as rc.4 did.
-- Open the §7 artifacts by hand in LibreOffice before release.
+- **Open the §7 artifacts by hand in LibreOffice before release — done
+  2026-09-20**, recorded in `tests/artifacts/MANIFEST.md` with the version and
+  OS it was done against, which is a sharper staleness bound than the date.
 
 ## Sequencing
 
@@ -389,4 +403,6 @@ validation and left a consumer unable to tell which half caused trouble.
 > irreversible and stays a separate, explicit go-ahead every time.
 
 **Nothing in rc.5 ships until the §7 artifact set has been opened by a human in a
-real LibreOffice.**
+real LibreOffice.** That condition is met as of 2026-09-20. It was the gate, not
+the go-ahead: `cargo publish` is irreversible and stays a separate, explicit
+decision, per the note above.
