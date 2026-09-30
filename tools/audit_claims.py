@@ -94,7 +94,27 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DEFAULT_CLONE = pathlib.Path("o:/projects-github-clones/LibreOffice/core")
+
+# Where a LibreOffice checkout has actually been found, newest first. Check F is
+# the one arm that needs something outside this repository, so it is the one that
+# goes quiet when a machine puts the clone somewhere else -- and it went quiet for
+# real: the single hardcoded path below was right on the machine this tool was
+# written on and wrong on the next one, so `python tools/audit_claims.py` with no
+# arguments verified zero upstream citations and said "SKIPPED" for a reason that
+# read like the clone was absent rather than merely elsewhere.
+#
+# A list rather than one path, because the honest failure here is "not where I
+# looked", not "not present". `--clone` still overrides, and CI still points it at
+# a path that does not exist on purpose.
+CLONE_CANDIDATES = [
+    pathlib.Path("O:/GitHub/clones/LibreOffice/core"),
+    pathlib.Path("o:/projects-github-clones/LibreOffice/core"),
+]
+
+
+def default_clone():
+    """The first candidate that exists, or the first one for the message."""
+    return next((p for p in CLONE_CANDIDATES if p.exists()), CLONE_CANDIDATES[0])
 
 # Documents whose factual claims are live and must track the tree.
 LIVE_DOCS = ["README.md", "CLAUDE.md", "docs/LICENSING.md", "docs/plan-workflow.md"]
@@ -175,7 +195,7 @@ def packaged():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--clone", type=pathlib.Path, default=DEFAULT_CLONE,
+    ap.add_argument("--clone", type=pathlib.Path, default=default_clone(),
                     help="a LibreOffice core checkout for check F; a nonexistent path skips it")
     args = ap.parse_args()
 
