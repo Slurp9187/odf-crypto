@@ -1,6 +1,6 @@
 [package]
 name = "odf-crypto"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 edition = "2021"
 description = "LibreOffice-faithful encryption for ODF packages (.odt, .ods, .odp): detect it, decrypt it, write it"
 rust-version = "1.85"
@@ -124,7 +124,7 @@ crypto-ops = [
 ]
 
 [dependencies]
-quick-xml = "0.38"
+quick-xml = "0.41"
 thiserror = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Not gated behind `decrypt`: this is the crate's only zeroizing primitive, so

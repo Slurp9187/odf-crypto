@@ -11,6 +11,45 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.8] - Unreleased
+
+### Security
+
+**`quick-xml` raised to 0.41 for RUSTSEC-2026-0194.** 0.38.4 carries two
+advisories, both denial-of-service on untrusted XML and both patched at
+`>= 0.41.0`. **Only one of them reaches this crate**, and the distinction is
+recorded because the other will appear in any consumer's `cargo deny` output
+against odf-crypto and would otherwise be re-derived:
+
+| advisory | reaches this crate? | why |
+| --- | --- | --- |
+| **0194** — quadratic duplicate-attribute check | **yes** | `manifest.rs:697` and `decrypt.rs:1111` iterate a start tag's attributes on manifest XML that came out of an arbitrary package, and nothing calls `with_checks(false)`, so the default checking path is live |
+| **0195** — unbounded `NsReader` namespace allocation | **no** | specific to `NsReader`; this crate uses `Reader`, and `NsReader` appears nowhere in `src/` |
+
+A drop-in: **no source change**. All three feature configurations build, clippy
+`-D warnings` is clean in each, every test passes in each, both doc builds are
+clean, and the crate count stays 59. MSRV is unaffected in both directions —
+`rust-version` is already 1.85 against 0.41's 1.79, and `cargo +1.85` was run
+rather than inferred.
+
+**`MANIFEST_READ_CAP` bounds the input, not the cost.** 8 MiB bounds *N*; it does
+not bound *N²*. What a worst-case start tag actually costs is **not measured
+here** — the fix is free, so that number would only establish how urgent an
+already-closed thing was, and inventing one would be worse than its absence.
+
+**0.42.0 is deliberately not taken.** It is available and is not a drop-in: it
+changes element and attribute names from `&[u8]` to `&str`, giving four `E0308`s,
+all in `manifest.rs`. Mechanical to fix, but that file is where this crate
+reproduces LibreOffice's parse behaviour and `Base64::decodeSomeChars`, and names
+becoming `&str` implies quick-xml now UTF-8-validates them — which could change
+*which manifests parse at all*. For a crate whose claim is LibreOffice fidelity
+that is a behaviour question with its own evidence bar, not a version bump. 0.41
+satisfies both advisories, so there is no reason to take 0.42's risk to fix this.
+
+Reported by the `encrypted-file-vault` `cargo deny` triage session: odf-crypto is
+the only dependent pulling `quick-xml` into that application's graph, so rc.7 is
+why its gate is red.
+
 ## [0.1.0-rc.7] - 2026-09-21
 
 ### Added
