@@ -124,7 +124,7 @@ crypto-ops = [
 ]
 
 [dependencies]
-quick-xml = "0.38"
+quick-xml = "0.41"
 thiserror = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Not gated behind `decrypt`: this is the crate's only zeroizing primitive, so
