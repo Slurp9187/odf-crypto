@@ -132,7 +132,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 `Classification` also carries `package_encrypted` (LibreOffice's
-`HasEncryptedEntries` latch), `odf_version`, `media_type`, and any PGP
+`HasEncryptedEntries` latch), `has_non_encrypted_entries` (its
+`HasNonEncryptedEntries`), `odf_version`, `media_type`, and any PGP
 `encrypted-key` material found in the manifest.
 
 ### Decrypt

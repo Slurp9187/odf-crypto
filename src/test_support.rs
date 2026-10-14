@@ -37,6 +37,19 @@ pub(crate) fn golden_path(name: &str) -> PathBuf {
     goldens_dir().join(name)
 }
 
+/// `tests/ladder/`: the SHA-1 ladder fixtures. Synthesized by
+/// `make_ladder.py` and accepted by LibreOffice (`lo_accepts.py`), so they are
+/// kept apart from the goldens, every one of which LibreOffice wrote.
+pub(crate) fn load_ladder_fixture(name: &str) -> Vec<u8> {
+    let path = goldens_dir().with_file_name("ladder").join(name);
+    std::fs::read(&path).unwrap_or_else(|err| {
+        panic!(
+            "ladder fixture missing at {}: {err}. Generate with tests/ladder/make_ladder.py",
+            path.display()
+        )
+    })
+}
+
 pub(crate) fn load_golden(name: &str) -> Vec<u8> {
     let path = golden_path(name);
     std::fs::read(&path).unwrap_or_else(|err| {

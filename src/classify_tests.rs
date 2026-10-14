@@ -1800,3 +1800,103 @@ fn latch_and_payload_agree_on_a_real_libreoffice_package() {
     assert_eq!(latch.path, payload.path);
     assert_eq!(latch.cipher, payload.cipher);
 }
+
+// --- #60: `has_non_encrypted_entries`, LibreOffice's `HasNonEncryptedEntries` ---
+
+fn non_encrypted_flag(body: &str, files: &[(&str, &[u8])]) -> (bool, bool) {
+    let manifest = manifest_wrap(Some("1.3"), body);
+    let class = classify_pkg(&manifest, files);
+    (class.package_encrypted, class.has_non_encrypted_entries)
+}
+
+/// The shape `objmisc.cxx` warns about: an encrypted package with a plaintext
+/// stream listed beside the encrypted one.
+#[test]
+fn a_plaintext_stream_beside_an_encrypted_one_sets_the_flag() {
+    let body = root_row("1.3", MIME_TEXT)
+        + &file_entry(PwOpts::default())
+        + &plain_row("styles.xml", "text/xml");
+    let files: &[(&str, &[u8])] = &[("content.xml", b"x"), ("styles.xml", b"y")];
+    assert_eq!(non_encrypted_flag(&body, files), (true, true));
+}
+
+#[test]
+fn every_listed_stream_encrypted_leaves_the_flag_clear() {
+    // Folder rows and unlisted members (`mimetype`, the manifest itself, a file
+    // under a folder) are not stream rows upstream, so none of them count.
+    let body = root_row("1.3", MIME_TEXT)
+        + &file_entry(PwOpts::default())
+        + &file_entry(PwOpts {
+            path: "styles.xml",
+            ..PwOpts::default()
+        })
+        + &plain_row(
+            "Configurations2/",
+            "application/vnd.sun.xml.ui.configuration",
+        );
+    let files: &[(&str, &[u8])] = &[
+        ("mimetype", MIME_TEXT.as_bytes()),
+        ("content.xml", b"x"),
+        ("styles.xml", b"y"),
+        ("Configurations2/accelerator/current.xml", b""),
+    ];
+    assert_eq!(non_encrypted_flag(&body, files), (true, false));
+}
+
+/// A row naming no member resolves to nothing upstream (`hasByHierarchicalName`
+/// is false), so it sets neither flag.
+#[test]
+fn a_row_naming_no_member_does_not_count() {
+    let body = root_row("1.3", MIME_TEXT)
+        + &file_entry(PwOpts::default())
+        + &plain_row("missing.xml", "text/xml");
+    assert_eq!(
+        non_encrypted_flag(&body, &[("content.xml", b"x")]),
+        (true, false)
+    );
+}
+
+/// Incomplete `encryption-data` is the same `else` upstream as none at all.
+#[test]
+fn an_incomplete_encryption_row_counts_as_non_encrypted() {
+    let body = root_row("1.3", MIME_TEXT)
+        + &file_entry(PwOpts::default())
+        + &file_entry(PwOpts {
+            path: "styles.xml",
+            checksum: false,
+            ..PwOpts::default()
+        });
+    let files: &[(&str, &[u8])] = &[("content.xml", b"x"), ("styles.xml", b"y")];
+    assert_eq!(non_encrypted_flag(&body, files), (true, true));
+}
+
+/// Set on a plaintext package too, as upstream does: the flag means "a stream
+/// row without encryption", not "partly encrypted". The warning needs both.
+#[test]
+fn a_plaintext_package_sets_the_flag_without_the_latch() {
+    let class = classify(&unencrypted_odt()).expect("classifies");
+    assert!(!class.package_encrypted);
+    assert!(class.has_non_encrypted_entries);
+}
+
+/// LibreOffice does not trip its own incomplete-encryption warning: every
+/// encrypted golden it wrote reads `false`. Discovered, not listed, with a
+/// floor so an empty glob cannot pass.
+#[test]
+fn no_encrypted_libreoffice_golden_has_non_encrypted_entries() {
+    let dir = crate::test_support::goldens_dir();
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("goldens dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().is_none_or(|x| x != "odt") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let class = classify(&load_golden(&name)).expect(&name);
+        if class.package_encrypted {
+            assert!(!class.has_non_encrypted_entries, "{name}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no encrypted golden found under {dir:?}");
+}

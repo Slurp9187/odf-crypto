@@ -10,8 +10,8 @@ use crate::decrypt::{
     classification_metadata_unchanged, decrypt, decrypt_with_limits, AllocationSite, DecryptError,
 };
 use crate::test_support::{
-    append_stored_member, load_golden, pgp_two_row_zip, read_member, zip_namelist,
-    NONASCII_PASSWORD, PASSWORD,
+    append_stored_member, load_golden, load_ladder_fixture, pgp_two_row_zip, read_member,
+    zip_namelist, NONASCII_PASSWORD, PASSWORD,
 };
 use crate::{Kdf, Mode};
 
@@ -182,8 +182,16 @@ fn mutate_zip(
     member_mut: Option<Rewrite>,
     manifest_fn: Option<Rewrite>,
 ) -> Vec<u8> {
-    let input = load_golden(golden);
-    let mut src = ZipArchive::new(Cursor::new(&input)).unwrap();
+    mutate_bytes(&load_golden(golden), member, member_mut, manifest_fn)
+}
+
+fn mutate_bytes(
+    input: &[u8],
+    member: Option<&str>,
+    member_mut: Option<Rewrite>,
+    manifest_fn: Option<Rewrite>,
+) -> Vec<u8> {
+    let mut src = ZipArchive::new(Cursor::new(input)).unwrap();
     let mut buf = Vec::new();
     let mut out = ZipWriter::new(Cursor::new(&mut buf));
     for i in 0..src.len() {
@@ -1526,4 +1534,158 @@ fn every_pre_key_fault_is_decided_in_the_screen() {
             other => panic!("expected {expected:?} to be screened, got {other:?}"),
         }
     }
+}
+
+// --- LibreOffice's legacy SHA-1 read ladder -----------------------------------
+//
+// Fixtures in `tests/ladder/`: `lo-odf11-nonascii-password.odt` with every
+// encrypted member re-encrypted under one start key. Its 52-char password puts
+// both encodings inside `rtl_digest_SHA1`'s broken window, so every rung's key
+// differs. LibreOffice opens the three rungs and refuses the control
+// (`lo_accepts.py`, both orders).
+
+const LADDER_RUNGS: [&str; 3] = [
+    "ladder-staroffice-utf8.odt",
+    "ladder-forced-sha256.odt",
+    "ladder-staroffice-ms1252.odt",
+];
+
+#[test]
+fn each_ladder_rung_decrypts_to_what_the_golden_does() {
+    let want = decrypt(
+        &load_golden("lo-odf11-nonascii-password.odt"),
+        NONASCII_PASSWORD,
+    )
+    .expect("golden decrypts");
+    for name in LADDER_RUNGS {
+        let got = decrypt(&load_ladder_fixture(name), NONASCII_PASSWORD)
+            .unwrap_or_else(|e| panic!("{name}: LibreOffice opens this; got {e:?}"));
+        assert_eq!(got, want, "{name}");
+    }
+}
+
+#[test]
+fn the_ladder_does_not_rescue_a_wrong_password() {
+    for name in LADDER_RUNGS {
+        let err = decrypt(&load_ladder_fixture(name), "wrong").unwrap_err();
+        assert!(
+            matches!(err, DecryptError::WrongPassword),
+            "{name}: {err:?}"
+        );
+    }
+}
+
+/// Correct SHA-1 over MS-1252 is not a rung: upstream pairs MS-1252 only with
+/// the StarOffice digest. LibreOffice refuses this file, so it must fail here.
+#[test]
+fn a_key_on_no_rung_is_a_wrong_password() {
+    let err = decrypt(
+        &load_ladder_fixture("ladder-not-a-rung.odt"),
+        NONASCII_PASSWORD,
+    )
+    .unwrap_err();
+    assert!(matches!(err, DecryptError::WrongPassword), "{err:?}");
+}
+
+/// The ladder runs only for a row whose start key is SHA-1
+/// (`ZipPackageStream.cxx:1024-1025`). The StarOffice fixture, relabeled as a
+/// SHA-256 row, opens only if the ladder is walked where upstream does not.
+#[test]
+fn a_sha256_row_does_not_walk_the_ladder() {
+    fn declare_sha256(xml: &[u8]) -> Vec<u8> {
+        String::from_utf8_lossy(xml)
+            .replace(
+                "<manifest:key-derivation ",
+                "<manifest:start-key-generation                  manifest:start-key-generation-name=\"http://www.w3.org/2000/09/xmldsig#sha256\"                  manifest:key-size=\"32\"/><manifest:key-derivation ",
+            )
+            .into_bytes()
+    }
+    let blob = mutate_bytes(
+        &load_ladder_fixture("ladder-staroffice-utf8.odt"),
+        None,
+        None,
+        Some(declare_sha256),
+    );
+    let class = classify(&blob).expect("classifies");
+    assert!(class
+        .encrypted_entries
+        .iter()
+        .all(|r| r.start_key == crate::StartKeyAlg::Sha256));
+    let err = decrypt(&blob, NONASCII_PASSWORD).unwrap_err();
+    assert!(matches!(err, DecryptError::WrongPassword), "{err:?}");
+}
+
+// --- The unlatched shape: encrypted rows, no latch row ------------------------
+
+/// `lo-legacy-aes-cbc.odt` with `content.xml` swapped for its plaintext and its
+/// `encryption-data` dropped: the shape `EncryptError::PartiallyEncrypted`
+/// names. Built the way `tools/probe_unlatched.py` builds the file it shows
+/// LibreOffice: no password prompt, `ERRCODE_SFX_WRONGPASSWORD` without one,
+/// and a normal open when the password is supplied.
+fn unlatched_package() -> Vec<u8> {
+    let golden = load_golden("lo-legacy-aes-cbc.odt");
+    let plain = decrypt(&golden, PASSWORD).expect("golden decrypts");
+    let content = read_member(&plain, "content.xml");
+    let mut src = ZipArchive::new(Cursor::new(&golden)).unwrap();
+    let mut buf = Vec::new();
+    let mut out = ZipWriter::new(Cursor::new(&mut buf));
+    for i in 0..src.len() {
+        let mut file = src.by_index(i).unwrap();
+        let name = file.name().to_string();
+        let method = file.compression();
+        let mut body = Vec::new();
+        file.read_to_end(&mut body).unwrap();
+        if name == "content.xml" {
+            body = content.clone();
+        } else if name == "META-INF/manifest.xml" {
+            let xml = String::from_utf8(body).unwrap();
+            let start = xml.find(r#"manifest:full-path="content.xml""#).unwrap();
+            let open_end = start + xml[start..].find('>').unwrap();
+            let entry_end = start + xml[start..].find("</manifest:file-entry>").unwrap();
+            let head = xml[..open_end].trim_end_matches('/');
+            body = format!(
+                "{head}/>{}",
+                &xml[entry_end + "</manifest:file-entry>".len()..]
+            )
+            .into_bytes();
+        }
+        out.start_file(
+            &name,
+            SimpleFileOptions::default().compression_method(method),
+        )
+        .unwrap();
+        out.write_all(&body).unwrap();
+    }
+    out.finish().unwrap();
+    buf
+}
+
+/// The decision recorded for EFV in rc.9: `decrypt` keeps decrypting this
+/// shape when given the password, which is what LibreOffice does when given
+/// it. A GUI user cannot get that far, because LibreOffice never asks.
+#[test]
+fn an_unlatched_package_decrypts_with_its_password() {
+    let pkg = unlatched_package();
+    let class = classify(&pkg).expect("classifies");
+    assert_eq!(class.mode, Mode::PerEntry);
+    assert!(
+        !class.package_encrypted,
+        "no row on content.xml, so no latch"
+    );
+    assert!(
+        class.has_non_encrypted_entries,
+        "content.xml is a plain stream row"
+    );
+
+    let want = decrypt(&load_golden("lo-legacy-aes-cbc.odt"), PASSWORD).unwrap();
+    let got = decrypt(&pkg, PASSWORD).expect("decrypts");
+    for member in ["content.xml", "styles.xml", "settings.xml", "meta.xml"] {
+        assert_eq!(
+            read_member(&got, member),
+            read_member(&want, member),
+            "{member}"
+        );
+    }
+    let err = decrypt(&pkg, "wrong").unwrap_err();
+    assert!(matches!(err, DecryptError::WrongPassword), "{err:?}");
 }

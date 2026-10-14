@@ -345,6 +345,14 @@ whole arc.
 because `encrypt` draws a fresh salt and IV per call: every sha256 moves and the
 row would then describe files nobody opened.
 
+## Amended 2026-10-14 (0.1.0-rc.9): "opens without prompting" was half wrong
+
+§4 and §5 describe the unlatched `PerEntry` shape as one LibreOffice **opens without prompting**. That was inferred from the latch alone: the prompt is gated on `HasEncryptedEntries`, so no prompt, and so, it was assumed, an open. The second half was never measured.
+
+Measured for rc.9 (`tools/probe_unlatched.py`, both orders, an interaction handler recording every request): `lo-legacy-aes-cbc.odt` with `content.xml` plain and four other members encrypted. LibreOffice raises **no** password request (the latched golden raises `DocumentPasswordRequest2`), then `ERRCODE_SFX_WRONGPASSWORD` (`0x4b0b`), and refuses to open. With the password supplied programmatically it opens normally. The split this plan made still stands, because to LibreOffice this is still not an encrypted document. What changed is the claim about what LibreOffice does with it: `PartiallyEncrypted`'s doc and Display text, and the troubleshooting heading, now say it never prompts, not that it opens.
+
+The same reasoning shape this plan's §4 caught in the `m_bHasNonEncryptedEntries` justification, in a smaller form: a conclusion about behavior drawn from one flag, without running the behavior.
+
 ## Off-plan work that landed in this line
 
 Recorded because it is real work in rc.5 that this plan did not call for, and a

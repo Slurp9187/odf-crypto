@@ -35,8 +35,8 @@ use crate::limits::{
     CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN, DERIVED_KEY_MIN_LEN, INFLATE_CEILING,
     MAX_ENCRYPTED_ENTRIES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
 };
-use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext};
-use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode};
+use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext, PasswordDigest};
+use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode, StartKeyAlg};
 use crate::zip_err;
 use crate::DetectError;
 
@@ -719,10 +719,9 @@ fn kdf_error(e: KdfError) -> DecryptError {
 
 fn derive_key(
     row: &EntryEncryption,
-    password: &str,
+    sk: PasswordDigest,
     limits: &DecryptLimits,
 ) -> Result<DerivedKey, DecryptError> {
-    let sk = crate::kdf::start_key(password, row.start_key);
     let n = row.derived_key_len;
     // Unreachable from the only current caller, and kept deliberately. Since #79
     // `decrypt_member` screens this same field against the row's cipher, and every
@@ -874,7 +873,42 @@ fn decrypt_member(
     limits: &DecryptLimits,
 ) -> Result<DeflatedPlaintext, DecryptError> {
     screen_before_deriving(row, blob)?;
-    let key = derive_key(row, password, limits)?;
+    let first = decrypt_with_start_key(
+        row,
+        crate::kdf::start_key(password, row.start_key),
+        blob,
+        limits,
+    );
+    match first {
+        Err(DecryptError::WrongPassword) if row.start_key == StartKeyAlg::Sha1 => {}
+        other => return other,
+    }
+    // LibreOffice's legacy SHA-1 read ladder; see `crate::kdf::LegacyStartKey`.
+    // Upstream catches `WrongPasswordException` and nothing else, so any other
+    // failure on a rung ends the walk with that failure, as it does here. Each
+    // member walks it on its own, as each `ZipPackageStream` does upstream.
+    //
+    // A wrong password therefore costs four derivations per SHA-1 row rather
+    // than one. `decrypt` stops at the first member that fails, so that is four
+    // for the whole call on the usual path; the ceiling a hostile manifest can
+    // reach is four times the per-row limits in `DecryptLimits`.
+    for rung in crate::kdf::SHA1_LADDER {
+        let sk = crate::kdf::legacy_start_key(password, rung);
+        match decrypt_with_start_key(row, sk, blob, limits) {
+            Err(DecryptError::WrongPassword) => {}
+            other => return other,
+        }
+    }
+    Err(DecryptError::WrongPassword)
+}
+
+fn decrypt_with_start_key(
+    row: &EntryEncryption,
+    sk: PasswordDigest,
+    blob: &[u8],
+    limits: &DecryptLimits,
+) -> Result<DeflatedPlaintext, DecryptError> {
+    let key = derive_key(row, sk, limits)?;
     key.with_secret(|k| match row.cipher {
         Cipher::AesGcmW3c => decrypt_aes_gcm(k, row, blob),
         Cipher::AesCbcW3c => decrypt_aes_cbc(k, row, blob),

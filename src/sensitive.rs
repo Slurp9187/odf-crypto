@@ -17,9 +17,9 @@
 //! beside. The plaintext the caller hands `encrypt()` stays plain for the
 //! same reason `password: &str` does — the caller already owns it.
 
-//! # These four are names, not types
+//! # These five are names, not types
 //!
-//! All four are `Dynamic<Vec<u8>>`, so they are the *same* nominal type and are
+//! All five are `Dynamic<Vec<u8>>`, so they are the *same* nominal type and are
 //! freely substitutable: passing a [`PasswordDigest`] where a [`DerivedKey`] is
 //! expected compiles. What they buy is a greppable name and zeroize-on-drop, not
 //! type safety.
@@ -28,7 +28,7 @@
 //! this reading — a macro from a crate whose pitch is "accidents must not
 //! compile" looked like it guaranteed a type when it only ever emitted a `type`
 //! line. The replacement is [`dynamic_newtype!`], which emits a `struct` and
-//! would make the four distinct. Adopting it is deliberately deferred: it is a
+//! would make the five distinct. Adopting it is deliberately deferred: it is a
 //! separate design change, and rc.11 is still actively moving that macro's
 //! `derive:` surface. Stated here rather than left to be rediscovered.
 //!
@@ -40,6 +40,16 @@ use secure_gate::Dynamic;
 /// before KDF stretching. Length depends on the digest algorithm (20 or 32
 /// bytes), so this wraps `Vec<u8>`, not a fixed-size array.
 pub(crate) type PasswordDigest = Dynamic<Vec<u8>>;
+
+/// The password itself, re-encoded or padded for hashing: the MS-1252 bytes
+/// of `crate::ms1252::encode`, and the final padded block(s) of
+/// `crate::kdf`'s StarOffice SHA-1. Only the legacy start-key ladder makes
+/// either; the correct digests hash `password.as_bytes()` in place.
+///
+/// A fifth alias rather than a reuse of [`PasswordDigest`], because these
+/// bytes are not a digest and a reader grepping for where the password
+/// itself is copied should find them.
+pub(crate) type PasswordBytes = Dynamic<Vec<u8>>;
 
 /// PBKDF2/Argon2id-derived cipher key. On the read side its length (16/24/32
 /// bytes) follows `EntryEncryption::derived_key_len`, so this wraps `Vec<u8>`,

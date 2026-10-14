@@ -336,6 +336,10 @@ fn classification_json(c: &Classification) -> String {
     o.insert("package".into(), json!("ODF"));
     o.insert("mode".into(), json!(mode_str(c.mode)));
     o.insert("encrypted".into(), json!(c.package_encrypted));
+    o.insert(
+        "has_non_encrypted_entries".into(),
+        json!(c.has_non_encrypted_entries),
+    );
     o.insert("odf_version".into(), json!(c.odf_version));
     o.insert("media_type".into(), json!(c.media_type));
     o.insert("odf12_fatal".into(), json!(c.odf12_fatal));

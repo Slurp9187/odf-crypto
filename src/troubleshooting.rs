@@ -18,7 +18,7 @@
 //! - [LibreOffice will not open what `encrypt` wrote](#libreoffice-will-not-open-what-encrypt-wrote)
 //! - [Which Argon2 cost should I pick?](#which-argon2-cost-should-i-pick)
 //! - [The error contains text I did not write](#the-error-contains-text-i-did-not-write)
-//! - [`encrypt` refused a file LibreOffice opens without prompting](#encrypt-refused-a-file-libreoffice-opens-without-prompting)
+//! - [`encrypt` refused a file LibreOffice does not ask a password for](#encrypt-refused-a-file-libreoffice-does-not-ask-a-password-for)
 //!
 //! # `decrypt` returned `BadParameters`
 //!
@@ -131,6 +131,14 @@
 //! the password once more, and if it still fails, get a fresh copy."* That
 //! sentence is true in both worlds, and the shorter one is false in one of them.
 //!
+//! **Old files and non-ASCII passwords.** Before `0.1.0-rc.9`, files from
+//! OpenOffice.org 1.x, StarOffice and LibreOffice before 3.5 could report
+//! `WrongPassword` with the right password, because those writers derived the
+//! start key with a knowingly broken SHA-1 or from the MS-1252 bytes. Since rc.9
+//! `decrypt` walks LibreOffice's own retry ladder for any SHA-1 row, so such a
+//! file opens here exactly when it opens in LibreOffice. If one still fails,
+//! LibreOffice refuses it too.
+//!
 //! # LibreOffice will not open what `encrypt` wrote
 //!
 //! **`encrypt` writes one profile, whatever the input was.** One
@@ -229,7 +237,7 @@
 //! not interpolate these into a sentence that reads as yours*. Show them quoted,
 //! attributed to the file, and truncated for display.
 //!
-//! # `encrypt` refused a file LibreOffice opens without prompting
+//! # `encrypt` refused a file LibreOffice does not ask a password for
 //!
 //! That is [`crate::EncryptError::PartiallyEncrypted`], and the surprise is real rather
 //! than a bug in your reasoning.
@@ -238,8 +246,15 @@
 //! rows exist*. [`Classification::package_encrypted`](crate::Classification::package_encrypted)
 //! means something narrower — it is LibreOffice's `HasEncryptedEntries` latch,
 //! and only a row resolving to `content.xml` or `encrypted-package` sets it.
-//! **A package can be `PerEntry` with the latch false**, and LibreOffice opens
-//! that without prompting, because the prompt is gated on the latch.
+//! **A package can be `PerEntry` with the latch false**, and LibreOffice never
+//! asks for its password, because the prompt is gated on the latch.
+//!
+//! It does not open it either, at least when Writer has to read one of the
+//! encrypted members: measured in rc.9 (`tools/probe_unlatched.py`), it raises
+//! `ERRCODE_SFX_WRONGPASSWORD` without having asked, and opens the file only
+//! when the password is supplied programmatically. [`crate::decrypt`] does the
+//! same: given the password, it decrypts the rows, so it recovers a file a
+//! LibreOffice user cannot open from the GUI.
 //!
 //! So the old single `AlreadyEncrypted` was telling a caller something the
 //! specifying implementation contradicts. It is still refused, for a reason
@@ -262,12 +277,11 @@
 //! # let _ = is_sealable;
 //! ```
 //!
-//! One limitation to know, because a caller may be trying to reproduce
-//! LibreOffice's behaviour and cannot: `Classification` does not expose
-//! LibreOffice's mirror-image flag, `HasNonEncryptedEntries`. With **both**
-//! flags set on ODF `>= 1.2`, LibreOffice raises
-//! `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and disables macro execution. Half of
-//! that predicate is visible here and half is not, so that verdict cannot be
-//! reconstructed from a `Classification`.
+//! To reproduce LibreOffice's *other* verdict on such packages, read
+//! [`Classification::has_non_encrypted_entries`](crate::Classification::has_non_encrypted_entries),
+//! its `HasNonEncryptedEntries`. With **both** flags set on ODF `>= 1.2`,
+//! LibreOffice raises `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and disables macro
+//! execution (`sfx2/source/doc/objmisc.cxx:1028-1063`). Until `0.1.0-rc.9`
+//! only half of that predicate was visible here.
 
 // No items. This module is a page.

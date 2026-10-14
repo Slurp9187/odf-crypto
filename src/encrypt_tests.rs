@@ -92,7 +92,8 @@ fn s1_pgp_package_is_already_encrypted() {
 /// `HasEncryptedEntries` and only a row on one of those two members sets it
 /// (`ZipPackage.cxx:435-446`).
 ///
-/// **LibreOffice opens this without prompting.** So the old single
+/// **LibreOffice never prompts for its password** (measured in rc.9; see the
+/// variant's doc). So the old single
 /// `AlreadyEncrypted`, whose message is "package is already encrypted", was
 /// telling a caller something the specifying implementation contradicts. The
 /// refusal itself was never in question and has not changed.
@@ -142,7 +143,7 @@ fn s1_encrypted_rows_without_a_latch_are_partially_encrypted() {
     );
     // The distinction is in the message, which is the whole point of the split.
     assert!(
-        err.to_string().contains("without prompting"),
+        err.to_string().contains("never prompts"),
         "message must not claim the package is encrypted: {err}"
     );
 }
@@ -1185,4 +1186,15 @@ fn every_encrypt_error_variant_is_accounted_for_in_the_cli_exit_map() {
         }
     }
     accounted_for(&EncryptError::AlreadyEncrypted);
+}
+
+/// `encrypt`'s output must not be a package LibreOffice warns about: an ODF
+/// 1.4 root with both flags set raises `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and
+/// disables macros (`objmisc.cxx:1028-1063`).
+#[test]
+fn encrypt_output_has_no_non_encrypted_entries() {
+    let encrypted = encrypt(&load_golden("lo-unencrypted.odt"), PASSWORD).expect("encrypt");
+    let class = classify(&encrypted).expect("classifies");
+    assert!(class.package_encrypted);
+    assert!(!class.has_non_encrypted_entries);
 }
