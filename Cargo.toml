@@ -55,6 +55,8 @@ include = [
     "src/**/*.rs",
     "examples/encrypt_for_validation.rs",
     "tests/goldens/*.odt",
+    # Synthesized, LibreOffice-accepted SHA-1 ladder fixtures; see make_ladder.py.
+    "tests/ladder/*.odt",
     # The CLI's end-to-end suite. `#![cfg(feature = "cli")]` throughout, so it
     # compiles to nothing without the feature and costs a library consumer
     # nothing -- but the published tarball can then run it, like the rest.
