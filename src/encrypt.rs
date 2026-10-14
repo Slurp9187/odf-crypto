@@ -407,13 +407,28 @@ pub enum EncryptError {
     /// so `classify` reports [`crate::Mode::PerEntry`] with
     /// `package_encrypted == false`.
     ///
-    /// **LibreOffice opens this without prompting for a password.** The latch is
-    /// set only by a row resolving to `content.xml` or `encrypted-package`
-    /// (`ZipPackage.cxx:435-446`), so a package whose only complete rows sit on
-    /// other members is not, to LibreOffice, an encrypted document -- it is a
-    /// document with encrypted streams in it. Reporting that as *"package is
-    /// already encrypted"* told a caller something the specifying implementation
-    /// contradicts.
+    /// **LibreOffice never asks for this file's password.** The latch is set
+    /// only by a row resolving to `content.xml` or `encrypted-package`
+    /// (`ZipPackage.cxx:435-446`), and the password prompt is gated on the
+    /// latch, so a package whose only complete rows sit on other members is
+    /// not, to LibreOffice, an encrypted document.
+    ///
+    /// What happens instead was **measured in rc.9** (`tools/probe_unlatched.py`,
+    /// both orders): with `styles.xml`, `settings.xml`, `meta.xml` and
+    /// `manifest.rdf` encrypted and `content.xml` plain, LibreOffice raises
+    /// `ERRCODE_SFX_WRONGPASSWORD` without ever having asked, and refuses to
+    /// open. Supplied the password programmatically it opens normally. Writer's
+    /// import (`sw/source/filter/xml/swxml.cxx`) maps an encrypted stream it
+    /// cannot read to that error, so a package whose encrypted members are ones
+    /// the load never reads may open; that variant was not measured.
+    ///
+    /// Before rc.9 this doc said LibreOffice *opens* the file without
+    /// prompting. That was inferred from the latch alone and is wrong for the
+    /// measured shape; the "no prompt" half was right.
+    ///
+    /// Reporting this as *"package is already encrypted"* would still tell a
+    /// caller something the specifying implementation contradicts: to
+    /// LibreOffice this is not an encrypted document.
     ///
     /// Still refused, and the refusal is the same one: wrapping a package whose
     /// members are already ciphertext produces a file whose inner members
@@ -425,7 +440,7 @@ pub enum EncryptError {
     /// `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and disables macro execution
     /// (`sfx2/source/doc/objmisc.cxx:1028-1063`).
     #[error(
-        "package has encrypted entries but no latch row: LibreOffice opens it without prompting"
+        "package has encrypted entries but no latch row: LibreOffice never prompts for its password"
     )]
     PartiallyEncrypted,
     /// LibreOffice would not open this plaintext package (`odf12_fatal`):

@@ -18,7 +18,7 @@
 //! - [LibreOffice will not open what `encrypt` wrote](#libreoffice-will-not-open-what-encrypt-wrote)
 //! - [Which Argon2 cost should I pick?](#which-argon2-cost-should-i-pick)
 //! - [The error contains text I did not write](#the-error-contains-text-i-did-not-write)
-//! - [`encrypt` refused a file LibreOffice opens without prompting](#encrypt-refused-a-file-libreoffice-opens-without-prompting)
+//! - [`encrypt` refused a file LibreOffice does not ask a password for](#encrypt-refused-a-file-libreoffice-does-not-ask-a-password-for)
 //!
 //! # `decrypt` returned `BadParameters`
 //!
@@ -229,7 +229,7 @@
 //! not interpolate these into a sentence that reads as yours*. Show them quoted,
 //! attributed to the file, and truncated for display.
 //!
-//! # `encrypt` refused a file LibreOffice opens without prompting
+//! # `encrypt` refused a file LibreOffice does not ask a password for
 //!
 //! That is [`crate::EncryptError::PartiallyEncrypted`], and the surprise is real rather
 //! than a bug in your reasoning.
@@ -238,8 +238,15 @@
 //! rows exist*. [`Classification::package_encrypted`](crate::Classification::package_encrypted)
 //! means something narrower — it is LibreOffice's `HasEncryptedEntries` latch,
 //! and only a row resolving to `content.xml` or `encrypted-package` sets it.
-//! **A package can be `PerEntry` with the latch false**, and LibreOffice opens
-//! that without prompting, because the prompt is gated on the latch.
+//! **A package can be `PerEntry` with the latch false**, and LibreOffice never
+//! asks for its password, because the prompt is gated on the latch.
+//!
+//! It does not open it either, at least when Writer has to read one of the
+//! encrypted members: measured in rc.9 (`tools/probe_unlatched.py`), it raises
+//! `ERRCODE_SFX_WRONGPASSWORD` without having asked, and opens the file only
+//! when the password is supplied programmatically. [`crate::decrypt`] does the
+//! same: given the password, it decrypts the rows, so it recovers a file a
+//! LibreOffice user cannot open from the GUI.
 //!
 //! So the old single `AlreadyEncrypted` was telling a caller something the
 //! specifying implementation contradicts. It is still refused, for a reason
