@@ -11,6 +11,8 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.9] - Unreleased
+
 ## [0.1.0-rc.8] - 2026-09-30
 
 ### Security
