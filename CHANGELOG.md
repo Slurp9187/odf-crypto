@@ -11,7 +11,7 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
-## [0.1.0-rc.9] - 2026-10-14
+## [0.1.0-rc.9] - Unreleased
 
 ### Added
 
@@ -76,6 +76,14 @@ other members encrypted, LibreOffice asks for **no** password, raises
 programmatically, it opens normally. `decrypt` keeps decrypting this shape when
 given the password, which matches that. Corrected in the variant's doc, the
 troubleshooting page and the rc.5 plan.
+
+**The README claimed the SHA-1 ladder before it existed.** Through rc.8 it said
+the SHA-1 path "handles LibreOffice's four-candidate fallback ladder", citing
+`lo-odf11-nonascii-password.odt` as the fixture that exercises it. That golden
+shows only that LibreOffice *writes* the correct key, and `decrypt` tried
+nothing else. The claim is true as of this release; the README now says so and
+points at `tests/ladder/`. Its test count, stale at 226 since before rc.8, is
+corrected to 246.
 
 ## [0.1.0-rc.8] - 2026-09-30
 

@@ -96,11 +96,14 @@ Derived key length (128/192/256) is carried on `EntryEncryption::derived_key_len
 Entry integrity is `Checksum::Sha1_1K` or `Checksum::Sha256_1K` over the first
 1 KiB, matching LibreOffice.
 
-The SHA-1 start-key path also handles LibreOffice's four-candidate fallback
-ladder, including `rtl_digest_SHA1` — a deliberately non-conforming SHA-1 that
-LibreOffice keeps for compatibility (`tdf#114939`). The repository carries the
-analysis in `tests/goldens/sha1_star.py`; `tests/goldens/lo-odf11-nonascii-password.odt`
-is the fixture that exercises it.
+On a SHA-1 row whose password fails, `decrypt` walks LibreOffice's legacy
+retry ladder, as LibreOffice does: the StarOffice digest of the UTF-8 password,
+a forced SHA-256, then the StarOffice digest of the MS-1252 password. The
+StarOffice digest is `rtl_digest_SHA1`, a deliberately non-conforming SHA-1 that
+LibreOffice keeps for compatibility (`tdf#114939`). Files from OpenOffice.org
+1.x, StarOffice and LibreOffice before 3.5 need it. **Since `0.1.0-rc.9`**:
+earlier versions of this README claimed the ladder while `decrypt` tried only
+the correct key.
 
 ## Usage
 
@@ -363,6 +366,12 @@ family rather than its producer; there is no Apache OpenOffice-produced evidence
 here, so the corpus proves fidelity to LibreOffice and to the format, not
 agreement between two independent writers.
 
+**Four ladder fixtures, LibreOffice-accepted rather than LibreOffice-written.**
+No LibreOffice that runs today writes the legacy start keys, so
+`tests/ladder/*.odt` were synthesized from a golden, one per ladder rung plus a
+control on no rung. A current LibreOffice opens the three rungs and refuses the
+control. They ship too.
+
 **A round trip through LibreOffice, not merely through us.**
 `lo-opens-our-encrypt-output.odt` is what LibreOffice saved after being handed a
 package this crate wrote. That is the difference between *we can read what we
@@ -376,7 +385,7 @@ manifest naming the password and expected text for each. Recorded verdict:
 a password, accepted it, rendered the expected text, and raised no recovery bar.
 That verdict outranks the harness.
 
-**226 tests, passing in every feature configuration** — 149 library, 20 CLI
+**246 tests, passing in every feature configuration** — 169 library, 20 CLI
 unit, 35 CLI end-to-end, 22 doctests. All three builds run in CI, not just the
 two that are cheap.
 
