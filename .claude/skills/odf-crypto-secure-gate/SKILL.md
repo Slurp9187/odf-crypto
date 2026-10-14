@@ -53,7 +53,7 @@ The one case that would reopen it: a plausible `encrypt()` recovery flow needing
 key material. Do not decide that silently — it deserves the same explicit treatment `decrypt()`
 already got.
 
-## The four aliases
+## The five aliases
 
 All in `src/sensitive.rs`, all `pub(crate)`, all plain `type` aliases over `Dynamic<Vec<u8>>`.
 
@@ -63,13 +63,14 @@ All in `src/sensitive.rs`, all `pub(crate)`, all plain `type` aliases over `Dyna
 | `DerivedKey` | the PBKDF2/Argon2 output, length from `derived_key_len` (16/24/32) | `derive_key` |
 | `DeflatedPlaintext` | a member's decrypted-but-still-compressed bytes | the three cipher fns; also `encrypt`'s deflated payload |
 | `MemberPlaintext` | a member's inflated plaintext | built by `try_new_with` so the inflate writes into the wrapper |
+| `PasswordBytes` | the password itself, re-encoded or padded: `ms1252::encode`'s bytes, and `staroffice_sha1`'s final padded block(s) | `new_with`, filled in the closure; only the legacy SHA-1 ladder (rc.9) makes one |
 
 **`Dynamic`, not `Fixed`:** none of these lengths is a compile-time constant. The digest
 follows the hash the file names; the derived key follows a manifest field; the two plaintext
 aliases are whatever size the member is. Contrast a consuming application's own file key, which
 is `Fixed` because its byte count is an architectural constant that application chose.
 
-**All four are the same nominal type** and are freely substitutable — passing a digest where a
+**All five are the same nominal type** and are freely substitutable — passing a digest where a
 derived key is expected compiles. The aliases buy a greppable name and zeroize-on-drop, **not
 type safety**. That limitation is stated in `sensitive.rs` too, because it is exactly what
 upstream deleted the alias macros over.
@@ -86,9 +87,9 @@ done
 
 | method | files |
 |---|---|
-| `with_secret` | 3 |
+| `with_secret` | 4 |
 | `with_secret_mut` | 3 |
-| `new_with` | 3 |
+| `new_with` | 4 |
 | `try_new_with` | 2 |
 | `expose_secret` | **0** |
 | `into_inner` | **0** |
@@ -194,8 +195,10 @@ claim.
 
 - **The `rand` / `ct-eq` / `encoding` guidance** in the global skill. All three are off here and
   measurably unused; enabling one is a decision to argue for.
-- **Newtypes.** Four interchangeable roles is below the global skill's threshold for settling
+- **Newtypes.** Five interchangeable roles is below the global skill's threshold for settling
   the question, and `dynamic_newtype!` adoption stays *deferred, not rejected*. If you add a
   wrapper whose role could be confused with an existing one, that is the case for settling it
-  rather than adding a fifth alias.
+  rather than adding a sixth alias. `PasswordBytes` (rc.9) was added as the fifth on the
+  judgement that it is *not* confusable: it holds the password, not anything derived from it,
+  and the name exists so a grep for password copies finds it.
 - **Tier 2 and Tier 3 guidance**, which has no call sites to apply to.

@@ -221,7 +221,7 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-229 of them: 152 library, 20 CLI unit, 35 CLI end-to-end, 22 doctests. All must
+246 of them: 169 library, 20 CLI unit, 35 CLI end-to-end, 22 doctests. All must
 pass in every feature configuration.
 
 **Count test functions, not passing tests.** `cargo test`'s summary line omits
@@ -263,6 +263,14 @@ inside the published crate so the tarball can verify its own fidelity claim. Dis
 hardcoding a count — one arc's evidence file became a fifth golden before that
 arc even landed — but assert the corpus is not silently empty, because a glob
 matching nothing passes every test.
+
+**`tests/ladder/*.odt` are not goldens, and live apart so the sentence above
+stays true.** No LibreOffice that runs today writes the legacy SHA-1 start keys
+its read ladder accepts, so these were synthesized: `make_ladder.py` re-encrypts
+`lo-odf11-nonascii-password.odt` under each rung's key. Their evidence runs the
+other way. `lo_accepts.py` shows a current LibreOffice *opens* each rung and
+refuses a control on no rung, in both orders. Call them LibreOffice-*accepted*,
+never LibreOffice-written. They ship too (`include` names the directory).
 
 Never assert on `encrypt`'s output bytes. Its salt and IV are fresh per call.
 Assert on the round trip.

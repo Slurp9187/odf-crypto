@@ -2,7 +2,7 @@ Status: **Planned (2026-09-02)** — password decrypt against `classify`; PGP un
 
 Consumes [docs/plans/odf-encryption-detection-2026-09-01.md](odf-encryption-detection-2026-09-01.md) (Shipped). Do not re-derive accept predicates.
 
-If `classify` and this pipeline disagree on a complete row, **detection wins: fix `classify`, do not special-case decrypt** — with one carve-out: LO’s SHA-1 *read* ladder (`ZipPackageStream.cxx` 1014–1070) can try `Bugs::WrongSHA1`, then **force SHA-256 despite the manifest saying SHA-1** (rhbz#1013844), then `WinEncodingWrongSHA1`. On that ladder `start_key` is a hint, not a fact. Overriding it there is not a `classify` bug. This arc does not walk the ladder (open question 1, closed).
+If `classify` and this pipeline disagree on a complete row, **detection wins: fix `classify`, do not special-case decrypt** — with one carve-out: LO’s SHA-1 *read* ladder (`ZipPackageStream.cxx` 1014–1070) can try `Bugs::WrongSHA1`, then **force SHA-256 despite the manifest saying SHA-1** (rhbz#1013844), then `WinEncodingWrongSHA1`. On that ladder `start_key` is a hint, not a fact. Overriding it there is not a `classify` bug. This arc does not walk the ladder (open question 1, closed). **0.1.0-rc.9 does**; see the reversal under OQ1.
 
 # Plan — ODF package password decryption
 
@@ -41,7 +41,7 @@ Save-side only (do not use as decrypt defaults): PBKDF2 600000/100000, Argon2 `(
 
 - Re-implementing `classify` or URI tables
 - PGP unwrap (`Kdf::PgpRsaOaepMgf1p`) — refuse it (`UnsupportedPgp`). Later arc, linked not attached
-- StarOffice-not-quite-SHA1 and MS-1252 start keys (`PACKAGE_ENCRYPTIONDATA_SHA1UTF8` / `SHA1MS1252`) and LO’s wrong-SHA1 retry ladder. Correct UTF-8 SHA-1 / SHA-256 only — measured, not assumed (open question 1, closed 2026-09-02)
+- StarOffice-not-quite-SHA1 and MS-1252 start keys (`PACKAGE_ENCRYPTIONDATA_SHA1UTF8` / `SHA1MS1252`) and LO’s wrong-SHA1 retry ladder. Correct UTF-8 SHA-1 / SHA-256 only — measured, not assumed (open question 1, closed 2026-09-02). **Reversed in 0.1.0-rc.9 (2026-10-14)**; see OQ1
 - `EncryptedDataHeader` / wrapped-raw (`n_ConstHeader = 0x05024d4d`, `ZipFile.cxx` `StaticFillHeader`, `UNBUFF_STREAM_WRAPPEDRAW`). Copy-between-packages path. Goldens are ordinary zip members
 - Repair (`m_bForceRecovery`), writing encryption, OOXML
 - Guessing origin from `meta:generator`
@@ -261,6 +261,12 @@ Close in this file when evidence lands. Do not guess.
    | StarOffice SHA-1(MS-1252) | `Bugs::WinEncodingWrongSHA1` | no |
 
    Re-derive this rather than trusting it: `python tests/goldens/sha1_star.py` self-tests the StarOffice digest against `hashlib`, then walks every rung against the golden. Current LO writes the **correct UTF-8 SHA-1** start key even on the ODF 1.1 path that keeps the ladder alive on read. **This arc ships correct UTF-8 only, now measured rather than assumed.** The ladder stays what it always was: read-compat for files from OOo 1.x / StarOffice / LO < 3.5, which this arc does not implement — those decrypt as `WrongPassword`. Reopen only if such a file lands in-tree.
+
+   **Reversed 2026-10-14, for 0.1.0-rc.9 (PR #84).** The ladder is implemented: `kdf::LegacyStartKey`, `SHA1_LADDER`, `staroffice_sha1` (`rtl_digest_SHA1` reproduced over `sha1::compress`), and `src/ms1252.rs`, which reproduces `OUStringToOString(.., RTL_TEXTENCODING_MS_1252)`, replacement table and all. `decrypt_member` walks it per row on `WrongPassword` when the row's start key is SHA-1.
+
+   *Why the original trigger was wrong.* "Reopen only if such a file lands in-tree" made the evidence of need a file in *this* repo. The need arrived from a consumer instead: `encrypted-file-vault` pins this crate and must open whatever LibreOffice opens, so a legacy file decrypting as `WrongPassword` here is a user-visible failure there whether or not a sample is ever committed. And the measurement above settled what current LibreOffice *writes*, not what it *reads*. The ladder is a read-compat obligation, and fidelity (CLAUDE.md: "a package this crate calls encrypted must be one LibreOffice would prompt for", which reaches which passwords open it) applies to reading.
+
+   *Evidence, since no LibreOffice that can be run today writes these keys.* `tests/ladder/` holds the OQ1 probe golden re-encrypted under each rung (`make_ladder.py`), plus a control under correct SHA-1(MS-1252), which is not a rung. `lo_accepts.py` shows current LibreOffice (buildid `bce0998a`) opens the three rungs and refuses the control, in both orders. That is also the first independent check of `sha1_star.py`'s StarOffice digest: before it, the model was self-tested only against correct SHA-1.
 
 2. **`EncryptedDataHeader` on a zip member.** Wrapped-raw prepends `MM\002\005`. Ordinary save does not. Close if a golden or corpus file starts with `0x4d4d0205`; otherwise leave unimplemented.
 

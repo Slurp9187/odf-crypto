@@ -131,6 +131,14 @@
 //! the password once more, and if it still fails, get a fresh copy."* That
 //! sentence is true in both worlds, and the shorter one is false in one of them.
 //!
+//! **Old files and non-ASCII passwords.** Before `0.1.0-rc.9`, files from
+//! OpenOffice.org 1.x, StarOffice and LibreOffice before 3.5 could report
+//! `WrongPassword` with the right password, because those writers derived the
+//! start key with a knowingly broken SHA-1 or from the MS-1252 bytes. Since rc.9
+//! `decrypt` walks LibreOffice's own retry ladder for any SHA-1 row, so such a
+//! file opens here exactly when it opens in LibreOffice. If one still fails,
+//! LibreOffice refuses it too.
+//!
 //! # LibreOffice will not open what `encrypt` wrote
 //!
 //! **`encrypt` writes one profile, whatever the input was.** One
