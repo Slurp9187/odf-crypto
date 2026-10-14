@@ -254,6 +254,7 @@ fn stage_b(
     let mut pgp_keys: Vec<EncryptedKey> = Vec::new();
     let mut o_first_version = None;
     let mut package_encrypted = false;
+    let mut has_non_encrypted_entries = false;
     let mut common = None;
     let mut encrypted_entries = Vec::new();
     let mut encrypted_package_complete = false;
@@ -309,6 +310,11 @@ fn stage_b(
                         common = Some(entry.clone());
                     }
                     encrypted_entries.push(entry);
+                } else {
+                    // `ZipPackage.cxx:446`: the `else` of the same complete-row
+                    // test, over the same streams. A manifest row on a folder,
+                    // or naming no member, sets nothing upstream either.
+                    has_non_encrypted_entries = true;
                 }
             }
         }
@@ -357,6 +363,7 @@ fn stage_b(
     Ok(Classification {
         mode,
         package_encrypted,
+        has_non_encrypted_entries,
         odf_version: root.version.clone(),
         zip_has_encrypted_package,
         media_type: root.media_type.clone(),

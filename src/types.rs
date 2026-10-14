@@ -152,6 +152,30 @@ pub struct Classification {
     pub mode: Mode,
     /// LibreOffice `HasEncryptedEntries` — the latch, not “any encryption-data”.
     pub package_encrypted: bool,
+    /// LibreOffice `HasNonEncryptedEntries`: some manifest row resolves to a
+    /// stream **without** a complete `encryption-data` tuple
+    /// (`ZipPackage.cxx:446`, the `else` of the test that admits a row to
+    /// [`Classification::encrypted_entries`]).
+    ///
+    /// It is the other half of a predicate LibreOffice acts on.
+    /// `SfxObjectShell::CheckEncryption_Impl` (`sfx2/source/doc/objmisc.cxx:1028-1063`)
+    /// reads both flags, and on a package whose root version is ODF 1.2 or later
+    /// with `HasEncryptedEntries && HasNonEncryptedEntries` it raises
+    /// `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` -- *"this is an encrypted document with
+    /// nonencrypted streams inside, show the warning"* -- and **disables macro
+    /// execution**. So a consumer reproduces LibreOffice's behavior with:
+    ///
+    /// ```text
+    /// package_encrypted && has_non_encrypted_entries && odf_version >= "1.2"
+    /// ```
+    ///
+    /// the version compared byte-lexicographically, as
+    /// [`Classification::odf_version`] describes.
+    ///
+    /// Only manifest-listed streams count. A zip member the manifest never
+    /// names -- `mimetype`, `META-INF/manifest.xml` -- is not a row upstream
+    /// and sets nothing.
+    pub has_non_encrypted_entries: bool,
     /// The package's ODF version, from the root folder — the first non-empty
     /// `manifest:version` in the manifest, falling back to the one implied by
     /// the `mimetype` member.
@@ -188,7 +212,10 @@ pub struct Classification {
     /// `None` for a [`Mode::Plain`] package, and also for one whose only
     /// complete rows sit on other members — encrypted entries can exist with no
     /// latch row, which is why `package_encrypted` is not
-    /// `!encrypted_entries.is_empty()`.
+    /// `!encrypted_entries.is_empty()`. That shape -- `!package_encrypted &&
+    /// !encrypted_entries.is_empty()` -- is the one
+    /// `EncryptError::PartiallyEncrypted` names: LibreOffice opens it without
+    /// asking for a password.
     pub common: Option<EntryEncryption>,
     /// Every member that resolved to a complete `encryption-data` row, in
     /// manifest order.

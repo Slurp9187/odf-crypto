@@ -262,12 +262,11 @@
 //! # let _ = is_sealable;
 //! ```
 //!
-//! One limitation to know, because a caller may be trying to reproduce
-//! LibreOffice's behaviour and cannot: `Classification` does not expose
-//! LibreOffice's mirror-image flag, `HasNonEncryptedEntries`. With **both**
-//! flags set on ODF `>= 1.2`, LibreOffice raises
-//! `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and disables macro execution. Half of
-//! that predicate is visible here and half is not, so that verdict cannot be
-//! reconstructed from a `Classification`.
+//! To reproduce LibreOffice's *other* verdict on such packages, read
+//! [`Classification::has_non_encrypted_entries`](crate::Classification::has_non_encrypted_entries),
+//! its `HasNonEncryptedEntries`. With **both** flags set on ODF `>= 1.2`,
+//! LibreOffice raises `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and disables macro
+//! execution (`sfx2/source/doc/objmisc.cxx:1028-1063`). Until `0.1.0-rc.9`
+//! only half of that predicate was visible here.
 
 // No items. This module is a page.

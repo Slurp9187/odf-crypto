@@ -1186,3 +1186,14 @@ fn every_encrypt_error_variant_is_accounted_for_in_the_cli_exit_map() {
     }
     accounted_for(&EncryptError::AlreadyEncrypted);
 }
+
+/// `encrypt`'s output must not be a package LibreOffice warns about: an ODF
+/// 1.4 root with both flags set raises `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and
+/// disables macros (`objmisc.cxx:1028-1063`).
+#[test]
+fn encrypt_output_has_no_non_encrypted_entries() {
+    let encrypted = encrypt(&load_golden("lo-unencrypted.odt"), PASSWORD).expect("encrypt");
+    let class = classify(&encrypted).expect("classifies");
+    assert!(class.package_encrypted);
+    assert!(!class.has_non_encrypted_entries);
+}
