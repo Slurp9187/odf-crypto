@@ -91,6 +91,8 @@ mod encrypt;
 #[cfg(feature = "crypto-ops")]
 mod kdf;
 #[cfg(feature = "crypto-ops")]
+mod ms1252;
+#[cfg(feature = "crypto-ops")]
 mod sensitive;
 
 // A doc-only module: `//!` docs, no items, no runtime cost. Gated on
