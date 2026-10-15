@@ -117,7 +117,7 @@ pub fn classify_reader<R: Read + Seek>(reader: R) -> Result<Classification, Dete
     }
 }
 
-fn classify_latched<R: Read + Seek>(reader: R) -> Result<Classification, DetectError> {
+pub(crate) fn classify_latched<R: Read + Seek>(reader: R) -> Result<Classification, DetectError> {
     let mut archive = ZipArchive::new(reader).map_err(|_| DetectError::NotZip)?;
     let members = collect_members(&mut archive)?;
     let mut tree = FolderTree::from_zip_names(members.iter().map(|m| m.name.as_str()))

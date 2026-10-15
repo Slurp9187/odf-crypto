@@ -221,8 +221,8 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-266 of them: 188 library, 20 CLI unit, 35 CLI end-to-end, 23 doctests. All must
-pass in every feature configuration.
+288 of them: 208 library, 20 CLI unit, 35 CLI end-to-end, 1 memory-bound, 24
+doctests. All must pass in every feature configuration.
 
 **Count test functions, not passing tests.** `cargo test`'s summary line omits
 `#[ignore]`d ones, so reading the count off a green run under-reports by however
@@ -239,11 +239,19 @@ configuration*; the mechanism tested *the configurations in the matrix*; the
 mechanism took the rule's name. That is the substitution the section above
 describes, in this file, about this file.
 
-One library test is `#[ignore]`d and is counted above: it needs a host with
-under ~1 GiB free to observe `try_reserve_exact` refusing, which is not true of
-a well-provisioned machine or a CI runner. It is counted because it exists and
-is run by `cargo test -- --ignored`; it is ignored because claiming a guard is
-exercised when it is not is worse than a skip.
+Four library tests are `#[ignore]`d and are counted above. Each is run by
+`cargo test -- --ignored`, and is ignored for a stated reason, because claiming
+a guard is exercised when it is not is worse than a skip:
+
+- One needs a host with under ~1 GiB free to observe `try_reserve_exact`
+  refusing, which is not true of a well-provisioned machine or a CI runner.
+- Two exercise Zip64 at the 4 GiB boundaries: one hashes 4 GiB through a sparse
+  writer, the other writes and reads a real 4 GiB file. Run them `--release`.
+- One only writes `decrypt_to` outputs for the LibreOffice gate
+  (`tests/goldens/validate_decrypt_to.py`); it checks nothing by itself.
+
+`tests/streaming_memory.rs` is its own binary because it installs a counting
+global allocator; nothing else may run beside it.
 
 An rc.6 draft claimed a second such test and justified ignoring it with an
 invented fact — that Linux overcommit lets a 2 TiB `try_reserve_exact` succeed.

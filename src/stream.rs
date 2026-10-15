@@ -309,6 +309,8 @@ impl GcmStream {
     }
 
     /// Encrypt `buf` in place, then hash the ciphertext.
+    // Test-only until `encrypt_to` (S5) calls it; gated, not allowed.
+    #[cfg(test)]
     pub(crate) fn encrypt(&mut self, buf: &mut [u8]) {
         self.ctr.apply(buf);
         self.ghash.update(buf);
@@ -587,7 +589,13 @@ impl<R: Read> ChecksumGate<R> {
         })
     }
 
-    fn verify(&mut self) -> io::Result<()> {
+    /// Fill the window and check its digest, releasing nothing. `read` does
+    /// this on first use; a caller that only wants to know whether a key is
+    /// right calls it directly. Idempotent.
+    pub(crate) fn verify(&mut self) -> io::Result<()> {
+        if self.verified {
+            return Ok(());
+        }
         let src = &mut self.src;
         let len = self
             .window
@@ -772,6 +780,8 @@ impl<W: Write> DeflateWriter<W> {
     }
 
     /// Uncompressed bytes accepted so far -- `manifest:size` once finished.
+    // Test-only until `encrypt_to` (S5) calls it; gated, not allowed.
+    #[cfg(test)]
     pub(crate) fn consumed(&self) -> u64 {
         self.consumed
     }

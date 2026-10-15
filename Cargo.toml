@@ -61,6 +61,14 @@ include = [
     # compiles to nothing without the feature and costs a library consumer
     # nothing -- but the published tarball can then run it, like the rest.
     "tests/cli.rs",
+    # Crate-written fixtures (tests/artifacts/MANIFEST.md says how each was
+    # checked against LibreOffice). Shipped since the streaming arc: the
+    # `every_fixture` corpus tests assert this directory is not empty, so a
+    # tarball without it would fail its own tests.
+    "tests/artifacts/*.odt",
+    # The memory-bound test for the `*_to` entry points. Its own binary,
+    # because it installs a counting global allocator.
+    "tests/streaming_memory.rs",
     "LICENSE-MIT",
     "LICENSE-APACHE",
 ]
@@ -262,6 +270,14 @@ required-features = ["crypto-ops"]
 # All `warn`, never `deny`. CI already escalates -- `cargo clippy ... -- -D
 # warnings` and RUSTDOCFLAGS: -D warnings -- so these are hard failures there
 # while a work-in-progress `cargo check` stays usable locally.
+[dev-dependencies]
+# The memory-bound test (`tests/streaming_memory.rs`) needs a counting global
+# allocator, and `unsafe_code = "forbid"` below covers test targets too: an
+# `unsafe impl GlobalAlloc` cannot be written here. This crate is that
+# allocator, measured peak and all. Dev-only, so it reaches no consumer and
+# no `-e no-dev` crate count. Pinned, as a test's instrument should be.
+peak_alloc = "=0.3.0"
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"
