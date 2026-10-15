@@ -222,8 +222,8 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-310 of them: 227 library, 20 CLI unit, 35 CLI end-to-end, 2 memory-bound, 26
-doctests. All must pass in every feature configuration.
+320 of them: 229 library, 21 CLI unit, 41 CLI end-to-end (one Unix-only, so
+`--list` shows 40 on Windows), 2 memory-bound, 27 doctests. All must pass in every feature configuration.
 
 **Count test functions, not passing tests.** `cargo test`'s summary line omits
 `#[ignore]`d ones, so reading the count off a green run under-reports by however

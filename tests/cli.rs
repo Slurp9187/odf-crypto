@@ -2,19 +2,19 @@
 //!
 //! These drive the built binary as a subprocess rather than calling into the
 //! library, because what is under test is argument handling, exit codes and
-//! file side effects — none of which a library call exercises. The library
-//! itself already has 107 tests.
+//! file side effects — none of which a library call exercises.
 //!
 //! Gated on the `cli` feature, which is what builds the binary at all.
 //!
-//! Exit-code coverage. Codes 0-5 are proven here against real fixtures. 6
-//! (malformed) and 7 (internal) are not, deliberately: 6 needs a package that
-//! classifies cleanly and then fails mid-decrypt, which means rebuilding a zip
-//! with a hostile manifest and no zip crate in scope here, and 7 is unreachable
-//! by construction -- both `Internal` variants report an invariant nothing can
-//! currently violate. Their *mapping* is what matters, and that is asserted
-//! directly in the binary's own unit tests (`exit_codes_map_each_error_class`),
-//! which is sharper than constructing a hostile fixture to reach the same line.
+//! Exit-code coverage. Codes 0-6 are proven here against real fixtures; 6
+//! (malformed) by `a_tampered_input_leaves_no_temp_and_no_target`, a golden
+//! damaged past the window its password check covers. 7 (internal) is not:
+//! it is unreachable by construction -- the `Internal` variants report an
+//! invariant nothing can currently violate -- and 8 (host capacity) and 130
+//! (Ctrl-C) need a starved host or a console signal. Their *mapping* is what
+//! matters, and that is asserted directly in the binary's own unit tests
+//! (`the_*_exit_map_is_the_documented_one`), which is sharper than
+//! constructing a hostile fixture to reach the same line.
 #![cfg(feature = "cli")]
 
 use std::io::Write;
@@ -28,6 +28,7 @@ const EX_IO: i32 = 2;
 const EX_NOT_ODF: i32 = 3;
 const EX_WRONG_PASSWORD: i32 = 4;
 const EX_REFUSED: i32 = 5;
+const EX_MALFORMED: i32 = 6;
 
 const PASSWORD: &str = "password";
 
@@ -990,7 +991,7 @@ fn a_tampered_input_leaves_no_temp_and_no_target() {
     std::fs::write(&src, &bytes).unwrap();
 
     let out = decrypt_to(&s, &src, "out.odt");
-    assert_ne!(code(&out), EX_OK, "a tampered member decrypted");
+    assert_eq!(code(&out), EX_MALFORMED, "{}", stderr(&out));
     assert!(
         !s.join("out.odt").exists(),
         "a failed decrypt wrote its target"
