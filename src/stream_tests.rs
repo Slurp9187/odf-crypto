@@ -443,3 +443,69 @@ fn fault_take_returns_foreign_errors_unchanged() {
         Ok(Fault::Changed)
     ));
 }
+
+/// The non-test code of `src/<name>`: comment lines dropped, and everything
+/// from the file's `#[cfg(test)]` test-module hook on cut off.
+fn code_of(name: &str, src: &str) -> String {
+    let body = src
+        .rsplit_once("#[cfg(test)]\n#[path")
+        .map_or(src, |(code, _)| code);
+    assert!(!body.is_empty(), "{name}");
+    body.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// #39 and #51, held by source rather than by memory: every module that
+/// touches plaintext or a member body.
+///
+/// - **#39**: no whole-buffer codec. `compress_to_vec` grew its output while
+///   deflating the caller's document and abandoned each old block unwiped;
+///   the inflate counterparts would do the same on the way out. Plaintext now
+///   moves only through `ChunkBuffer`s, which are boxed slices and cannot
+///   grow -- a type fact -- and `tests/streaming_memory.rs` measures that no
+///   buffer grows with the payload.
+/// - **#51**: every `read_to_end` reads through a `.take(..)` cap, so nothing
+///   is sized by a length the package claims. The three that remain read the
+///   manifest (8 MiB cap) and `mimetype` (1 KiB), never a member body.
+///
+/// What a scan cannot see, and the plan names instead: miniz's own compressor
+/// and decompressor state, and copies the compiler makes on the stack.
+#[test]
+fn no_grown_plaintext_buffer_and_no_uncapped_read() {
+    let sources = [
+        ("classify.rs", include_str!("classify.rs")),
+        ("decrypt.rs", include_str!("decrypt.rs")),
+        ("decrypt_entries.rs", include_str!("decrypt_entries.rs")),
+        ("decrypt_stream.rs", include_str!("decrypt_stream.rs")),
+        ("encrypt.rs", include_str!("encrypt.rs")),
+        ("encrypt_stream.rs", include_str!("encrypt_stream.rs")),
+        ("reencrypt.rs", include_str!("reencrypt.rs")),
+        ("stream.rs", include_str!("stream.rs")),
+        ("zip_stream.rs", include_str!("zip_stream.rs")),
+    ];
+    let mut capped_reads = 0;
+    for (name, src) in sources {
+        let code = code_of(name, src);
+        for codec in [
+            "compress_to_vec",
+            "decompress_to_vec",
+            "decompress_slice_iter_to_slice",
+        ] {
+            assert!(!code.contains(codec), "{name} calls {codec}");
+        }
+        let lines: Vec<&str> = code.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains("read_to_end") {
+                let window = lines[i.saturating_sub(3)..=i].join("\n");
+                assert!(
+                    window.contains(".take("),
+                    "{name}: uncapped read_to_end:\n{window}"
+                );
+                capped_reads += 1;
+            }
+        }
+    }
+    assert_eq!(capped_reads, 3, "the manifest twice and mimetype once");
+}

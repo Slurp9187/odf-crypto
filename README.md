@@ -473,7 +473,7 @@ onto the streaming code, and LibreOffice 26.8.0.3 opens what `decrypt_to`,
 `encrypt_to` and `reencrypt_to` write (`tests/goldens/validate_decrypt_to.py`,
 `validate_encrypted_outputs.py`), refusing each with a wrong password.
 
-**320 tests, passing in every feature configuration** — 229 library, 21 CLI
+**321 tests, passing in every feature configuration** — 230 library, 21 CLI
 unit, 41 CLI end-to-end, 2 memory-bound, 27 doctests. All three builds run in CI, not just the
 two that are cheap.
 
