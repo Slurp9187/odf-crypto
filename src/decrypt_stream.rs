@@ -278,7 +278,7 @@ pub(crate) fn gcm_key<R: Read + Seek>(
     })
 }
 
-fn open_after_iv<R: Read + Seek>(
+pub(crate) fn open_after_iv<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     index: usize,
 ) -> Result<zip::read::ZipFile<'_>, DecryptError> {

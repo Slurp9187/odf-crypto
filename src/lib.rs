@@ -100,6 +100,8 @@ mod kdf;
 #[cfg(feature = "crypto-ops")]
 mod ms1252;
 #[cfg(feature = "crypto-ops")]
+mod reencrypt;
+#[cfg(feature = "crypto-ops")]
 mod sensitive;
 #[cfg(feature = "crypto-ops")]
 mod stream;
@@ -131,6 +133,8 @@ pub use encrypt::{
 };
 #[cfg(feature = "crypto-ops")]
 pub use encrypt_stream::{encrypt_to, encrypt_with_params_to};
+#[cfg(feature = "crypto-ops")]
+pub use reencrypt::{reencrypt_to, ReencryptError};
 
 // Compiles every ```rust block in README.md, and renders none of it.
 //
