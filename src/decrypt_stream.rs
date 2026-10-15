@@ -278,7 +278,7 @@ pub(crate) fn gcm_key<R: Read + Seek>(
     })
 }
 
-fn open_after_iv<R: Read + Seek>(
+pub(crate) fn open_after_iv<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     index: usize,
 ) -> Result<zip::read::ZipFile<'_>, DecryptError> {
@@ -387,6 +387,9 @@ pub(crate) fn fault_error(limits: &DecryptLimits) -> impl Fn(Fault) -> DecryptEr
             site: AllocationSite::StreamBuffer,
             requested_bytes: n,
         },
+        // Only the rebuild's own re-deflate can raise it: an invariant of
+        // ours, not a property of the package.
+        Fault::Deflate(s) => DecryptError::Internal(format!("deflate failed: {s}")),
     }
 }
 

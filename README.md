@@ -357,8 +357,9 @@ and bought nothing a linker does not already do for a consumer that never calls
 Fidelity to LibreOffice is this crate's only substantive claim, so the evidence
 for it ships with the crate rather than living in a CI log.
 
-**Six goldens, every one real LibreOffice output.** `tests/goldens/*.odt` were
-produced by a local LibreOffice — check `meta:generator`, all six read 26.2.1.2 —
+**Seven goldens, every one real LibreOffice output.** `tests/goldens/*.odt` were
+produced by a local LibreOffice — check `meta:generator`: six read 26.2.1.2 and
+`lo-legacy-aes-cbc-image.odt` reads 26.8.0.3 —
 and they ship *inside the published tarball*, so the crate can verify its own
 fidelity claim from the artifact a consumer actually downloads. That includes
 `aoo-blowfish-pbkdf2.odt`, whose `aoo-` prefix names the ODF 1.1 Blowfish format
@@ -385,8 +386,8 @@ manifest naming the password and expected text for each. Recorded verdict:
 a password, accepted it, rendered the expected text, and raised no recovery bar.
 That verdict outranks the harness.
 
-**288 tests, passing in every feature configuration** — 208 library, 20 CLI
-unit, 35 CLI end-to-end, 1 memory-bound, 24 doctests. All three builds run in CI, not just the
+**310 tests, passing in every feature configuration** — 227 library, 20 CLI
+unit, 35 CLI end-to-end, 2 memory-bound, 26 doctests. All three builds run in CI, not just the
 two that are cheap.
 
 **The examples below are among those doctests.** Every ` ```rust ` block in this

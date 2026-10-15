@@ -6,7 +6,8 @@
 //! Every round-trip test elsewhere would still pass against a version that
 //! held a whole member; only a memory bound tells streaming from buffering.
 //!
-//! Run alone, optimized -- the payloads are large:
+//! Its tests hold one lock, so they never measure each other. Optimized is
+//! quicker -- the payloads are large:
 //!
 //!     cargo test --release --features crypto-ops --test streaming_memory
 //!
@@ -18,7 +19,10 @@
 use std::io::{self, Cursor, Read, Write};
 
 use aes::cipher::{BlockEncryptMut, KeyIvInit};
-use odf_crypto::{classify, decrypt_to, encrypt_with_params, Argon2Params, IntegrityOutcome, Mode};
+use odf_crypto::{
+    classify, decrypt_to, encrypt_with_params, encrypt_with_params_to, reencrypt_to, Argon2Params,
+    DecryptLimits, IntegrityOutcome, Mode,
+};
 use peak_alloc::PeakAlloc;
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
@@ -41,6 +45,11 @@ const BOUND: usize = 4 * MIB as usize;
 /// streaming implementation's peak does not depend on the payload at all; the
 /// slack absorbs the central directory and allocator noise.
 const FLAT: usize = MIB as usize;
+
+/// One phase at a time across the whole binary: the counters are global, and
+/// `cargo test` runs tests in parallel by default. Every test here holds this
+/// for its whole body.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Run `f` and return how far the heap rose above its level at the start.
 fn peak_rise(f: impl FnOnce()) -> usize {
@@ -231,6 +240,7 @@ fn measured(pkg: &[u8], want_mode: Mode, want: IntegrityOutcome) -> usize {
 ///   phases pass `BOUND`.
 #[test]
 fn decrypt_to_peak_heap_is_flat_in_the_payload() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     type Build = fn(&mut dyn Read, u64) -> Vec<u8>;
     let phases: [(&str, Build, Mode, IntegrityOutcome, bool); 4] = [
         (
@@ -293,5 +303,115 @@ fn decrypt_to_peak_heap_is_flat_in_the_payload() {
             drift < FLAT,
             "{name}: peak moved {drift} bytes with the payload"
         );
+    }
+}
+
+/// A seekable sink that keeps nothing: it tracks the position and length the
+/// zip writer needs to patch headers, and drops every byte.
+#[derive(Default)]
+struct CountSeek {
+    pos: u64,
+    len: u64,
+}
+
+impl Write for CountSeek {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.pos += buf.len() as u64;
+        self.len = self.len.max(self.pos);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl io::Seek for CountSeek {
+    fn seek(&mut self, to: io::SeekFrom) -> io::Result<u64> {
+        self.pos = match to {
+            io::SeekFrom::Start(n) => n,
+            io::SeekFrom::End(d) => self.len.checked_add_signed(d).unwrap(),
+            io::SeekFrom::Current(d) => self.pos.checked_add_signed(d).unwrap(),
+        };
+        Ok(self.pos)
+    }
+}
+
+/// `encrypt_to` and `reencrypt_to` from both source shapes, under the same
+/// bound and the same flatness as decrypt. The output goes to a sink that
+/// keeps nothing, so whatever the heap holds is the implementation's.
+///
+/// Falsified, each recorded in the commit that added these phases:
+/// - `encrypt_stream::pump` collecting the input before deflating it: the
+///   encrypt phase passes `BOUND`.
+/// - `reencrypt`'s tee collecting what it forwards: the wholesome re-key
+///   phase passes `BOUND`.
+#[test]
+fn encrypt_and_reencrypt_peak_heap_is_flat_in_the_payload() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let cheap = Argon2Params::new(1, 8, 1).unwrap();
+    for noise in [false, true] {
+        let (small, large) = if noise {
+            (8 * MIB, 64 * MIB)
+        } else {
+            (16 * MIB, 256 * MIB)
+        };
+        let body = |n: u64| -> Box<dyn Read> {
+            if noise {
+                Box::new(Noise(n, 0x2545_F491_4F6C_DD1D))
+            } else {
+                Box::new(Pattern(n))
+            }
+        };
+        let kind = if noise { "noise" } else { "pattern" };
+        let mut rises: [Vec<usize>; 3] = Default::default();
+        for n in [small, large] {
+            let plain = plain_package(&mut body(n));
+            let rise = peak_rise(|| {
+                encrypt_with_params_to(Cursor::new(&plain), CountSeek::default(), PASSWORD, cheap)
+                    .unwrap();
+            });
+            drop(plain);
+            rises[0].push(rise);
+
+            for (slot, src) in [
+                (1, wholesome(&mut body(n))),
+                (2, per_entry(&mut body(n), n)),
+            ] {
+                let rise = peak_rise(|| {
+                    reencrypt_to(
+                        Cursor::new(&src),
+                        CountSeek::default(),
+                        PASSWORD,
+                        "new",
+                        DecryptLimits::default(),
+                        cheap,
+                    )
+                    .unwrap();
+                });
+                rises[slot].push(rise);
+            }
+        }
+        for (name, r) in [
+            "encrypt_to",
+            "reencrypt_to wholesome",
+            "reencrypt_to per-entry",
+        ]
+        .iter()
+        .zip(&rises)
+        {
+            eprintln!(
+                "{name}, {kind}: peak rise {} KiB, then {} KiB",
+                r[0] / 1024,
+                r[1] / 1024
+            );
+            for &rise in r {
+                assert!(rise < BOUND, "{name}, {kind}: rose {rise}, bound {BOUND}");
+            }
+            let drift = r[1].abs_diff(r[0]);
+            assert!(
+                drift < FLAT,
+                "{name}, {kind}: peak moved {drift} bytes with the payload"
+            );
+        }
     }
 }

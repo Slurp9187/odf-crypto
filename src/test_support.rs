@@ -235,3 +235,47 @@ pub(crate) fn strict_b64_decode(s: &str) -> Result<Vec<u8>, String> {
     }
     Ok(out)
 }
+
+/// `lo-legacy-aes-cbc.odt` with `content.xml` swapped for its plaintext and its
+/// `encryption-data` dropped: the shape `EncryptError::PartiallyEncrypted`
+/// names. Built the way `tools/probe_unlatched.py` builds the file it shows
+/// LibreOffice: no password prompt, `ERRCODE_SFX_WRONGPASSWORD` without one,
+/// and a normal open when the password is supplied.
+#[cfg(feature = "crypto-ops")]
+pub(crate) fn unlatched_package() -> Vec<u8> {
+    let golden = load_golden("lo-legacy-aes-cbc.odt");
+    let plain = crate::decrypt::decrypt(&golden, PASSWORD).expect("golden decrypts");
+    let content = read_member(&plain, "content.xml");
+    let mut src = ZipArchive::new(Cursor::new(&golden)).unwrap();
+    let mut buf = Vec::new();
+    let mut out = ZipWriter::new(Cursor::new(&mut buf));
+    for i in 0..src.len() {
+        let mut file = src.by_index(i).unwrap();
+        let name = file.name().to_string();
+        let method = file.compression();
+        let mut body = Vec::new();
+        file.read_to_end(&mut body).unwrap();
+        if name == "content.xml" {
+            body = content.clone();
+        } else if name == "META-INF/manifest.xml" {
+            let xml = String::from_utf8(body).unwrap();
+            let start = xml.find(r#"manifest:full-path="content.xml""#).unwrap();
+            let open_end = start + xml[start..].find('>').unwrap();
+            let entry_end = start + xml[start..].find("</manifest:file-entry>").unwrap();
+            let head = xml[..open_end].trim_end_matches('/');
+            body = format!(
+                "{head}/>{}",
+                &xml[entry_end + "</manifest:file-entry>".len()..]
+            )
+            .into_bytes();
+        }
+        out.start_file(
+            &name,
+            SimpleFileOptions::default().compression_method(method),
+        )
+        .unwrap();
+        out.write_all(&body).unwrap();
+    }
+    out.finish().unwrap();
+    buf
+}

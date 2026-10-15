@@ -34,6 +34,26 @@ Per-entry ODF 1.2. Latch member `content.xml`.
 | KDF `key-size` | `32` |
 | checksum-type | `urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k` |
 
+## `lo-legacy-aes-cbc-image.odt`
+
+Per-entry ODF 1.2, as `lo-legacy-aes-cbc.odt`, with an embedded PNG: written
+2026-10-15 by LibreOffice 26.8.0.3 (`make_goldens.py lo-legacy-aes-cbc-image`)
+for the streaming arc (#92). Every row LibreOffice lists, the
+`Pictures/100000000000000800000008A09F3301.png` member included, carries the same
+complete tuple, so `has_non_encrypted_entries` is false. No `Thumbnails/` member:
+LibreOffice writes none for an encrypted document.
+
+| Field | Written (all six rows) |
+|---|---|
+| `manifest:manifest/@manifest:version` | `1.2` |
+| algorithm-name | `http://www.w3.org/2001/04/xmlenc#aes256-cbc` |
+| start-key-generation-name | `http://www.w3.org/2000/09/xmldsig#sha256` |
+| start-key `key-size` | `32` |
+| key-derivation-name | `PBKDF2` |
+| iteration-count | `100000` |
+| KDF `key-size` | `32` |
+| checksum-type | `urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k` |
+
 ## `aoo-blowfish-pbkdf2.odt`
 
 Classic path: current LO with ODF 1.1 (`DefaultVersion=2`), not Apache OpenOffice itself. Written tuple is AOO-style Blowfish+PBKDF2.

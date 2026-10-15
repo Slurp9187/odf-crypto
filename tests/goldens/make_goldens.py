@@ -6,6 +6,8 @@ Produces:
   lo-legacy-aes-cbc.odt        — ODF 1.2 per-entry AES-CBC
   aoo-blowfish-pbkdf2.odt      — ODF 1.1 Blowfish + PBKDF2 (classic path)
   lo-odf11-nonascii-password.odt — ODF 1.1, non-ASCII password (decrypt OQ1)
+  lo-legacy-aes-cbc-image.odt  — ODF 1.2 per-entry AES-CBC with an embedded PNG,
+                                 so the package has a Pictures/ member (#92)
 
 Password: `password`, except lo-odf11-nonascii-password.odt (see NONASCII_PASSWORD).
 
@@ -25,9 +27,12 @@ from __future__ import annotations
 
 import os
 import random
+import struct
 import subprocess
 import sys
+import tempfile
 import time
+import zlib
 from pathlib import Path
 
 import uno
@@ -110,7 +115,48 @@ def _set_odf_version(ctx, version: int) -> None:
     access.commitChanges()
 
 
-def _save(ctx, dest: Path, text: str, odf_version: int, password: str | None) -> None:
+def _png(width: int = 8, height: int = 8) -> bytes:
+    """A small opaque RGB PNG, built here so the golden needs no binary input."""
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        crc = zlib.crc32(kind + body)
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", crc)
+
+    # Each row: filter byte 0, then RGB per pixel.
+    rows = b"".join(
+        b"\x00" + b"".join(bytes((x * 31 % 256, y * 31 % 256, 128)) for x in range(width))
+        for y in range(height)
+    )
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    signature = b"\x89PNG\r\n\x1a\n"
+    return (
+        signature
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+def _insert_image(ctx, doc) -> None:
+    """Embed a PNG in `doc`, as a picture inserted from a file would be."""
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(_png())
+        png_path = Path(f.name)
+    try:
+        provider = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.graphic.GraphicProvider", ctx
+        )
+        graphic = provider.queryGraphic((_prop("URL", _file_url(png_path)),))
+        shape = doc.createInstance("com.sun.star.text.TextGraphicObject")
+        shape.Graphic = graphic
+        doc.Text.insertTextContent(doc.Text.getEnd(), shape, False)
+    finally:
+        png_path.unlink(missing_ok=True)
+
+
+def _save(
+    ctx, dest: Path, text: str, odf_version: int, password: str | None, image: bool = False
+) -> None:
     print(f"set ODF version {odf_version}", flush=True)
     _set_odf_version(ctx, odf_version)
     desktop = ctx.ServiceManager.createInstanceWithContext(
@@ -125,6 +171,8 @@ def _save(ctx, dest: Path, text: str, odf_version: int, password: str | None) ->
     )
     cursor = doc.Text.createTextCursor()
     doc.Text.insertString(cursor, text, False)
+    if image:
+        _insert_image(ctx, doc)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
@@ -147,7 +195,12 @@ GOLDENS = {
         ODF_011,
         NONASCII_PASSWORD,
     ),
+    "lo-legacy-aes-cbc-image": ("S6 per-entry AES-CBC golden with a picture.", ODF_012, PASSWORD),
 }
+
+# Goldens that also embed a picture (#92: a per-entry package with a Pictures/
+# member, to show its rows are all encrypted).
+WITH_IMAGE = {"lo-legacy-aes-cbc-image"}
 
 
 def main(argv: list[str]) -> int:
@@ -166,7 +219,7 @@ def main(argv: list[str]) -> int:
     try:
         for name in wanted:
             text, version, password = GOLDENS[name]
-            _save(ctx, out_dir / f"{name}.odt", text, version, password)
+            _save(ctx, out_dir / f"{name}.odt", text, version, password, name in WITH_IMAGE)
     finally:
         try:
             desktop = ctx.ServiceManager.createInstanceWithContext(
