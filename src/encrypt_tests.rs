@@ -1183,6 +1183,7 @@ fn every_encrypt_error_variant_is_accounted_for_in_the_cli_exit_map() {
             EncryptError::Mimetype(_) => (),
             EncryptError::Zip(_) => (),
             EncryptError::Internal(_) => (),
+            EncryptError::Io(_) => (),
         }
     }
     accounted_for(&EncryptError::AlreadyEncrypted);

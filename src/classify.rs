@@ -1,12 +1,13 @@
 //! Stage B (`ZipPackage::parseManifest`) plus zip-shape `classify`.
 
 use std::collections::HashSet;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek};
 
 use zip::read::HasZipMetadata;
 use zip::CompressionMethod;
 use zip::ZipArchive;
 
+use crate::io_latch::{Latch, Latched};
 use crate::limits::{DIAGNOSTIC_ELISION, MANIFEST_READ_CAP, MIMETYPE_CEILING};
 use crate::manifest::parse_manifest;
 use crate::types::{
@@ -77,7 +78,47 @@ struct ZipMember {
 /// # Ok::<(), odf_crypto::DetectError>(())
 /// ```
 pub fn classify(bytes: &[u8]) -> Result<Classification, DetectError> {
-    let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| DetectError::NotZip)?;
+    classify_reader(Cursor::new(bytes))
+}
+
+/// [`classify`], reading the package from `reader` instead of a slice.
+///
+/// It runs the same two LibreOffice machines over the same zip reads, so a
+/// package classifies identically either way. Only the central directory, the
+/// manifest (at most 8 MiB) and the `mimetype` member are read; member bodies
+/// are not, so the cost does not grow with the document.
+///
+/// `R` must seek because a zip is read from its central directory at the end.
+///
+/// # Errors
+///
+/// Those of [`classify`], plus [`DetectError::Io`] when `reader` itself fails a
+/// read or a seek. That takes precedence over whatever the zip layer made of
+/// the failure, so a cancelling reader is reported as a cancel, never as
+/// [`DetectError::NotZip`].
+///
+/// # Examples
+///
+/// ```
+/// use std::fs::File;
+/// use odf_crypto::{classify, classify_reader};
+///
+/// let path = "tests/goldens/lo-wholesome-gcm-argon2.odt";
+/// let from_reader = classify_reader(File::open(path)?)?;
+/// assert_eq!(from_reader, classify(&std::fs::read(path)?)?);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn classify_reader<R: Read + Seek>(reader: R) -> Result<Classification, DetectError> {
+    let latch = Latch::default();
+    let result = classify_latched(Latched::new(reader, &latch));
+    match latch.take() {
+        Some(err) => Err(DetectError::Io(err)),
+        None => result,
+    }
+}
+
+fn classify_latched<R: Read + Seek>(reader: R) -> Result<Classification, DetectError> {
+    let mut archive = ZipArchive::new(reader).map_err(|_| DetectError::NotZip)?;
     let members = collect_members(&mut archive)?;
     let mut tree = FolderTree::from_zip_names(members.iter().map(|m| m.name.as_str()))
         .map_err(|_| DetectError::Zip("Bad Zip File, stream as folder".into()))?;
@@ -92,7 +133,9 @@ pub fn classify(bytes: &[u8]) -> Result<Classification, DetectError> {
     Ok(class)
 }
 
-fn collect_members(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<ZipMember>, DetectError> {
+fn collect_members<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> Result<Vec<ZipMember>, DetectError> {
     let mut members = Vec::new();
     let mut seen = HashSet::new();
     let mut seen_lower = HashSet::new();
@@ -158,8 +201,8 @@ fn is_valid_zip_entry_file_name(name: &str) -> bool {
     dots != 1 && dots != 2
 }
 
-fn read_named_member(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
+fn read_named_member<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
     members: &[ZipMember],
     want: &str,
 ) -> Result<Option<Vec<u8>>, DetectError> {
@@ -211,8 +254,8 @@ pub(crate) fn collapse_slashes(name: &str) -> String {
     out
 }
 
-fn read_mimetype(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
+fn read_mimetype<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
     members: &[ZipMember],
     tree: &FolderTree,
 ) -> Result<Option<String>, DetectError> {

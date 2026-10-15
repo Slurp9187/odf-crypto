@@ -318,6 +318,7 @@ fn the_detect_exit_map_is_the_documented_one() {
         (DetectError::MissingManifest, EX_NOT_ODF),
         (DetectError::Inconsistent(String::new()), EX_REFUSED),
         (DetectError::Zip(String::new()), EX_MALFORMED),
+        (DetectError::Io(std::io::Error::other("cancelled")), EX_IO),
     ] {
         assert_eq!(detect_exit(&e), want, "{e:?}");
     }
@@ -354,6 +355,8 @@ fn the_decrypt_exit_map_is_the_documented_one() {
             },
             EX_HOST_CAPACITY,
         ),
+        (DecryptError::OutputLimit { limit: 1 }, EX_REFUSED),
+        (DecryptError::Io(std::io::Error::other("cancelled")), EX_IO),
     ] {
         assert_eq!(decrypt_exit(&e), want, "{e:?}");
     }
@@ -390,6 +393,7 @@ fn the_encrypt_exit_map_is_the_documented_one() {
             },
             EX_HOST_CAPACITY,
         ),
+        (EncryptError::Io(std::io::Error::other("cancelled")), EX_IO),
     ] {
         assert_eq!(encrypt_exit(&e), want, "{e:?}");
     }

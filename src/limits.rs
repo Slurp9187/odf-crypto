@@ -332,6 +332,19 @@ mod crypto {
     /// pathological input, which is a different and much smaller claim.
     pub(crate) const DEFLATE_CEILING: usize = PAYLOAD_CEILING;
 
+    /// 16 GiB. Default `DecryptLimits::max_output_bytes`: the inflated plaintext
+    /// a package may produce from its encrypted members, summed.
+    ///
+    /// **Policy, answering to nobody but us.** ODF bounds no size; the schema's
+    /// `manifest:size` is an unbounded integer. The owner chose the figure for the
+    /// streaming arc (`odf-streaming-2026-10-15.md`, §7 Q1): large enough for a
+    /// presentation carrying a multi-gigabyte video, small enough that a
+    /// decompression bomb written to disk is stopped long before it fills one.
+    /// Unlike `PAYLOAD_CEILING` it is not about memory -- streaming output goes
+    /// to the caller's writer -- which is why it is a separate number and a
+    /// caller-adjustable one.
+    pub(crate) const MAX_OUTPUT_BYTES: u64 = 16 << 30;
+
     /// `AES_GCM_IV_LEN` is also encrypt's nonce length; `encrypt.rs`
     /// const-asserts that the two agree.
     pub(crate) const AES_GCM_IV_LEN: usize = 12;

@@ -542,6 +542,11 @@ pub enum EncryptError {
     /// it cannot.
     #[error("internal invariant violated: {0}")]
     Internal(String),
+    /// The caller's reader or writer failed. Nothing is implied about the
+    /// package. The error is the caller's own value, so a cancellation can be
+    /// recognized in it.
+    #[error("I/O failed: {0}")]
+    Io(#[source] std::io::Error),
 }
 
 /// Encrypt a plaintext ODF package with `password`, producing what current

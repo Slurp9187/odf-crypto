@@ -33,7 +33,7 @@ use crate::limits::{
     AES_BLOCK_LEN, AES_CBC_IV_LEN, AES_GCM_IV_LEN, AES_GCM_TAG_LEN, ARGON2_MAX_M_COST_KIB_READ,
     ARGON2_MAX_P_COST_READ, ARGON2_MAX_T_COST_READ, BLOWFISH_IV_LEN, CHECKSUM_WINDOW,
     CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN, DERIVED_KEY_MIN_LEN, INFLATE_CEILING,
-    MAX_ENCRYPTED_ENTRIES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
+    MAX_ENCRYPTED_ENTRIES, MAX_OUTPUT_BYTES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
 };
 use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext, PasswordDigest};
 use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode, StartKeyAlg};
@@ -211,6 +211,28 @@ pub enum DecryptError {
     /// [`crate::DetectError::Inconsistent`] already has.
     #[error("zip error: {0}")]
     Zip(String),
+    /// The plaintext inflated from encrypted members would exceed
+    /// [`DecryptLimits::max_output_bytes`].
+    ///
+    /// Raised before key derivation when `manifest:size` already says so, and
+    /// otherwise as the running count passes the limit. Members stored
+    /// unencrypted are copied, not inflated by this crate, and do not count:
+    /// they are bounded by the input.
+    ///
+    /// **A policy of this crate, not a rule of the format.** ODF bounds no
+    /// size; the limit exists because a few kilobytes of DEFLATE can claim
+    /// gigabytes, and a caller writing to disk wants that refused rather than
+    /// discovered. Raise it with [`DecryptLimits::with_max_output_bytes`].
+    #[error("decrypted output would exceed the {limit}-byte limit")]
+    OutputLimit {
+        /// The limit in force, from [`DecryptLimits::max_output_bytes`].
+        limit: u64,
+    },
+    /// The caller's reader or writer failed. Nothing is implied about the
+    /// package. The error is the caller's own value, so a cancellation can be
+    /// recognized in it.
+    #[error("I/O failed: {0}")]
+    Io(#[source] std::io::Error),
 }
 
 /// Which allocation a [`DecryptError::HostCannotAllocate`] refers to.
@@ -381,6 +403,14 @@ pub struct DecryptLimits {
     pub argon2_max_p: u32,
     /// Inclusive ceiling on `manifest:iteration-count` for a PBKDF2 row.
     pub pbkdf2_max_iter: u32,
+    /// Inclusive ceiling, in bytes, on the plaintext inflated from encrypted
+    /// members, summed across the package. Default 16 GiB. Exceeding it is
+    /// [`DecryptError::OutputLimit`].
+    ///
+    /// A policy of this crate, not of the format; see `OutputLimit`. The
+    /// whole-buffer [`decrypt`] is also held to 1 GiB per inflated buffer by
+    /// the memory it must allocate, whatever this says.
+    pub max_output_bytes: u64,
 }
 
 impl Default for DecryptLimits {
@@ -390,6 +420,7 @@ impl Default for DecryptLimits {
             argon2_max_m_kib: ARGON2_MAX_M_COST_KIB_READ,
             argon2_max_p: ARGON2_MAX_P_COST_READ,
             pbkdf2_max_iter: PBKDF2_MAX_ITER,
+            max_output_bytes: MAX_OUTPUT_BYTES,
         }
     }
 }
@@ -412,6 +443,9 @@ impl DecryptLimits {
         argon2_max_m_kib: i32::MAX as u32,
         argon2_max_p: i32::MAX as u32,
         pbkdf2_max_iter: i32::MAX as u32,
+        // `manifest:size` is read as an `i64`, so this is wider than any size a
+        // package can declare.
+        max_output_bytes: u64::MAX,
     };
 
     /// Raise or lower the Argon2 `t` ceiling.
@@ -441,6 +475,13 @@ impl DecryptLimits {
         self.pbkdf2_max_iter = iter;
         self
     }
+
+    /// Raise or lower the ceiling on inflated plaintext, in bytes.
+    #[must_use]
+    pub fn with_max_output_bytes(mut self, bytes: u64) -> Self {
+        self.max_output_bytes = bytes;
+        self
+    }
 }
 
 /// Decrypt an LO-encrypted ODF package to the plaintext ODF zip LibreOffice
@@ -463,7 +504,9 @@ impl DecryptLimits {
 /// [`DecryptError::EmptyPassword`], [`DecryptError::Classify`],
 /// [`DecryptError::NotEncrypted`], [`DecryptError::Odf12Fatal`],
 /// [`DecryptError::UnsupportedPgp`], then [`DecryptError::BadParameters`] if the
-/// package declares more encrypted rows than will be processed.
+/// package declares more encrypted rows than will be processed, then
+/// [`DecryptError::OutputLimit`] if its `manifest:size` values sum past
+/// [`DecryptLimits::max_output_bytes`].
 ///
 /// During derivation, and alone in this list in blaming neither the package nor
 /// this crate: [`DecryptError::HostCannotAllocate`], when the host cannot
@@ -525,6 +568,7 @@ pub fn decrypt_with_limits(
         return Err(DecryptError::UnsupportedPgp);
     }
     ensure_encrypted_entry_count(class.encrypted_entries.len(), MAX_ENCRYPTED_ENTRIES)?;
+    screen_output_limit(&class, limits.max_output_bytes)?;
 
     // KNOWN RESIDUAL, third party (#51). `ZipArchive::new` preallocates its
     // central-directory vector from a count the file supplies, infallibly.
@@ -605,6 +649,28 @@ pub fn decrypt_with_limits(
     }
 
     rebuild_zip(bytes, &manifest, &plain)
+}
+
+/// Refuse, before any key derivation, a package whose `manifest:size` values
+/// already promise more inflated plaintext than `limit`.
+///
+/// Sums only the rows `decrypt` will inflate: the wholesome row for a wholesome
+/// package, every encrypted row otherwise. A size `inflated_len` would refuse is
+/// skipped here rather than reported, so that refusal keeps the position in the
+/// error order it had before this screen existed; only `OutputLimit` is new.
+fn screen_output_limit(class: &crate::Classification, limit: u64) -> Result<(), DecryptError> {
+    let declared = |row: &EntryEncryption| u64::try_from(row.size).unwrap_or(0);
+    let total = match class.mode {
+        Mode::Wholesome => class.wholesome_row().map_or(0, declared),
+        _ => class
+            .encrypted_entries
+            .iter()
+            .fold(0u64, |sum, row| sum.saturating_add(declared(row))),
+    };
+    if total > limit {
+        return Err(DecryptError::OutputLimit { limit });
+    }
+    Ok(())
 }
 
 fn ensure_encrypted_entry_count(n: usize, cap: usize) -> Result<(), DecryptError> {
