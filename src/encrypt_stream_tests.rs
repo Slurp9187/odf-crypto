@@ -9,6 +9,8 @@ use crate::decrypt::decrypt;
 use crate::decrypt_stream::decrypt_to;
 use crate::test_support::{load_golden, zip_with, MIME_TEXT, PASSWORD};
 use crate::Mode;
+use zip::write::SimpleFileOptions;
+use zip::CompressionMethod;
 
 /// The cheapest legal Argon2id, so a test that encrypts many times stays fast.
 fn cheap() -> Argon2Params {
@@ -263,4 +265,95 @@ fn write_lo_gate_output() {
     )
     .unwrap();
     std::fs::write(dir.join("encrypt-to.odt"), out.into_inner()).unwrap();
+}
+
+/// `n` bytes of xorshift noise, without allocating them: incompressible, so
+/// the encrypted member is as large as the input.
+struct Noise(u64, u64);
+impl Read for Noise {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = (buf.len() as u64).min(self.0) as usize;
+        for b in &mut buf[..n] {
+            self.1 ^= self.1 << 13;
+            self.1 ^= self.1 >> 7;
+            self.1 ^= self.1 << 17;
+            *b = self.1 as u8;
+        }
+        self.0 -= n as u64;
+        Ok(n)
+    }
+}
+
+/// Counts bytes and their CRC-32, keeping none of them.
+#[derive(Default)]
+struct Digest {
+    len: u64,
+    crc: crc32fast::Hasher,
+}
+impl Write for Digest {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.len += buf.len() as u64;
+        self.crc.update(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Past 4 GiB for real: a plain package whose stored member is 4 GiB of noise,
+/// so the `encrypted-package` it becomes is past 4 GiB too and needs Zip64. It
+/// must classify, decrypt back to the input byte for byte (length and CRC),
+/// and do it all through files on disk. Ignored: it writes about 8 GiB.
+#[test]
+#[ignore = "writes ~8 GiB to the temp dir; run with --release -- --ignored past_4_gib"]
+fn encrypt_to_past_4_gib_round_trips() {
+    let dir = std::env::temp_dir().join("odf-crypto-past-4-gib");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (plain_path, sealed_path) = (dir.join("plain.odt"), dir.join("sealed.odt"));
+    let n = u64::from(u32::MAX) + (1 << 20);
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        {
+            let file = std::io::BufWriter::new(std::fs::File::create(&plain_path)?);
+            let mut w = zip::ZipWriter::new(file);
+            let stored = SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Stored)
+                .large_file(true);
+            w.start_file("mimetype", stored)?;
+            w.write_all(MIME_TEXT.as_bytes())?;
+            w.start_file(MANIFEST_PATH, stored)?;
+            w.write_all(
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.3">
+ <manifest:file-entry manifest:full-path="/" manifest:version="1.3" manifest:media-type="{MIME_TEXT}"/>
+ <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
+</manifest:manifest>"#
+                )
+                .as_bytes(),
+            )?;
+            w.start_file("content.xml", stored)?;
+            io::copy(&mut Noise(n, 0x9E37_79B9_7F4A_7C15), &mut w)?;
+            w.finish()?;
+        }
+        let mut want = Digest::default();
+        io::copy(&mut std::fs::File::open(&plain_path)?, &mut want)?;
+
+        let sealed = std::io::BufWriter::new(std::fs::File::create(&sealed_path)?);
+        encrypt_with_params_to(std::fs::File::open(&plain_path)?, sealed, PASSWORD, cheap())?;
+        let len = std::fs::metadata(&sealed_path)?.len();
+        assert!(len > u64::from(u32::MAX), "sealed is only {len} bytes");
+        assert_eq!(
+            crate::classify::classify_reader(std::fs::File::open(&sealed_path)?)?.mode,
+            Mode::Wholesome
+        );
+
+        let mut got = Digest::default();
+        decrypt_to(std::fs::File::open(&sealed_path)?, &mut got, PASSWORD)?;
+        assert_eq!(got.len, want.len);
+        assert_eq!(got.crc.finalize(), want.crc.finalize());
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.unwrap();
 }

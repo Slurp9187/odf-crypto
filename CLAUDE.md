@@ -263,8 +263,9 @@ doctrine before anyone checked it, which is the failure this section is about.
 **The goldens are the evidence.** `tests/goldens/*.odt` are real LibreOffice
 output — every one, including `aoo-blowfish-pbkdf2.odt`, whose `aoo-` prefix
 names the ODF 1.1 Blowfish format family rather than its producer. Check
-`meta:generator` before claiming otherwise; all six read LibreOffice 26.2.1.2,
-and `make_goldens.py` only ever drives a local LibreOffice. There is no Apache
+`meta:generator` before claiming otherwise: six read LibreOffice 26.2.1.2, and
+`lo-legacy-aes-cbc-image.odt` (the streaming arc's, #92) reads 26.8.0.3.
+`make_goldens.py` only ever drives a local LibreOffice. There is no Apache
 OpenOffice-produced evidence here, so the corpus proves fidelity to LibreOffice
 and to the format, not agreement between two independent writers. They ship
 inside the published crate so the tarball can verify its own fidelity claim. Discover them at run time rather than

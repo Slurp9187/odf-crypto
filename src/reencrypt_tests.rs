@@ -444,3 +444,34 @@ fn write_lo_gate_outputs() {
         std::fs::write(dir.join(format!("rekeyed-{name}")), out.into_inner()).unwrap();
     }
 }
+
+/// LibreOffice's own per-entry package with a picture: every row it lists --
+/// the `Pictures/` member included -- carries complete `encryption-data`, so
+/// none of the refusals fires and it re-keys like any other.
+/// `make_goldens.py lo-legacy-aes-cbc-image` wrote it.
+#[test]
+fn a_per_entry_golden_with_a_picture_rekeys() {
+    let src = load_golden("lo-legacy-aes-cbc-image.odt");
+    let class = classify(&src).unwrap();
+    assert!(
+        !class.has_non_encrypted_entries && !class.has_unexpected_streams,
+        "{class:?}"
+    );
+    assert!(
+        class
+            .encrypted_entries
+            .iter()
+            .any(|e| e.path.starts_with("Pictures/")),
+        "no encrypted Pictures/ row: {:?}",
+        class
+            .encrypted_entries
+            .iter()
+            .map(|e| &e.path)
+            .collect::<Vec<_>>()
+    );
+    let (r, out) = rekey(&src, PASSWORD);
+    assert_eq!(r.unwrap().integrity, IntegrityOutcome::PasswordCheckOnly);
+    let mut streamed = Vec::new();
+    decrypt_to(Cursor::new(&src), &mut streamed, PASSWORD).unwrap();
+    assert!(decrypt(&out, NEW).unwrap() == streamed);
+}

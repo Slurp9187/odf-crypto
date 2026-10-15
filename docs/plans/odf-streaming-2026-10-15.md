@@ -169,6 +169,19 @@ Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9. *S3 and S4 ship as one P
     4. Its plaintext buffers are wrapped and wiped like the others.
     5. The LibreOffice gate runs on the per-entry `decrypt_to` output and the `reencrypt_to` result.
 
+- **`ReencryptError`'s shape (S6).** Five variants:
+  - `Decrypt(DecryptError)` for anything the source fails on;
+  - `Encrypt(EncryptError)` for the new password and cost;
+  - the two §4 refusals;
+  - `Io`, which absorbs both sides' `Io`, so one match arm sees a cancel.
+- **The CLI ships in rc.10 with `rekey` (owner, 2026-10-15).**
+  - The plan gave the §4 refusals "CLI exit 5", but the CLI had no re-encrypt command, so there was nothing to map.
+  - The owner asked for the CLI in this release, with streaming decrypt and encrypt. S8 therefore adds:
+    - a `rekey` subcommand over `reencrypt_to`, with a `reencrypt_exit` map (both refusals exit 5);
+    - a no-`_`-arm completeness test for `ReencryptError`;
+    - streaming file I/O for `decrypt` and `encrypt`.
+- **Image golden.** `lo-legacy-aes-cbc-image.odt` was written by LibreOffice 26.8.0.3, the corpus's first from that version. Every row it lists, `Pictures/` included, carries complete `encryption-data`. Proved by `a_per_entry_golden_with_a_picture_rekeys` and the corpus-wide `no_encrypted_libreoffice_golden_has_non_encrypted_entries`.
+
 ## 8. Verification
 
 - `cargo test --locked -j 2 -- --test-threads=2`, in the foreground, under no features, `--features crypto-ops` and `--features cli`.
