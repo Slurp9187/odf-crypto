@@ -120,6 +120,8 @@ crypto-ops = [
     "dep:aes",
     "dep:cbc",
     "dep:aes-gcm",
+    "dep:ctr",
+    "dep:ghash",
     "dep:blowfish",
     "dep:cfb-mode",
     "dep:miniz_oxide",
@@ -190,6 +192,13 @@ cbc = { version = "0.1", optional = true, features = ["zeroize"] }
 # no crate: secure-gate already depends on zeroize internally.
 aes-gcm = { version = "0.10", optional = true, features = ["getrandom", "zeroize"] }
 blowfish = { version = "0.9", optional = true, features = ["zeroize"] }
+# The streaming AES-GCM (`src/stream.rs`) is composed from the crates aes-gcm
+# is itself built from, because aes-gcm 0.10 offers only whole-buffer calls.
+# Both were already in the graph under aes-gcm, so naming them adds no crate:
+# measured 59 before and after (streaming plan, section 5). "zeroize" wipes
+# the CTR state and the GHASH key on drop, as aes-gcm's own feature does.
+ctr = { version = "0.9", optional = true, features = ["zeroize"] }
+ghash = { version = "0.5", optional = true, default-features = false, features = ["zeroize"] }
 cfb-mode = { version = "0.8", optional = true, features = ["zeroize"] }
 miniz_oxide = { version = "0.8", optional = true }
 

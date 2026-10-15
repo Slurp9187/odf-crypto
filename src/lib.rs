@@ -95,6 +95,10 @@ mod kdf;
 mod ms1252;
 #[cfg(feature = "crypto-ops")]
 mod sensitive;
+// Test-only until the `*_to` entry points call it (S3 of the streaming plan):
+// gated rather than `allow(dead_code)`, because until then it has no caller.
+#[cfg(all(feature = "crypto-ops", test))]
+mod stream;
 
 // A doc-only module: `//!` docs, no items, no runtime cost. Gated on
 // `crypto-ops` because five of its six symptoms are about `decrypt` and
