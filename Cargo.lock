@@ -217,9 +217,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.1"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8498c871161e1742aaa9d52551b2d6ebdd4c3d45a3be423e3728f33b955be550"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
 dependencies = [
  "cfg-if",
 ]
@@ -420,11 +420,13 @@ dependencies = [
  "cbc",
  "cfb-mode",
  "clap",
+ "crc32fast",
  "ctr",
  "ghash",
  "hmac",
  "miniz_oxide 0.8.9",
  "pbkdf2",
+ "peak_alloc",
  "quick-xml",
  "rpassword",
  "secure-gate",
@@ -461,6 +463,12 @@ dependencies = [
  "digest",
  "hmac",
 ]
+
+[[package]]
+name = "peak_alloc"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccc90935a8dd139fdf341762773687a1e361d3f54b396a55d9dd1f7001e484bb"
 
 [[package]]
 name = "polyval"

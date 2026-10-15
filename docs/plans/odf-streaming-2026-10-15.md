@@ -54,7 +54,6 @@ pub fn reencrypt_to<R: Read + Seek, W: Write + Seek>(r: R, w: W, old: &str, new:
 #[non_exhaustive] pub enum IntegrityOutcome {
     Verified,          // an AEAD (GCM) tag covered every encrypted member
     PasswordCheckOnly, // some member was checked only by its 1K SHA-1/SHA-256 digest
-    Unverified,        // some CBC/Blowfish member declares no checksum; LibreOffice accepts any password (ZipFile.cxx:522)
 }
 ```
 
@@ -95,7 +94,7 @@ pub fn reencrypt_to<R: Read + Seek, W: Write + Seek>(r: R, w: W, old: &str, new:
   - **(c)** the unlatched shape, `!package_encrypted` with encrypted entries → `PartiallyEncrypted`
 - **Why.** Without these refusals, a plain member slipped into a legacy file would be laundered into a GCM-authenticated container. EFV's round-trip digest proves the rewrite was faithful, not that the source was intact.
 - **This is our policy, not fidelity.** `decrypt` and `decrypt_to` still open every shape LibreOffice opens (`decrypt_tests.rs:1667`). LibreOffice's own re-key is open-then-save, after `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` (`sfx2/source/doc/objmisc.cxx:1028-1063`).
-- A per-entry source that passes returns `PasswordCheckOnly` or `Unverified`. Tampering past a member's first 1 KB is undetectable, upstream included.
+- A per-entry source that passes returns `PasswordCheckOnly`. Tampering past a member's first 1 KB is undetectable, upstream included.
 
 ## 5. Design
 
@@ -130,14 +129,14 @@ pub fn reencrypt_to<R: Read + Seek, W: Write + Seek>(r: R, w: W, old: &str, new:
 | S1 | `classify` generic over `Read + Seek` internally; `classify(&[u8])` becomes a `Cursor` call. `classify_reader`. `Io` variants and `OutputLimit`, with exit-map and completeness entries. `max_output_bytes`. Confirm the `zip` streaming APIs. | The full suite is green in all 3 configurations; `classify_reader == classify` on every golden, ladder and artifact file. |
 | S2 | Crate-private streaming primitives: GCM (ctr + ghash), CBC / Blowfish with the 1K gate, inflate / deflate with wiped buffers. | KATs against `aes-gcm` and NIST; byte-equality with the whole-buffer primitives on every golden member; each gate falsified (break it, watch the test fail, record it in the commit). |
 | S3 | `decrypt_to`, wholesome: two-pass GCM, ladder, per-chunk limit, pass-2 recheck. `IntegrityOutcome`. | Output **byte-identical** to `decrypt` on every wholesome golden and artifact; a mutated-between-passes test errors; `OutputLimit` fires. |
-| S4 | `decrypt_to`, per-entry: 1K gate, streaming rebuild with data descriptors, raw copy, `PasswordCheckOnly` / `Unverified`. | Every member's bytes and the stripped manifest equal `decrypt`'s on every per-entry golden and ladder file; LibreOffice opens the data-descriptor output; a no-checksum fixture reports `Unverified`. |
+| S4 | `decrypt_to`, per-entry: 1K gate, streaming rebuild with data descriptors, raw copy, `PasswordCheckOnly`. | Every member's bytes and the stripped manifest equal `decrypt`'s on every per-entry golden and ladder file; LibreOffice opens the data-descriptor output. |
 | S5 | `encrypt_to` and `encrypt_with_params_to`. | Round trip through `decrypt` and `decrypt_to`; `classify` shape equals `encrypt`'s; LibreOffice opens it. |
 | S6 | `reencrypt_to`, plus the §4 refusals. New golden: per-entry with an embedded image, from `make_goldens.py`. | Round trip under the new password with the old one refused; LibreOffice opens both shapes. Five refusal tests, each falsified by deleting its condition:<br>• `unlatched_package()` is refused<br>• an extra plain listed row is refused<br>• an ODF 1.1 package with an unlisted member is refused<br>• a wholesome source with a plain META-INF member still re-keys<br>• `decrypt_to` still succeeds on each refused fixture<br>The image golden has `has_non_encrypted_entries == false` and re-keys. |
 | S7 | `tests/streaming_memory.rs`: counting `#[global_allocator]`, `peak_rise`, a pattern reader and an incompressible reader, 256 MiB payloads. Modeled on EFV's `sevenz_streaming_memory_tests.rs`. | Every phase stays under a fixed bound well below the payload, and its rise at 16 MiB vs 256 MiB is within 1 MiB. Phases: wholesome decrypt, per-entry decrypt, encrypt, re-encrypt ×2. Each guard is falsified (buffer a member, collect the output, drop the hold-back cap) and recorded. |
 | S8 | Whole-buffer `decrypt` / `encrypt` reimplemented over the core (owner decision Q2). The CLI streams `File` → `write_atomically`. | Existing tests unchanged and green; `decrypt` output byte-identical to rc.9 on the corpus; the CLI contracts are still pinned. |
 | S9 | README (spine skill), troubleshooting, CHANGELOG under Unreleased, crate counts re-measured. | `docs` and `docsrs` green; every count is measured. |
 
-Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9.
+Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9. *S3 and S4 ship as one PR, one commit each (owner, 2026-10-15): on its own, S3 would land a public `decrypt_to` that refuses per-entry packages.*
 - S7's harness lands with S3, and each later operation slice adds its phase.
 - PRs follow slice boundaries.
 
@@ -149,7 +148,11 @@ Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9.
 - **Q3.** No unverified-release path. Two passes cost one extra read of the ciphertext.
 - **Q4.** Re-encrypt skips the inner-package checks for a wholesome source only. It was narrowed to the §4 refusals after EFV STREAMING raised laundering through legacy per-entry sources.
 - **Q5.** Publishing rc.10 stays the owner's call, asked when S9 is done.
-- **Unverified.** Added as a third integrity level rather than folded into `PasswordCheckOnly`, which would overstate what a no-checksum member proves.
+- **`Unverified`: added, then removed during S4 (owner, 2026-10-15).**
+  - It was added as a third integrity level for "a CBC or Blowfish member with no checksum, which LibreOffice accepts for any password (`ZipFile.cxx:522`)".
+  - That line is real, but nothing reaches it. `parseManifest` treats a password row as complete only when the cipher is GCM or the row has both `Digest` and `DigestAlgorithm` (`ZipPackage.cxx:365-367`), and `classify` mirrors that rule (`checksum_present_or_unneeded`). So no such member is ever decrypted, by LibreOffice or by this crate.
+  - A variant that cannot be produced would have had EFV design a notice for a case that cannot occur.
+  - The claim reached an owner decision without being checked against the upstream condition that guards it. That is why it is recorded here rather than quietly deleted.
 - **Decrypt `W` bound: reversed during planning.**
   - The first draft had `W: Write + Seek` on decrypt, reasoning that the per-entry rebuild patches local headers and so stays byte-identical to rc.9.
   - That reasoning put byte-identity on the streaming path, where nobody needs it. EFV's round trip hashes into a Write-only sink, and msoffice-crypto's decrypt is Write-only.

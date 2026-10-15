@@ -280,6 +280,10 @@ pub enum AllocationSite {
     /// The buffer a member's ciphertext is copied into so it can be decrypted
     /// in place, sized from that member's own length.
     CipherBuffer,
+    /// A fixed-size buffer of the streaming entry points (`decrypt_to`): a
+    /// chunk, the inflate window or the 1K hold-back. Never sized from the
+    /// package.
+    StreamBuffer,
 }
 
 impl core::fmt::Display for AllocationSite {
@@ -294,6 +298,7 @@ impl core::fmt::Display for AllocationSite {
             Self::MemberPlaintext => "a decrypted package member",
             Self::PackagePlaintext => "the decrypted package",
             Self::CipherBuffer => "a cipher buffer",
+            Self::StreamBuffer => "a streaming buffer",
         })
     }
 }
@@ -554,21 +559,7 @@ pub fn decrypt_with_limits(
         return Err(DecryptError::EmptyPassword);
     }
     let class = classify(bytes)?;
-    if class.mode == Mode::Plain {
-        return Err(DecryptError::NotEncrypted);
-    }
-    if class.odf12_fatal {
-        return Err(DecryptError::Odf12Fatal);
-    }
-    if class
-        .encrypted_entries
-        .iter()
-        .any(|e| matches!(e.kdf, Kdf::PgpRsaOaepMgf1p))
-    {
-        return Err(DecryptError::UnsupportedPgp);
-    }
-    ensure_encrypted_entry_count(class.encrypted_entries.len(), MAX_ENCRYPTED_ENTRIES)?;
-    screen_output_limit(&class, limits.max_output_bytes)?;
+    screen_class(&class, &limits)?;
 
     // KNOWN RESIDUAL, third party (#51). `ZipArchive::new` preallocates its
     // central-directory vector from a count the file supplies, infallibly.
@@ -649,6 +640,30 @@ pub fn decrypt_with_limits(
     }
 
     rebuild_zip(bytes, &manifest, &plain)
+}
+
+/// Every refusal that needs only the classification, in the order `decrypt`
+/// documents. Shared by the whole-buffer and streaming paths, so the two
+/// refuse the same packages for the same reasons.
+pub(crate) fn screen_class(
+    class: &crate::Classification,
+    limits: &DecryptLimits,
+) -> Result<(), DecryptError> {
+    if class.mode == Mode::Plain {
+        return Err(DecryptError::NotEncrypted);
+    }
+    if class.odf12_fatal {
+        return Err(DecryptError::Odf12Fatal);
+    }
+    if class
+        .encrypted_entries
+        .iter()
+        .any(|e| matches!(e.kdf, Kdf::PgpRsaOaepMgf1p))
+    {
+        return Err(DecryptError::UnsupportedPgp);
+    }
+    ensure_encrypted_entry_count(class.encrypted_entries.len(), MAX_ENCRYPTED_ENTRIES)?;
+    screen_output_limit(class, limits.max_output_bytes)
 }
 
 /// Refuse, before any key derivation, a package whose `manifest:size` values
@@ -742,8 +757,8 @@ fn read_member_at(
 
 /// First member whose raw or slash-collapsed name matches - the rule `classify`
 /// itself uses, because a row path is a folder-tree path, not a namelist key.
-fn member_for_archive(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
+pub(crate) fn member_for_archive<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
     path: &str,
 ) -> Result<(usize, String), DecryptError> {
     for i in 0..archive.len() {
@@ -783,7 +798,7 @@ fn kdf_error(e: KdfError) -> DecryptError {
     }
 }
 
-fn derive_key(
+pub(crate) fn derive_key(
     row: &EntryEncryption,
     sk: PasswordDigest,
     limits: &DecryptLimits,
@@ -897,6 +912,19 @@ fn cipher_accepts_key_len(cipher: Cipher, n: i32) -> bool {
 /// length one of them establishes — a non-local invariant is a poor thing to hang
 /// "the library does not panic" on. Each is labelled where it sits.
 fn screen_before_deriving(row: &EntryEncryption, blob: &[u8]) -> Result<(), DecryptError> {
+    let head = &blob[..blob.len().min(AES_GCM_IV_LEN)];
+    screen_shape(row, blob.len() as u64, head)
+}
+
+/// [`screen_before_deriving`] for a member that is not in memory: its length,
+/// and its first bytes (at most `AES_GCM_IV_LEN` are looked at). The streaming
+/// path calls this; the whole-buffer one reaches it through the function above,
+/// so both refuse the same members with the same messages.
+pub(crate) fn screen_shape(
+    row: &EntryEncryption,
+    len: u64,
+    head: &[u8],
+) -> Result<(), DecryptError> {
     if !cipher_accepts_key_len(row.cipher, row.derived_key_len) {
         return Err(DecryptError::BadParameters(format!(
             "key length {} cannot be used with {:?}",
@@ -908,10 +936,10 @@ fn screen_before_deriving(row: &EntryEncryption, blob: &[u8]) -> Result<(), Decr
             if row.iv.len() != AES_GCM_IV_LEN {
                 return Err(DecryptError::BadParameters("GCM IV length".into()));
             }
-            if blob.len() < AES_GCM_IV_LEN + AES_GCM_TAG_LEN {
+            if len < (AES_GCM_IV_LEN + AES_GCM_TAG_LEN) as u64 || head.len() < AES_GCM_IV_LEN {
                 return Err(DecryptError::BadParameters("shorter than IV+tag".into()));
             }
-            if blob[..AES_GCM_IV_LEN] != row.iv[..] {
+            if head[..AES_GCM_IV_LEN] != row.iv[..] {
                 return Err(DecryptError::BadParameters("inconsistent IV".into()));
             }
         }
@@ -919,7 +947,7 @@ fn screen_before_deriving(row: &EntryEncryption, blob: &[u8]) -> Result<(), Decr
             if row.iv.len() != AES_CBC_IV_LEN {
                 return Err(DecryptError::BadParameters("CBC IV length".into()));
             }
-            if blob.is_empty() || blob.len() % AES_BLOCK_LEN != 0 {
+            if len == 0 || len % AES_BLOCK_LEN as u64 != 0 {
                 return Err(DecryptError::BadParameters("not a block multiple".into()));
             }
         }
@@ -1217,7 +1245,7 @@ fn without_size(e: &BytesStart<'_>) -> BytesStart<'static> {
     out.into_owned()
 }
 
-fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
+pub(crate) fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(false);
     // `io::Write for Vec<u8>` is infallible -- its `write_all` is
