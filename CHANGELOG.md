@@ -11,7 +11,7 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
-## [0.1.0-rc.10] - Unreleased
+## [0.1.0-rc.10] - 2026-10-15
 
 The streaming arc (#86, plan `docs/plans/odf-streaming-2026-10-15.md`), for
 `encrypted-file-vault`, which held ODF packages to 1 GiB because every entry
