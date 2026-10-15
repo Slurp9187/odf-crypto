@@ -7,30 +7,22 @@
 //! wrap are later, out-of-scope arcs. See
 //! `docs/plans/odf-encryption-encrypt-2026-09-03.md`.
 
-use std::io::{Cursor, Read, Write};
+use std::io::Read;
 
-use aes_gcm::{
-    aead::{rand_core::RngCore as _, AeadInPlace, KeyInit, OsRng},
-    Aes256Gcm, Nonce,
-};
+use aes_gcm::aead::{rand_core::RngCore as _, OsRng};
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::Writer;
 use secure_gate::{RevealSecret, RevealSecretMut};
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::ZipArchive;
 
-use crate::classify::classify;
 use crate::limits::{
     AES_GCM_IV_LEN, ARGON2_MAX_M_COST_KIB_WRITE, ARGON2_MAX_T_COST_WRITE, ARGON2_MIN_M_COST_KIB,
     ARGON2_MIN_P_COST, ARGON2_MIN_T_COST, DEFLATE_CEILING, MIMETYPE_CEILING,
 };
-use crate::sensitive::{DeflatedPlaintext, DerivedKey};
+use crate::sensitive::DerivedKey;
 use crate::types::{Mode, StartKeyAlg};
 use crate::uris;
-use crate::zip_err;
 use crate::DetectError;
-
-const MANIFEST_PATH: &str = "META-INF/manifest.xml";
 
 /// The one profile this arc writes (plan §1's last row, §2's emit table).
 ///
@@ -668,77 +660,7 @@ pub fn encrypt_with_params(
     password: &str,
     params: Argon2Params,
 ) -> Result<Vec<u8>, EncryptError> {
-    if password.is_empty() {
-        return Err(EncryptError::EmptyPassword);
-    }
-    let class = classify(bytes)?;
-    screen_input(&class)?;
-
-    // Plan §3's mimetype fallback chain, resolved before any crypto: it
-    // depends only on `bytes` and `class`, and a rejection here should not
-    // cost a whole-input deflate plus a 64 MiB Argon2id first.
-    let mimetype = resolve_mimetype(
-        &mut ZipArchive::new(Cursor::new(bytes))
-            .map_err(|e| EncryptError::Zip(zip_err::message(&e)))?,
-        class.media_type.as_deref(),
-    )?;
-
-    // Plan §6 step 3: raw-deflate the whole input buffer, unparsed. Wrapped
-    // before the cipher runs, mirroring how the in-place read-side ciphers
-    // wrap before the first block turns into plaintext: this is the crate's
-    // own copy of the caller's document, so it is zeroized on drop even
-    // though the caller's original stays plain.
-    let mut payload = DeflatedPlaintext::new(raw_deflate(bytes)?);
-
-    // Plan §6 step 5 / `ZipPackageStream.cxx:587-607`: fresh salt and IV per
-    // save (moot here -- wholesome writes exactly one row). Neither is
-    // wrapped: both are written to the manifest in the clear.
-    let salt = random_bytes(WHOLESOME.salt_len)?;
-    let iv = random_bytes(WHOLESOME.iv_len)?;
-    let derived_key = derive_write_key(password, &salt, params)?;
-
-    // Plan §6 step 7 / `ciphercontext.cxx`'s encrypt branch: AES-256-GCM,
-    // empty AAD, the 16-byte tag appended to the ciphertext. Sealing in place
-    // means the plaintext is overwritten rather than copied into a second
-    // buffer, and what the wrapper holds afterwards is ciphertext. NSS does
-    // not prepend the IV, so LO does, and so do we -- in `assemble_zip`,
-    // which writes `IV || ciphertext || tag` without materialising a
-    // concatenation.
-    //
-    // `Nonce::from_slice` panics on a length mismatch, so the length is
-    // checked first: `WHOLESOME.iv_len` is const-asserted to be 12 above, but
-    // a checked error beats a panic reachable only by editing that constant.
-    if iv.len() != AES_GCM_IV_LEN {
-        return Err(EncryptError::Internal(format!(
-            "GCM nonce must be {AES_GCM_IV_LEN} bytes, WHOLESOME.iv_len gave {}",
-            iv.len()
-        )));
-    }
-    derived_key.with_secret(|key| {
-        payload.with_secret_mut(|pt| {
-            Aes256Gcm::new_from_slice(key)
-                .map_err(|e| EncryptError::Internal(format!("AES-256-GCM key: {e}")))?
-                .encrypt_in_place(Nonce::from_slice(&iv), b"", pt)
-                .map_err(|e| EncryptError::Internal(format!("AES-256-GCM seal: {e}")))
-        })
-    })?;
-
-    // Plan §2/§6 step 8: manifest.xml exactly per the emit table.
-    let manifest_xml = build_manifest(bytes.len() as i64, &iv, &salt, mimetype.as_deref(), params)?;
-
-    // Plan §3/§6 step 9: the three-member outer zip. `unwrap_or(&[])` writes a
-    // zero-length `mimetype` member when neither fallback tier produced one --
-    // deliberately, not as an oversight: LO's `ZipPackage::WriteMimetypeMagicFile`
-    // (`ZipPackage.cxx:1125-1160`) is called unconditionally for the ZIP format
-    // and writes an entry of `GetMediaType().getLength()` bytes, which is zero
-    // when the root folder carries no media type. Omitting the member instead
-    // would be the divergence.
-    assemble_zip(
-        mimetype.as_deref().map(str::as_bytes).unwrap_or(&[]),
-        &iv,
-        &payload,
-        &manifest_xml,
-    )
+    crate::encrypt_stream::encrypt_slice(bytes, password, params, DEFLATE_CEILING as u64)
 }
 
 /// Plan §6 step 4/6: the SHA-256 start key, then Argon2id over it with `salt`
@@ -804,26 +726,6 @@ pub(crate) fn screen_input(class: &crate::Classification) -> Result<(), EncryptE
         return Err(EncryptError::Odf12Fatal);
     }
     Ok(())
-}
-
-/// Raw DEFLATE of the whole input buffer (the opposite direction to
-/// `decrypt::inflate_into`, though not its shape: deflate has no declared
-/// output length to size a slot from, so this still returns a grown `Vec`). No zlib wrapper -- LO's own
-/// `ZipOutputEntryBase` deflates raw too (`ZipOutputEntry.cxx`).
-fn raw_deflate(bytes: &[u8]) -> Result<Vec<u8>, EncryptError> {
-    raw_deflate_with_ceiling(bytes, DEFLATE_CEILING)
-}
-
-/// The body of [`raw_deflate`], with the ceiling as a parameter so a test can
-/// exercise the rejection without allocating a gigabyte to reach the real one.
-fn raw_deflate_with_ceiling(bytes: &[u8], ceiling: usize) -> Result<Vec<u8>, EncryptError> {
-    if bytes.len() > ceiling {
-        return Err(EncryptError::Deflate(format!(
-            "input {} bytes exceeds ceiling {ceiling}",
-            bytes.len()
-        )));
-    }
-    Ok(miniz_oxide::deflate::compress_to_vec(bytes, 6))
 }
 
 /// `len` random bytes via a CSPRNG (`ZipPackageStream.cxx:590,594` -- LO's
@@ -1027,49 +929,6 @@ pub(crate) fn build_manifest(
             .map_err(|e| EncryptError::Internal(format!("manifest XML write: {e}")))?;
     }
     Ok(writer.into_inner())
-}
-
-/// Assemble the outer zip: exactly three members, in order -- `mimetype`
-/// (STORED), `encrypted-package` (STORED, no data descriptor -- the whole
-/// ciphertext is already in memory, so `ZipWriter` over a `Cursor<Vec<u8>>`
-/// can write ordinary STORED headers with size/CRC known upfront, the same
-/// reasoning `decrypt::rebuild_zip` already relies on), `META-INF/manifest.xml`
-/// (DEFLATED, via the `zip` crate's existing `deflate` feature).
-///
-/// `iv` and `ciphertext` are written back to back into the one member rather
-/// than concatenated first: the payload is the largest thing in play and
-/// there is no reason to hold two copies of it.
-fn assemble_zip(
-    mimetype: &[u8],
-    iv: &[u8],
-    sealed: &DeflatedPlaintext,
-    manifest_xml: &[u8],
-) -> Result<Vec<u8>, EncryptError> {
-    let sealed_len = sealed.with_secret(|s| s.len());
-    let capacity = mimetype.len() + iv.len() + sealed_len + manifest_xml.len() + 512;
-    let mut out = ZipWriter::new(Cursor::new(Vec::with_capacity(capacity)));
-    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    let to_zip_err = |e: zip::result::ZipError| EncryptError::Zip(zip_err::message(&e));
-    let io_err = |e: std::io::Error| EncryptError::Zip(e.to_string());
-
-    out.start_file("mimetype", stored).map_err(to_zip_err)?;
-    out.write_all(mimetype).map_err(io_err)?;
-
-    out.start_file("encrypted-package", stored)
-        .map_err(to_zip_err)?;
-    out.write_all(iv).map_err(io_err)?;
-    // Written straight from the wrapper, the way `rebuild_zip` writes members
-    // on the read side -- no unwrapped copy on the way out. By now the buffer
-    // holds ciphertext, but it stays wrapped until it is written, so no
-    // window exists where a plain copy of it could outlive the call.
-    sealed.with_secret(|s| out.write_all(s)).map_err(io_err)?;
-
-    out.start_file(MANIFEST_PATH, deflated)
-        .map_err(to_zip_err)?;
-    out.write_all(manifest_xml).map_err(io_err)?;
-
-    Ok(out.finish().map_err(to_zip_err)?.into_inner())
 }
 
 #[cfg(test)]

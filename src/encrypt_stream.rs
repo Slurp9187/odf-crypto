@@ -89,11 +89,35 @@ pub fn encrypt_with_params_to<R: Read + Seek, W: Write + Seek>(
     }
     let latch = Latch::default();
     let mut src = Latched::new(reader, &latch);
-    let result = run(&mut src, writer, password, params);
+    let result = run(&mut src, writer, password, params, None);
     match latch.take() {
         Some(err) => Err(EncryptError::Io(err)),
         None => result,
     }
+}
+
+/// The whole-buffer [`crate::encrypt_with_params`], on the same core. Its
+/// input is held to `ceiling` (rc.9's `DEFLATE_CEILING`), checked where rc.9
+/// checked it: after the mimetype resolves, before any key is derived. The
+/// output is ciphertext, so growing its `Vec` leaves no plaintext behind.
+pub(crate) fn encrypt_slice(
+    bytes: &[u8],
+    password: &str,
+    params: Argon2Params,
+    ceiling: u64,
+) -> Result<Vec<u8>, EncryptError> {
+    if password.is_empty() {
+        return Err(EncryptError::EmptyPassword);
+    }
+    let mut out = io::Cursor::new(Vec::new());
+    run(
+        &mut io::Cursor::new(bytes),
+        &mut out,
+        password,
+        params,
+        Some(ceiling),
+    )?;
+    Ok(out.into_inner())
 }
 
 fn run<R: Read + Seek, W: Write + Seek>(
@@ -101,6 +125,7 @@ fn run<R: Read + Seek, W: Write + Seek>(
     writer: W,
     password: &str,
     params: Argon2Params,
+    ceiling: Option<u64>,
 ) -> Result<(), EncryptError> {
     let class = classify_latched(&mut *src)?;
     screen_input(&class)?;
@@ -114,6 +139,11 @@ fn run<R: Read + Seek, W: Write + Seek>(
     // `manifest:size` is the plaintext package's length, as in `encrypt`.
     let size = src.seek(SeekFrom::End(0)).map_err(EncryptError::Io)?;
     src.seek(SeekFrom::Start(0)).map_err(EncryptError::Io)?;
+    if let Some(ceiling) = ceiling.filter(|&c| size > c) {
+        return Err(EncryptError::Deflate(format!(
+            "input {size} bytes exceeds ceiling {ceiling}"
+        )));
+    }
     let manifest_size = i64::try_from(size)
         .map_err(|_| EncryptError::Internal(format!("input of {size} bytes")))?;
 

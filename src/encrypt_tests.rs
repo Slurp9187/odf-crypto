@@ -805,20 +805,23 @@ fn round_trip_under_a_non_ascii_password() {
 }
 
 /// N2: `DEFLATE_CEILING` had no test -- reaching the real 1 GiB bound would
-/// mean allocating a gigabyte, so the ceiling is a parameter of the inner
-/// helper and this exercises the rejection at a size that costs nothing.
+/// mean a gigabyte of input, so the ceiling is a parameter of the core
+/// (`encrypt_stream::encrypt_slice`) and this exercises the rejection at a size
+/// that costs nothing: one byte either side of a real package's length.
 #[test]
 fn deflate_ceiling_refuses_an_oversized_buffer() {
-    let buf = vec![0u8; 4096];
+    let plain = load_golden("lo-unencrypted.odt");
+    let n = plain.len() as u64;
+    let cheap = Argon2Params::new(1, 8, 1).unwrap();
     assert!(
-        crate::encrypt::raw_deflate_with_ceiling(&buf, 8192).is_ok(),
-        "under the ceiling must compress"
+        crate::encrypt_stream::encrypt_slice(&plain, PASSWORD, cheap, n).is_ok(),
+        "at the ceiling must encrypt"
     );
-    let err = crate::encrypt::raw_deflate_with_ceiling(&buf, 1024).unwrap_err();
+    let err = crate::encrypt_stream::encrypt_slice(&plain, PASSWORD, cheap, n - 1).unwrap_err();
     match err {
         EncryptError::Deflate(msg) => {
             assert!(
-                msg.contains("4096") && msg.contains("1024"),
+                msg.contains(&n.to_string()) && msg.contains(&(n - 1).to_string()),
                 "message: {msg}"
             )
         }
