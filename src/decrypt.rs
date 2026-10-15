@@ -31,7 +31,7 @@ use crate::DetectError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecryptError {
-    /// [`classify`] refused the package before decryption began.
+    /// [`classify`](crate::classify) refused the package before decryption began.
     #[error("classification failed: {0}")]
     Classify(#[from] DetectError),
     /// The package classified as [`Mode::Plain`] — there is nothing to decrypt.
@@ -41,7 +41,7 @@ pub enum DecryptError {
     /// opens the package, so this crate classifies it plain.
     #[error("package is not encrypted")]
     NotEncrypted,
-    /// The password was empty. Checked before [`classify`] runs, so it implies
+    /// The password was empty. Checked before [`classify`](crate::classify) runs, so it implies
     /// nothing about whether `bytes` is a valid or encrypted package.
     #[error("password is empty")]
     EmptyPassword,

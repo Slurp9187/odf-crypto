@@ -1,4 +1,4 @@
-Status: **Planned (2026-10-15)**: approved by the owner 2026-10-15 · Authored 2026-10-15 against `8e1e1b6` (rc.9) · LibreOffice citations against the local clone at `07047a02f94d`, the same pin as the earlier arcs · Consumer: EFV master issue #1193 (A5)
+Status: **Built (2026-10-15)**, unreleased: S1–S9 in #97–#100 and the S8/S9 PR; rc.10 publishing is the owner's call · approved by the owner 2026-10-15 · Authored 2026-10-15 against `8e1e1b6` (rc.9) · LibreOffice citations against the local clone at `07047a02f94d`, the same pin as the earlier arcs · Consumer: EFV master issue #1193 (A5)
 
 Consumes [odf-encryption-decrypt-2026-09-02.md](odf-encryption-decrypt-2026-09-02.md) and [odf-encryption-encrypt-2026-09-03.md](odf-encryption-encrypt-2026-09-03.md), both Shipped. Do not re-derive `classify`'s accept predicates. The streaming entry points run the **same** `ManifestImport` / `parseManifest` machines, made generic over `Read + Seek`.
 
@@ -102,7 +102,7 @@ pub fn reencrypt_to<R: Read + Seek, W: Write + Seek>(r: R, w: W, old: &str, new:
   - The crate count must not change. Measure it with the `cargo tree` command in CLAUDE.md before and after.
   - The construction: J0 = IV‖0³¹‖1, CTR starts at J0+1, tag = GHASH(H, ∅, C) ⊕ E(K, J0). The tag is compared with `digest_eq`.
   - Proved against `aes-gcm` (randomized lengths, both directions) and NIST vectors.
-- **CBC / Blowfish.** Incremental `cbc::Decryptor` and `cfb_mode::BufDecryptor`, as at `decrypt.rs:970-1034`. `verify_checksum` (`decrypt.rs:1036`) runs on the held-back window.
+- **CBC / Blowfish.** Incremental `cbc::Decryptor` and `cfb_mode::BufDecryptor`, the ciphers rc.9's `decrypt_aes_cbc` and `decrypt_blowfish_cfb64` ran whole-buffer, with rc.9's `verify_checksum` comparison on the held-back window. *(Those rc.9 functions were removed in S8; `stream::ChecksumGate` is the comparison now.)*
 - **Inflate.** `miniz_oxide::inflate::core::decompress` into a caller-owned 32 KiB wrapping buffer, so the dictionary window is ours to wipe.
 - **Deflate.** `miniz_oxide::deflate::core` at level 6, matching `raw_deflate` (`encrypt.rs:787`).
 - **Zip** (`zip` 2.4.2):
@@ -181,6 +181,10 @@ Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9. *S3 and S4 ship as one P
     - a no-`_`-arm completeness test for `ReencryptError`;
     - streaming file I/O for `decrypt` and `encrypt`.
 - **Image golden.** `lo-legacy-aes-cbc-image.odt` was written by LibreOffice 26.8.0.3, the corpus's first from that version. Every row it lists, `Pictures/` included, carries complete `encryption-data`. Proved by `a_per_entry_golden_with_a_picture_rekeys` and the corpus-wide `no_encrypted_libreoffice_golden_has_non_encrypted_entries`.
+
+- **S8: the whole-buffer API's bytes, pinned before its code was replaced.** SHA-256 of rc.9's own `decrypt` output for all 15 fixture/password pairs was recorded from rc.9's code, then that code was removed; `whole_buffer_decrypt_returns_rc9_bytes` holds the new path to it. The first run caught a real difference: `zip`'s writer seeks to `End` for its central directory, and over a `Cursor` on a preallocated slice that is the slice's capacity, not the bytes written. `SliceWriter` answers `End` with the high-water mark.
+- **S8: the CLI's temporary output (coordinator, owner).** Created beside the target with its permissions, deleted on every `Err`; Ctrl-C cancels through the library's reader-driven cancel (`ctrlc =3.5.2`, `cli` only, approved by the coordinator) and exits 130. **A hard kill can leave the temp: owner decision, no `unsafe` in the CLI** -- `forbid(unsafe_code)` stays the crate's identity, and the limit is stated in the README and CHANGELOG. (For a later change: `rustix` offers a safe `O_TMPFILE` + `linkat` on Linux; only Windows needs `unsafe`.)
+- **S9: the rc.10 line opened** in the S8/S9 PR rather than direct to `main`, so the bump carries a review record; `CHANGELOG.md` has `## [0.1.0-rc.10] - Unreleased`. Publishing stays the owner's.
 
 ## 8. Verification
 

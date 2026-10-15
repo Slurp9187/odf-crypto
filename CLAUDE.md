@@ -81,9 +81,9 @@ Three configurations, and every change must hold in all of them.
 
 | Feature | Default | What it adds |
 | --- | --- | --- |
-| *(none)* | **yes** | `classify` only. 25 crates, no cryptographic dependency. |
-| `crypto-ops` | opt-in | `decrypt` and `encrypt`. 59 crates. |
-| `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`. |
+| *(none)* | **yes** | `classify` / `classify_reader` only. 25 crates, no cryptographic dependency. |
+| `crypto-ops` | opt-in | `decrypt`, `encrypt` and their streaming `*_to` forms, and `reencrypt_to`. 59 crates. |
+| `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`, `ctrlc`. 73 crates on Windows, 75 on Linux, 79 on macOS (counts are per target, measured with `--target`). |
 
 **Detection-only is the default on purpose.** Nobody should resolve a cipher
 stack to ask whether a file is encrypted, and it makes the crate cheap for a
@@ -139,14 +139,15 @@ the cipher buffers and the derived-key buffer all go through `try_reserve_exact`
 now, and the error variant gained an `AllocationSite` because its message said
 *"for key derivation"* unconditionally and that stopped being true.
 
-**Two sites remain open, and both are named in the code rather than left to be
-rediscovered.** `read_member_at`'s `read_to_end` grows a ciphertext buffer
-infallibly — `std::io::Read` offers no fallible form, and pre-sizing it from the
-zip header was written and rejected, because the header is the attacker's number
-too and a member claiming 1 GiB while delivering ten bytes would then cost a real
-1 GiB. `ZipArchive::new` preallocates from a count the file supplies; `zip` caps
-it near 4.5x the input by its own consistency check, which is mitigation and not
-ours to close. Recording *why* a site stays open is the requirement — an
+**One site remains open, named in the code rather than left to be
+rediscovered.** `ZipArchive::new` preallocates from a count the file supplies;
+`zip` caps it near 4.5x the input by its own consistency check, which is
+mitigation and not ours to close. There were two until rc.10:
+`read_member_at`'s `read_to_end` grew a ciphertext buffer infallibly, and
+pre-sizing it from the zip header had been written and rejected, because the
+header is the attacker's number too and a member claiming 1 GiB while
+delivering ten bytes would then cost a real 1 GiB. The streaming core closed it
+by never reading a member whole. Recording *why* a site stays open is the requirement — an
 undocumented residual reads as an oversight, and the next person closes it the
 wrong way.
 

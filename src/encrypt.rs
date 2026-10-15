@@ -554,7 +554,7 @@ pub enum EncryptError {
 /// Refused before any crypto runs, in this order, so no caller pays for a
 /// 64 MiB Argon2id before learning the input was never eligible:
 /// [`EncryptError::EmptyPassword`] (mirroring [`crate::decrypt`]'s own ordering),
-/// [`EncryptError::AlreadyEncrypted`] for anything [`classify`] does not report
+/// [`EncryptError::AlreadyEncrypted`] for anything [`classify`](crate::classify) does not report
 /// as [`Mode::Plain`], [`EncryptError::Classify`] if classification itself
 /// fails, [`EncryptError::Odf12Fatal`] for a package LibreOffice would refuse,
 /// and [`EncryptError::Mimetype`] for a `mimetype` member that cannot be
