@@ -115,8 +115,8 @@ pub fn reencrypt_to<R: Read + Seek, W: Write + Seek>(r: R, w: W, old: &str, new:
   - The whole-buffer `decrypt` keeps a seekable rebuild over `Cursor<Vec<u8>>`, so its output stays byte-identical to rc.9. Only the zip-writer constructor differs; the crypto is shared.
 - **Secrets** (secure-gate `=0.9.0-rc.12`, `odf-crypto-secure-gate` skill).
   - 64 KiB chunk buffers that hold plaintext, the inflate window and the 1K hold-back buffer are allocated once at their final size, fallibly, never grown, and wiped on drop.
-    - Chunk-sized buffers are `Dynamic<Vec<u8>>`. 16-byte secrets (the GCM tag mask, the held CBC block) are `Fixed<[u8; 16]>`.
-    - *Amended in S2.* The draft said `Fixed` for all of them, but a 64 KiB array moved by value is the wrong shape. The guarantee is the same: no growth, so no unwiped reallocation, and a wipe on drop.
+    - Chunk-sized buffers are `Dynamic<[u8]>`: a boxed slice, heap-allocated, with no `push` or `extend`, so growing one does not compile. 16-byte secrets (the GCM tag mask, the held CBC block) are `Fixed<[u8; 16]>`. The streaming zip writer follows the same rule.
+    - *Amended in S2, twice.* The draft said `Fixed` for all of them, but a 64 KiB array moved by value is the wrong shape. The first replacement, `Dynamic<Vec<u8>>` allocated once, was rejected in review: "never grown" held only until an edit grew it. The coordinator chose the boxed slice so the rule holds by construction.
   - No key or password appears in an error, a `Debug` output or a static. KDFs and `derive_key` are unchanged.
 - **Named residual.** These hold plaintext dictionary state that cannot be wiped under `unsafe_code = "forbid"`. It is the #39 class, recorded in the code; the consumer's mitigation is a zero-on-dealloc allocator.
   - miniz's `CompressorOxide`
