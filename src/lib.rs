@@ -74,6 +74,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod classify;
+mod io_latch;
 mod limits;
 mod manifest;
 mod types;
@@ -104,7 +105,7 @@ mod sensitive;
 #[cfg_attr(docsrs, doc(cfg(feature = "crypto-ops")))]
 pub mod troubleshooting;
 
-pub use classify::classify;
+pub use classify::{classify, classify_reader};
 pub use types::{
     Checksum, Cipher, Classification, DetectError, EncryptedKey, EntryEncryption, Kdf, Mode,
     StartKeyAlg,

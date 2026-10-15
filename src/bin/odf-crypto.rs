@@ -605,6 +605,8 @@ fn detect_exit(e: &DetectError) -> u8 {
         DetectError::NotZip | DetectError::MissingManifest => EX_NOT_ODF,
         DetectError::Inconsistent(_) => EX_REFUSED,
         DetectError::Zip(_) => EX_MALFORMED,
+        // The reader failed, not the file: the same code as failing to open it.
+        DetectError::Io(_) => EX_IO,
         _ => EX_MALFORMED,
     }
 }
@@ -622,6 +624,9 @@ fn decrypt_exit(e: &DecryptError) -> u8 {
         }
         DecryptError::Internal(_) => EX_INTERNAL,
         DecryptError::HostCannotAllocate { .. } => EX_HOST_CAPACITY,
+        // A policy refusal: the file asks for more than the caller allows.
+        DecryptError::OutputLimit { .. } => EX_REFUSED,
+        DecryptError::Io(_) => EX_IO,
         _ => EX_MALFORMED,
     }
 }
@@ -640,6 +645,7 @@ fn encrypt_exit(e: &EncryptError) -> u8 {
         EncryptError::Params(_) => EX_USAGE,
         EncryptError::Random(_) | EncryptError::Internal(_) => EX_INTERNAL,
         EncryptError::HostCannotAllocate { .. } => EX_HOST_CAPACITY,
+        EncryptError::Io(_) => EX_IO,
         _ => EX_MALFORMED,
     }
 }

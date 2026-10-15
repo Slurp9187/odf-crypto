@@ -385,8 +385,8 @@ manifest naming the password and expected text for each. Recorded verdict:
 a password, accepted it, rendered the expected text, and raised no recovery bar.
 That verdict outranks the harness.
 
-**246 tests, passing in every feature configuration** — 169 library, 20 CLI
-unit, 35 CLI end-to-end, 22 doctests. All three builds run in CI, not just the
+**252 tests, passing in every feature configuration** — 174 library, 20 CLI
+unit, 35 CLI end-to-end, 23 doctests. All three builds run in CI, not just the
 two that are cheap.
 
 **The examples below are among those doctests.** Every ` ```rust ` block in this

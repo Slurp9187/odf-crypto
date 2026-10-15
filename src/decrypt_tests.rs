@@ -1361,6 +1361,8 @@ fn every_decrypt_error_variant_is_accounted_for_in_the_cli_exit_map() {
             DecryptError::HostCannotAllocate { .. } => (),
             DecryptError::Inflate(_) => (),
             DecryptError::Zip(_) => (),
+            DecryptError::OutputLimit { .. } => (),
+            DecryptError::Io(_) => (),
         }
     }
     accounted_for(&DecryptError::NotEncrypted);
@@ -1688,4 +1690,47 @@ fn an_unlatched_package_decrypts_with_its_password() {
     }
     let err = decrypt(&pkg, "wrong").unwrap_err();
     assert!(matches!(err, DecryptError::WrongPassword), "{err:?}");
+}
+
+// --- #87: `DecryptLimits::max_output_bytes` in the whole-buffer path ---------
+
+/// Sum of `manifest:size` over the rows `decrypt` inflates -- the figure the
+/// screen compares, computed independently of it.
+fn declared_output(bytes: &[u8]) -> u64 {
+    let class = classify(bytes).unwrap();
+    let rows: Vec<_> = match class.mode {
+        Mode::Wholesome => class.wholesome_row().into_iter().collect(),
+        _ => class.encrypted_entries.iter().collect(),
+    };
+    rows.iter().map(|r| u64::try_from(r.size).unwrap()).sum()
+}
+
+/// At the limit decrypts; one byte under is refused. Both modes, so neither
+/// arm of the screen is untested.
+#[test]
+fn max_output_bytes_is_inclusive_in_both_modes() {
+    for name in ["lo-wholesome-gcm-argon2.odt", "lo-legacy-aes-cbc.odt"] {
+        let bytes = load_golden(name);
+        let n = declared_output(&bytes);
+        assert!(n > 0, "{name}");
+        let at = crate::DecryptLimits::default().with_max_output_bytes(n);
+        decrypt_with_limits(&bytes, PASSWORD, at).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let under = at.with_max_output_bytes(n - 1);
+        let err = decrypt_with_limits(&bytes, PASSWORD, under).unwrap_err();
+        assert!(
+            matches!(err, DecryptError::OutputLimit { limit } if limit == n - 1),
+            "{name}: {err:?}"
+        );
+    }
+}
+
+/// The screen runs before key derivation: with a wrong password the answer is
+/// still `OutputLimit`, which it could not be if a key had been derived and
+/// checked first.
+#[test]
+fn max_output_bytes_is_screened_before_derivation() {
+    let bytes = load_golden("lo-legacy-aes-cbc.odt");
+    let limits = crate::DecryptLimits::default().with_max_output_bytes(0);
+    let err = decrypt_with_limits(&bytes, "not the password", limits).unwrap_err();
+    assert!(matches!(err, DecryptError::OutputLimit { .. }), "{err:?}");
 }

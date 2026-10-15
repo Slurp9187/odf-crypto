@@ -328,6 +328,15 @@ pub enum DetectError {
     /// which bounds the message but does not make its content trustworthy.
     #[error("inconsistent package: {0}")]
     Inconsistent(String),
+    /// The caller's reader failed a read or a seek, so nothing can be said
+    /// about the package. Only [`crate::classify_reader`] returns it: a slice
+    /// cannot fail a read.
+    ///
+    /// The error is the reader's own value, so a caller can recognize its own
+    /// cancellation in it. It wins over the zip layer's interpretation of the
+    /// same failure; see `classify_reader`.
+    #[error("reading the package failed: {0}")]
+    Io(#[source] std::io::Error),
 }
 
 /// Internal checksum-type after Stage A (digest bytes live on the bag).

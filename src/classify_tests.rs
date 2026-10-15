@@ -1653,6 +1653,7 @@ fn every_detect_error_variant_is_accounted_for_in_the_cli_exit_map() {
             DetectError::MissingManifest => (),
             DetectError::Zip(_) => (),
             DetectError::Inconsistent(_) => (),
+            DetectError::Io(_) => (),
         }
     }
     accounted_for(&DetectError::NotZip);
@@ -1899,4 +1900,124 @@ fn no_encrypted_libreoffice_golden_has_non_encrypted_entries() {
         }
     }
     assert!(checked > 0, "no encrypted golden found under {dir:?}");
+}
+
+// --- #87: `classify_reader` ---------------------------------------------------
+
+/// Every `.odt` the crate ships, from all three fixture directories. Asserts
+/// none is empty: a glob matching nothing passes every test that loops over it.
+fn every_fixture() -> Vec<std::path::PathBuf> {
+    let goldens = crate::test_support::goldens_dir();
+    let mut out = Vec::new();
+    for dir in ["goldens", "ladder", "artifacts"] {
+        let dir = goldens.with_file_name(dir);
+        let before = out.len();
+        for entry in std::fs::read_dir(&dir).expect("fixture dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_some_and(|x| x == "odt") {
+                out.push(path);
+            }
+        }
+        assert!(out.len() > before, "no .odt under {dir:?}");
+    }
+    out
+}
+
+/// The same machines over the same reads: a package classifies identically
+/// from a file as from its bytes.
+#[test]
+fn classify_reader_agrees_with_classify_on_every_fixture() {
+    for path in every_fixture() {
+        let bytes = std::fs::read(&path).unwrap();
+        let from_file = classify_reader(std::fs::File::open(&path).unwrap());
+        match (classify(&bytes), from_file) {
+            (Ok(a), Ok(b)) => assert_eq!(a, b, "{path:?}"),
+            (a, b) => panic!("{path:?}: slice {a:?}, reader {b:?}"),
+        }
+    }
+}
+
+/// The caller's own error type, so the test can check it comes back intact.
+#[derive(Debug)]
+struct Cancelled;
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled by the caller")
+    }
+}
+impl std::error::Error for Cancelled {}
+
+/// A `Cursor` that fails its `fail_at`-th read or seek (counting both), and
+/// every one after it, as a cancelling reader would.
+struct FailingReader<'a> {
+    inner: Cursor<&'a [u8]>,
+    calls: usize,
+    fail_at: usize,
+}
+
+impl FailingReader<'_> {
+    fn tick(&mut self) -> std::io::Result<()> {
+        self.calls += 1;
+        if self.calls >= self.fail_at {
+            return Err(std::io::Error::other(Cancelled));
+        }
+        Ok(())
+    }
+}
+
+impl std::io::Read for FailingReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.tick()?;
+        self.inner.read(buf)
+    }
+}
+
+impl std::io::Seek for FailingReader<'_> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.tick()?;
+        self.inner.seek(pos)
+    }
+}
+
+/// A reader failure is the caller's, and comes back as `Io` carrying the
+/// caller's own error -- at every point the reader can fail, not only the
+/// first. Without the latch the zip layer would turn an early failure into
+/// `NotZip` and a later one into `Zip`, or swallow it.
+#[test]
+fn a_failing_reader_is_reported_as_io_at_every_call() {
+    let bytes = load_golden("lo-legacy-aes-cbc.odt");
+    let mut fail_at = 1;
+    loop {
+        let reader = FailingReader {
+            inner: Cursor::new(&bytes),
+            calls: 0,
+            fail_at,
+        };
+        match classify_reader(reader) {
+            Err(DetectError::Io(err)) => {
+                let inner = err.get_ref().expect("the caller's error, not a stand-in");
+                assert!(inner.is::<Cancelled>(), "call {fail_at}: {err}");
+            }
+            // Past the last call the reader never fails, and the result must
+            // then be the slice's own.
+            Ok(class) => {
+                assert_eq!(class, classify(&bytes).unwrap());
+                assert!(fail_at > 1, "succeeded although the first call failed");
+                break;
+            }
+            Err(other) => panic!("call {fail_at}: expected Io, got {other:?}"),
+        }
+        fail_at += 1;
+    }
+}
+
+/// The latch must not reach the slice path: a truncated buffer is still a
+/// statement about the file, never an `Io`.
+#[test]
+fn a_truncated_slice_is_not_an_io_error() {
+    let bytes = load_golden("lo-legacy-aes-cbc.odt");
+    for cut in [0, 1, 22, bytes.len() / 2, bytes.len() - 1] {
+        let err = classify(&bytes[..cut]).unwrap_err();
+        assert!(!matches!(err, DetectError::Io(_)), "cut {cut}: {err:?}");
+    }
 }
