@@ -221,7 +221,7 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-288 of them: 208 library, 20 CLI unit, 35 CLI end-to-end, 1 memory-bound, 24
+310 of them: 227 library, 20 CLI unit, 35 CLI end-to-end, 2 memory-bound, 26
 doctests. All must pass in every feature configuration.
 
 **Count test functions, not passing tests.** `cargo test`'s summary line omits
@@ -239,16 +239,18 @@ configuration*; the mechanism tested *the configurations in the matrix*; the
 mechanism took the rule's name. That is the substitution the section above
 describes, in this file, about this file.
 
-Four library tests are `#[ignore]`d and are counted above. Each is run by
+Seven library tests are `#[ignore]`d and are counted above. Each is run by
 `cargo test -- --ignored`, and is ignored for a stated reason, because claiming
 a guard is exercised when it is not is worse than a skip:
 
 - One needs a host with under ~1 GiB free to observe `try_reserve_exact`
   refusing, which is not true of a well-provisioned machine or a CI runner.
-- Two exercise Zip64 at the 4 GiB boundaries: one hashes 4 GiB through a sparse
-  writer, the other writes and reads a real 4 GiB file. Run them `--release`.
-- One only writes `decrypt_to` outputs for the LibreOffice gate
-  (`tests/goldens/validate_decrypt_to.py`); it checks nothing by itself.
+- Three exercise Zip64 at 4 GiB: one hashes 4 GiB through a sparse writer, one
+  writes and reads a real 4 GiB zip, and one takes a real 4 GiB package through
+  `encrypt_to` and back. Run them `--release`.
+- Three only write outputs for the LibreOffice gates
+  (`tests/goldens/validate_decrypt_to.py`, `validate_encrypted_outputs.py`); they
+  check nothing by themselves.
 
 `tests/streaming_memory.rs` is its own binary because it installs a counting
 global allocator; nothing else may run beside it.
