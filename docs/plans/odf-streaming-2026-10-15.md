@@ -111,10 +111,12 @@ pub fn reencrypt_to<R: Read + Seek, W: Write + Seek>(r: R, w: W, old: &str, new:
   - Encrypt writes through `ZipWriter<W: Write + Seek>`, Stored, chunk by chunk.
   - `large_file(true)` is set when the input is at least 4 GiB − 64 KiB. The exact bound on deflate expansion is written in the code.
   - Plain members are copied with `raw_copy_file`.
-  - The per-entry decrypt rebuild **and** re-encrypt's inner zip use `ZipWriter::new_stream`, with data descriptors. S1 confirms the API exists.
+  - The per-entry decrypt rebuild **and** re-encrypt's inner zip use a **crate-private streaming zip writer** with data descriptors. *Amended after S1; see §7.*
   - The whole-buffer `decrypt` keeps a seekable rebuild over `Cursor<Vec<u8>>`, so its output stays byte-identical to rc.9. Only the zip-writer constructor differs; the crypto is shared.
 - **Secrets** (secure-gate `=0.9.0-rc.12`, `odf-crypto-secure-gate` skill).
-  - 64 KiB chunk buffers that hold plaintext, the inflate window and the 1K hold-back buffer are `Fixed` wrappers, wiped on drop.
+  - 64 KiB chunk buffers that hold plaintext, the inflate window and the 1K hold-back buffer are allocated once at their final size, fallibly, never grown, and wiped on drop.
+    - Chunk-sized buffers are `Dynamic<Vec<u8>>`. 16-byte secrets (the GCM tag mask, the held CBC block) are `Fixed<[u8; 16]>`.
+    - *Amended in S2.* The draft said `Fixed` for all of them, but a 64 KiB array moved by value is the wrong shape. The guarantee is the same: no growth, so no unwiped reallocation, and a wipe on drop.
   - No key or password appears in an error, a `Debug` output or a static. KDFs and `derive_key` are unchanged.
 - **Named residual.** These hold plaintext dictionary state that cannot be wiped under `unsafe_code = "forbid"`. It is the #39 class, recorded in the code; the consumer's mitigation is a zero-on-dealloc allocator.
   - miniz's `CompressorOxide`
@@ -152,6 +154,17 @@ Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9.
   - The first draft had `W: Write + Seek` on decrypt, reasoning that the per-entry rebuild patches local headers and so stays byte-identical to rc.9.
   - That reasoning put byte-identity on the streaming path, where nobody needs it. EFV's round trip hashes into a Write-only sink, and msoffice-crypto's decrypt is Write-only.
   - The owner asked for the sibling APIs to match. Byte-identity to rc.9 is kept where it is a contract, in the whole-buffer `decrypt` (S8).
+
+- **Streaming zip writer: reversed after S1 (#87).**
+  - The plan assumed `zip` 2.4.2 had `ZipWriter::new_stream`. It does not: its writer is only `impl<W: Write + Seek>` (`write.rs:789`). `new_stream` first appears in 4.x (checked: 4.6.1, 6.0.0, 8.6.0); current is 9.0.3.
+  - The arc coordinator decided (option A) on a **crate-private streaming zip writer** for the two outputs that cannot seek: the per-entry `decrypt_to` rebuild and re-encrypt's inner zip. Reading stays on `zip` 2.4.2.
+  - Bumping `zip` to 9 would replace the reader under `classify`. Its LibreOffice fidelity depends on raw names, data-descriptor metadata and the central-directory consistency check that caps #51. That is its own arc if anyone wants it.
+  - Conditions set with the decision, all owned by S4:
+    1. `mimetype` is written first, Stored, with no extra field, and with sizes and CRC in the local header and **no** bit 3. A `mimetype` written with bit 3 is caught by a test.
+    2. Every output is read back through `zip` 2.4.2 **and** `classify`. It is byte-compared against `zip` 2.4.2's seekable writer for the same entries wherever that writer can produce them, so every differing byte is explained.
+    3. Zip64 is tested at both 4 GiB boundaries (an entry, then the central-directory offset) without writing 4 GiB in CI, by a counting writer. One real large run, measured, is an `#[ignore]`d test.
+    4. Its plaintext buffers are wrapped and wiped like the others.
+    5. The LibreOffice gate runs on the per-entry `decrypt_to` output and the `reencrypt_to` result.
 
 ## 8. Verification
 
