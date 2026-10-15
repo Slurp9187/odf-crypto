@@ -15,7 +15,7 @@ use crate::classify::classify_latched;
 use crate::decrypt::{member_for_archive, screen_class, screen_shape, DecryptError, DecryptLimits};
 use crate::decrypt_stream::{
     declared_size, fault_error, gcm_key, member_shape, open_after_iv, DecryptOutcome,
-    IntegrityOutcome,
+    IntegrityOutcome, Sizes,
 };
 use crate::encrypt::{
     build_manifest, derive_write_key, random_bytes, resolve_mimetype, Argon2Params, EncryptError,
@@ -29,7 +29,7 @@ use crate::stream::{
     InflateReader, CHUNK,
 };
 use crate::zip_err;
-use crate::zip_stream::deflate_bound;
+use crate::zip_stream::{deflate_bound, ZipStreamWriter};
 use crate::{Classification, Mode};
 
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
@@ -389,13 +389,17 @@ fn per_entry<R: Read + Seek, W: Write + Seek>(
         deflate_bound(could_reach),
         |sealer, _| {
             let mut deflate = DeflateWriter::new(sealer).map_err(alloc)?;
+            let mut zip = ZipStreamWriter::new(&mut deflate);
             outcome = Some(crate::decrypt_entries::per_entry(
                 archive,
                 class,
-                &mut deflate,
+                &mut zip,
                 old,
                 limits,
+                Sizes::Streamed,
             )?);
+            zip.finish()
+                .map_err(crate::decrypt_entries::zip_stream_error(limits))?;
             let size = deflate.consumed();
             deflate.finish().map_err(write_error)?;
             Ok(size)
