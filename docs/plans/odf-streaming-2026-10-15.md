@@ -70,6 +70,7 @@ pub fn reencrypt_to<R: Read + Seek, W: Write + Seek>(r: R, w: W, old: &str, new:
   - **Different, and forced by the format:**
     - There is no `IntegrityPolicy` parameter. ODF offers the reader no choice, and refusing a 1K-only file would refuse files LibreOffice opens.
     - Variant sets differ. msoffice-crypto has `Verified` / `NotDeclared` / `NotApplicable` / `Skipped`; only `Verified` means the same thing in both.
+    - `max_output_bytes` / `OutputLimit` has no msoffice-crypto counterpart. There, plaintext is at most the `EncryptedPackage` stream and there is no inflate, so output cannot exceed input. ODF members inflate, so a bomb is possible here.
 
 **Errors and limits**
 
