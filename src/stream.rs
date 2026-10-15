@@ -20,9 +20,10 @@
 //! # Secrets
 //!
 //! Every buffer that ever holds plaintext, deflated or not, is allocated once
-//! at its final size, fallibly, and wrapped in a `secure-gate` `Dynamic` that
-//! wipes it on drop. None is ever grown, so no reallocation abandons an unwiped
-//! copy. The cipher states use their crates' `zeroize` features.
+//! at its final size, fallibly, as a `secure-gate` `Dynamic<[u8]>` that wipes
+//! it on drop. A boxed slice cannot grow, so no reallocation can abandon an
+//! unwiped copy -- by construction, not by care. 16-byte secrets are `Fixed`.
+//! The cipher states use their crates' `zeroize` features.
 //!
 //! **Named residual (plan §5, the #39 class).** miniz's `DecompressorOxide` and
 //! `CompressorOxide` keep internal state derived from the plaintext -- Huffman
@@ -62,8 +63,11 @@ pub(crate) const CHUNK: usize = 64 * 1024;
 /// of two at least that large, and this is the smallest.
 const INFLATE_WINDOW: usize = 32 * 1024;
 
-/// A plaintext-bearing buffer: allocated once, never grown, wiped on drop.
-pub(crate) type ChunkBuffer = Dynamic<Vec<u8>>;
+/// A plaintext-bearing buffer: allocated once, wiped on drop, and **unable to
+/// grow** -- a boxed slice has no `push` or `extend`, so an edit that tried to
+/// grow one would not compile, rather than abandon an unwiped reallocation.
+/// Heap-allocated, so a 64 KiB buffer is never an array moved on the stack.
+pub(crate) type ChunkBuffer = Dynamic<[u8]>;
 
 /// Failures a stream raises about the *member*, as opposed to an `io::Error`
 /// from the caller's reader or writer. They travel through `io::Read` wrapped
@@ -125,9 +129,11 @@ impl Fault {
 pub(crate) fn chunk_buffer(n: usize) -> Result<ChunkBuffer, Fault> {
     let mut v = Vec::new();
     v.try_reserve_exact(n).map_err(|_| Fault::Alloc(n))?;
-    // Capacity is secured, so this sets the length without reallocating.
+    // Capacity is secured, so this sets the length without reallocating, and
+    // with length equal to capacity `into_boxed_slice` does not reallocate
+    // either: the box takes over the one allocation made above.
     v.resize(n, 0);
-    Ok(Dynamic::new(v))
+    Ok(Dynamic::from(v.into_boxed_slice()))
 }
 
 /// Read until `buf` is full or the reader ends. `Ok(n < buf.len())` means the
