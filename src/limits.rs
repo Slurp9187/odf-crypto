@@ -315,9 +315,6 @@ mod crypto {
     /// Decrypt's inflate cap. `manifest:size` is attacker-chosen, so this one
     /// screens an untrusted number.
     pub(crate) const INFLATE_CEILING: usize = PAYLOAD_CEILING;
-    /// Decrypt's ciphertext-read cap. Same: a zip member's length is the
-    /// package's number, not ours.
-    pub(crate) const CIPHERTEXT_READ_CEILING: usize = PAYLOAD_CEILING;
     /// Encrypt's deflate cap — **hygiene, not a security boundary**, and it
     /// shares the figure above only for shape.
     ///

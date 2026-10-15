@@ -11,6 +11,123 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.10] - Unreleased
+
+The streaming arc (#86, plan `docs/plans/odf-streaming-2026-10-15.md`), for
+`encrypted-file-vault`, which held ODF packages to 1 GiB because every entry
+point took and returned a whole buffer.
+
+### Added
+
+**Streaming `decrypt_to`, `encrypt_to` and `reencrypt_to`** (#89–#92), with
+`decrypt_with_limits_to` and `encrypt_with_params_to`. They read from
+`R: Read + Seek` and write a chunk at a time *within* a member, so peak heap
+does not grow with the package. Measured with a counting allocator
+(`tests/streaming_memory.rs`), peak heap stays flat as the payload grows 16×:
+
+| operation | peak heap |
+| --- | --- |
+| `decrypt_to`, wholesome | 180 KiB |
+| `decrypt_to`, per-entry | 625 KiB |
+| `encrypt_to` | 506 KiB |
+| `reencrypt_to`, wholesome | 348 KiB |
+| `reencrypt_to`, per-entry | 1066 KiB |
+
+- **Nothing is written before the member has been accepted.** An AES-GCM member
+  is read twice. The first pass checks the tag and decrypts nothing; the second
+  recomputes the tag as it writes. AES-CBC and Blowfish members are held back
+  until their first 1 KiB matches the manifest's checksum, which is the only
+  part LibreOffice checks too.
+- **`DecryptOutcome { integrity: IntegrityOutcome }`** says which of those two
+  held: `Verified` or `PasswordCheckOnly`.
+- **On any error, the writer's contents must be discarded.**
+- **`decrypt_to`'s writer need not seek.** For per-entry packages it writes the
+  rebuilt zip through a new streaming zip writer, which uses data descriptors.
+  Its output differs from zip 2.4.2's only in those descriptors, a difference
+  pinned field by field. Zip64 works past 4 GiB, tested at both boundaries and
+  on a real 4 GiB file.
+- **`reencrypt_to` changes a password with no plaintext written anywhere.**
+  - A wholesome package is re-keyed without recompressing; its inner package
+    carries over byte for byte.
+  - A per-entry package becomes `encrypt`'s profile.
+  - A per-entry package is refused (`ReencryptError::PartiallyEncrypted`,
+    `UnexpectedStreams`) when it holds listed content that is not encrypted, or
+    members its manifest does not list. Re-keying would otherwise seal that
+    plaintext under the new tag. This is policy, not fidelity: `decrypt_to`
+    still opens such a package, as LibreOffice does.
+- **LibreOffice 26.8.0.3 opens every streamed output**, and refuses each with a
+  wrong password. The gates are `tests/goldens/validate_decrypt_to.py` and
+  `validate_encrypted_outputs.py`.
+
+**`classify_reader`** (#87): `classify` from a reader. It reads only the
+central directory, the manifest and `mimetype`.
+
+**`DecryptLimits::max_output_bytes`** (#87): a ceiling on inflated plaintext,
+16 GiB by default, enforced as the output streams. Exceeding it is the new
+`DecryptError::OutputLimit`. This is this crate's policy; ODF bounds no size.
+
+**`DetectError::Io`, `DecryptError::Io`, `EncryptError::Io`**, and
+`AllocationSite::StreamBuffer`. A failure of the caller's own reader is
+reported as `Io`, carrying the caller's error value, whatever the zip layer
+made of it. A cancelling reader therefore reads as a cancel, never as
+`NotZip`.
+
+**CLI: `odf-crypto rekey`** (#94). It runs `reencrypt_to`, taking the new
+password from `--new-password-env`, `--new-password-file` or a prompt. Both
+refusals exit 5.
+
+**CLI: exit 130 on Ctrl-C.** The run cancels through the library's own
+reader-driven cancel. A second Ctrl-C exits at once.
+
+**A seventh golden**, `lo-legacy-aes-cbc-image.odt`, written by LibreOffice
+26.8.0.3: a per-entry package with a fully encrypted `Pictures/` member.
+
+### Changed
+
+**The whole-buffer `decrypt` and `encrypt` run on the streaming core** (#94),
+so there is one cipher implementation, not two.
+
+- Their signatures, errors and error order are unchanged.
+- `decrypt` returns rc.9's bytes exactly, pinned by SHA-256 on every fixture.
+- Their 1 GiB ceilings stay.
+- Plaintext no longer exists as a grown `Vec`. `decrypt` writes into one
+  buffer allocated fallibly at a computed bound, and `encrypt` deflates through
+  wiped, fixed chunks. This closes the residue #39 described.
+- #51's infallible `read_to_end` of a whole member is gone, because nothing
+  reads a member whole any more.
+
+**The CLI streams**, so its only size limit is the disk.
+
+- Output goes to a temporary file beside the target. When the target exists,
+  the temp takes its permissions before a byte is written. It is deleted on
+  every error, refusal and Ctrl-C, and renamed into place only on success.
+- **Known limit:** a hard kill can still leave the temporary file. An
+  OS-deleted temp needs a raw platform call, which `unsafe_code = "forbid"`
+  rules out.
+
+### Dependencies
+
+All three of these are already in the library's graph, so the library's crate
+counts stay 25 and 59:
+
+- `ctr` and `ghash` compose the streaming AES-GCM, because `aes-gcm` 0.10 has
+  no streaming API. They are proved against `aes-gcm` itself and against NIST
+  test vectors.
+- `crc32fast` serves the streaming zip writer.
+
+The others:
+
+- `ctrlc =3.5.2`, `cli` feature only. The CLI build becomes 73 crates on
+  Windows, 75 on Linux and 79 on macOS.
+- `peak_alloc =0.3.0`, dev-only. It provides the counting allocator, because
+  `unsafe_code = "forbid"` covers test targets.
+
+### Known residual
+
+miniz's compressor and decompressor keep dictionary state derived from the
+plaintext, and offer no way to wipe it. That is the #39 class. An application
+that must close it installs a zero-on-deallocate global allocator.
+
 ## [0.1.0-rc.9] - 2026-10-14
 
 ### Added
@@ -97,7 +214,7 @@ against odf-crypto and would otherwise be re-derived:
 
 | advisory | reaches this crate? | why |
 | --- | --- | --- |
-| **0194** — quadratic duplicate-attribute check | **yes** | `manifest.rs:697` and `decrypt.rs:1111` iterate a start tag's attributes on manifest XML that came out of an arbitrary package, and nothing calls `with_checks(false)`, so the default checking path is live |
+| **0194** — quadratic duplicate-attribute check | **yes** | `manifest.rs:697` and `decrypt.rs:829` iterate a start tag's attributes on manifest XML that came out of an arbitrary package, and nothing calls `with_checks(false)`, so the default checking path is live |
 | **0195** — unbounded `NsReader` namespace allocation | **no** | specific to `NsReader`; this crate uses `Reader`, and `NsReader` appears nowhere in `src/` |
 
 A drop-in: **no source change**. All three feature configurations build, clippy

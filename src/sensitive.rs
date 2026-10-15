@@ -56,15 +56,3 @@ pub(crate) type PasswordBytes = Dynamic<Vec<u8>>;
 /// not a fixed-size array; `encrypt` reuses it at its own fixed 32, since both
 /// directions fill it through the same `crate::kdf` helpers.
 pub(crate) type DerivedKey = Dynamic<Vec<u8>>;
-
-/// Package plaintext in its raw-DEFLATE form, on either side of a cipher.
-/// Decrypting, it is what the cipher emits and lives until `inflate_into`;
-/// encrypting, it is the deflated input, wrapped before the cipher runs and
-/// sealed in place, so the crate's own copy of the caller's document is
-/// zeroized on drop rather than left in a plain buffer.
-pub(crate) type DeflatedPlaintext = Dynamic<Vec<u8>>;
-
-/// An inflated package member, held only until it is written into the rebuilt
-/// plaintext zip. That zip is the public return value and stays a plain
-/// `Vec<u8>`.
-pub(crate) type MemberPlaintext = Dynamic<Vec<u8>>;

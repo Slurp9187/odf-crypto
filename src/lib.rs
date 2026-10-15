@@ -55,10 +55,21 @@
 //! # Untrusted input
 //!
 //! Every bound a hostile package could push on is capped before any allocation
-//! or key derivation: the manifest is read at most 8 MiB, inflate, ciphertext
-//! and deflate at most 1 GiB each, at most 4096 complete `encryption-data` rows
-//! get a KDF run, and `iteration-count`, Argon2 `t`/`m`/`p` and `key-size` each
-//! carry a floor and a ceiling.
+//! or key derivation: the manifest is read at most 8 MiB, at most 4096 complete
+//! `encryption-data` rows get a KDF run, and `iteration-count`, Argon2
+//! `t`/`m`/`p` and `key-size` each carry a floor and a ceiling. The whole-buffer
+//! [`decrypt`] and [`encrypt`] also hold each inflated member and the input to
+//! 1 GiB, because they hold them in memory; the streaming entry points do not,
+//! and bound inflated output by [`DecryptLimits::max_output_bytes`] instead.
+//!
+//! # Streaming
+//!
+//! [`decrypt_to`], [`encrypt_to`] and [`reencrypt_to`] read from any
+//! `Read + Seek` and write to a writer a chunk at a time, so peak memory does
+//! not grow with the package. Nothing is written before a member has been
+//! accepted -- an AES-GCM tag checked in a first pass, or an AES-CBC/Blowfish
+//! member's checked first 1 KiB -- and on any error the writer's contents must
+//! be discarded. The whole-buffer functions run the same code.
 //!
 //! At the API boundary: `password` is a `&str` and [`decrypt`] returns plaintext
 //! as a plain `Vec<u8>`. Key material derived inside the crate is zeroized on

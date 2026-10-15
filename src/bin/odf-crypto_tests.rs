@@ -11,7 +11,7 @@ use super::*;
 // Not added to the binary's own `use odf_crypto::{...}` list: the mapping
 // functions match `HostCannotAllocate { .. }`, so only these tests name the
 // site, and importing it there would be an unused import at `-D warnings`.
-use odf_crypto::AllocationSite;
+use odf_crypto::{classify, AllocationSite};
 
 #[test]
 fn the_command_definition_is_internally_consistent() {
@@ -396,5 +396,29 @@ fn the_encrypt_exit_map_is_the_documented_one() {
         (EncryptError::Io(std::io::Error::other("cancelled")), EX_IO),
     ] {
         assert_eq!(encrypt_exit(&e), want, "{e:?}");
+    }
+}
+
+#[test]
+fn the_reencrypt_exit_map_is_the_documented_one() {
+    for (e, want) in [
+        // Each side delegates to its own table: a wrong old password is 4,
+        // an empty new one is 5, as from `decrypt` and `encrypt`.
+        (
+            ReencryptError::Decrypt(DecryptError::WrongPassword),
+            EX_WRONG_PASSWORD,
+        ),
+        (
+            ReencryptError::Encrypt(EncryptError::EmptyPassword),
+            EX_REFUSED,
+        ),
+        (ReencryptError::PartiallyEncrypted, EX_REFUSED),
+        (ReencryptError::UnexpectedStreams, EX_REFUSED),
+        (
+            ReencryptError::Io(std::io::Error::other("cancelled")),
+            EX_IO,
+        ),
+    ] {
+        assert_eq!(reencrypt_exit(&e), want, "{e:?}");
     }
 }

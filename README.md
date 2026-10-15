@@ -19,7 +19,7 @@ accept predicates, so a package this crate calls encrypted is one LibreOffice
 would prompt for, and a package it refuses is one LibreOffice would refuse to
 open.
 
-> **Pre-release.** This is `0.1.0-rc.9`. The API may change before `0.1.0`.
+> **Pre-release.** This is `0.1.0-rc.10`. The API may change before `0.1.0`.
 
 ## What it does
 
@@ -34,6 +34,15 @@ open.
 
 Detection is the entire default build and links no cryptography at all; the
 cipher stack is opt-in. See [Features](#features).
+
+**Every operation streams.** `decrypt_to`, `encrypt_to` and `reencrypt_to` read
+from any `Read + Seek` and write to a writer, a chunk at a time *within* a
+member, so a package of any size -- one with a 4 GiB video in it, say -- costs
+the same few hundred KiB of heap as a small one. Measured, not estimated: peak
+heap stays flat as the payload grows sixteenfold (see
+[How it's verified](#how-its-verified)). The whole-buffer `decrypt` and
+`encrypt` run the same code and return exactly what they did before.
+`reencrypt_to` changes a password without the plaintext being written anywhere.
 
 **This crate reads three profiles and writes one.** The grid above is what
 `decrypt` accepts; `encrypt` always writes the first row, whatever the input
@@ -75,10 +84,10 @@ the file afterwards. It is evidenced separately — see
 ```toml
 [dependencies]
 # Detection only — no cryptographic dependency.
-odf-crypto = "0.1.0-rc.9"
+odf-crypto = "0.1.0-rc.10"
 
 # Detection, reading and writing.
-odf-crypto = { version = "0.1.0-rc.9", features = ["crypto-ops"] }
+odf-crypto = { version = "0.1.0-rc.10", features = ["crypto-ops"] }
 ```
 
 Pre-release versions are not matched by ordinary requirements — name the full
@@ -156,6 +165,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `DecryptError` distinguishes the cases worth handling separately — `WrongPassword`,
 `NotEncrypted`, `EmptyPassword`, `Odf12Fatal` and `UnsupportedPgp` among them —
 so a caller can tell "bad password" from "we will not touch this package".
+
+### Stream it
+
+The same three operations, from a reader to a writer, in bounded memory:
+
+```rust,no_run
+use std::fs::File;
+use odf_crypto::{decrypt_to, encrypt_to, reencrypt_to, Argon2Params, DecryptLimits};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pw = "correct horse battery staple";
+
+    // Decrypt: the output need not seek, so this could be a pipe or a hasher.
+    let outcome = decrypt_to(File::open("locked.odt")?, File::create("plain.odt")?, pw)?;
+    println!("integrity: {:?}", outcome.integrity);
+
+    // Encrypt: the output must seek, to patch the zip header once sizes are known.
+    encrypt_to(File::open("plain.odt")?, File::create("locked-again.odt")?, pw)?;
+
+    // Change the password. No plaintext touches the disk.
+    reencrypt_to(
+        File::open("locked.odt")?,
+        File::create("rekeyed.odt")?,
+        pw,
+        "a new passphrase",
+        DecryptLimits::default(),
+        Argon2Params::LIBREOFFICE_DEFAULT,
+    )?;
+    Ok(())
+}
+```
+
+**Nothing is written before the file has been accepted.** An AES-GCM member is
+read twice: the first pass checks its tag and decrypts nothing, the second
+writes. An AES-CBC or Blowfish member is held back until its first 1 KiB matches
+the manifest's checksum -- the only part LibreOffice checks either, which is
+what `IntegrityOutcome::PasswordCheckOnly` tells you. **On any error, discard
+what the writer received**: damage found late in a member follows output
+already written.
+
+`reencrypt_to` refuses an older per-entry file that holds listed content it does
+not encrypt, or members its manifest does not list
+(`ReencryptError::PartiallyEncrypted`, `UnexpectedStreams`): re-keying would seal
+that plaintext under the new password's authentication. That is this crate's
+policy, not LibreOffice's -- `decrypt_to` still opens such a file, as LibreOffice
+does.
 
 ### Encrypt
 
@@ -252,6 +307,7 @@ odf-crypto classify report.odt              # what is it, and how is it encrypte
 odf-crypto classify --json report.odt       # the same, as one JSON object
 odf-crypto decrypt  locked.odt -o plain.odt
 odf-crypto encrypt  plain.odt  -o locked.odt
+odf-crypto rekey    locked.odt -o rekeyed.odt   # old password, then a new one
 
 # Argon2id cost, for hardware that cannot spend 64 MiB. Each axis defaults
 # independently, so this keeps LibreOffice's t=3 and p=4.
@@ -300,6 +356,9 @@ Giving two sources is an error rather than a silent precedence win. With none of
 them and no terminal, the command fails telling you which flags exist instead of
 blocking on a prompt nobody can see.
 
+`rekey` takes the old password from those flags and the new one from
+`--new-password-env NAME`, `--new-password-file PATH` or a second prompt.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -309,9 +368,11 @@ blocking on a prompt nobody can see.
 | 2 | I/O error |
 | 3 | not an ODF package |
 | 4 | wrong password |
-| 5 | refused — not encrypted, already encrypted, PGP, or one LibreOffice would not open |
+| 5 | refused — not encrypted, already encrypted, PGP, one LibreOffice would not open, or a `rekey` that would seal plaintext |
 | 6 | malformed or hostile package |
 | 7 | internal invariant violated |
+| 8 | this machine could not supply the memory -- the same file may work on a larger one |
+| 130 | cancelled with Ctrl-C |
 
 4 and 5 are the distinction that earns the table: **4 means try again, 5 means
 you had the wrong file.** An unencrypted package passed to `classify` is exit 0
@@ -319,11 +380,26 @@ with `encrypted: no` — an answer, not a failure.
 
 ### Output files
 
-With no `-o`, output lands beside the input as `report.decrypted.odt` or
-`report.encrypted.odt`. An existing file is never overwritten without `--force`,
-and writes go to a temporary in the destination directory and are renamed over
-the target, so an interrupted run cannot leave a half-written `.odt` that looks
-complete. `-o -` writes to stdout.
+With no `-o`, output lands beside the input as `report.decrypted.odt`,
+`report.encrypted.odt` or `report.rekeyed.odt`. An existing file is never
+overwritten without `--force`. Input and output both stream, so the only size
+limit is the disk.
+
+Output goes to a temporary file in the destination directory, given the
+target's permissions before a byte is written, and is renamed over the target
+only once the run succeeds. **On any failure the temporary file is deleted** --
+a wrong password, a refusal, a damaged member found halfway through, a full
+disk -- because for `decrypt` it holds plaintext. Ctrl-C cancels the run the
+same way and exits 130; a second Ctrl-C deletes the file and exits at once,
+since key derivation cannot be interrupted.
+
+**Known limit: a hard kill** (`kill -9`, a power cut) can leave the temporary
+`.<name>.odf-crypto.tmp` beside the target. Having the operating system delete
+it would take a raw platform call, and this crate is `unsafe_code = "forbid"`.
+
+`-o -` writes to stdout: `decrypt` streams straight through; `encrypt` and
+`rekey`, whose output must seek, go through a scratch file of ciphertext that is
+removed afterwards.
 
 ## Features
 
@@ -332,9 +408,9 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0-rc.9"` | `classify` alone. No cryptographic dependency. **25 crates.** |
+| **Detection-only** | `odf-crypto = "0.1.0-rc.10"` | `classify` alone. No cryptographic dependency. **25 crates.** |
 | **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **59 crates.** |
-| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `rpassword` for the prompt. |
+| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **73 crates** on Windows, 75 on Linux, 79 on macOS. |
 
 **Detection is the default because it is cheap.** `classify` parses
 `META-INF/manifest.xml` and the zip central directory; it never derives a key or
@@ -386,8 +462,19 @@ manifest naming the password and expected text for each. Recorded verdict:
 a password, accepted it, rendered the expected text, and raised no recovery bar.
 That verdict outranks the harness.
 
-**310 tests, passing in every feature configuration** — 227 library, 20 CLI
-unit, 35 CLI end-to-end, 2 memory-bound, 26 doctests. All three builds run in CI, not just the
+**Streaming is measured, not asserted.** `tests/streaming_memory.rs` installs a
+counting allocator and runs every operation at two payload sizes, sixteen times
+apart: peak heap does not move. `decrypt_to` holds 180 KiB for a wholesome
+package and 625 KiB for a per-entry one, `encrypt_to` 506 KiB, `reencrypt_to`
+348 KiB and 1066 KiB -- against a 4 MiB bound that holding a 256 MiB member
+would pass sixty times over, which each guard was broken to confirm. The
+whole-buffer `decrypt` is pinned to the exact bytes it returned before it moved
+onto the streaming code, and LibreOffice 26.8.0.3 opens what `decrypt_to`,
+`encrypt_to` and `reencrypt_to` write (`tests/goldens/validate_decrypt_to.py`,
+`validate_encrypted_outputs.py`), refusing each with a wrong password.
+
+**321 tests, passing in every feature configuration** — 230 library, 21 CLI
+unit, 41 CLI end-to-end, 2 memory-bound, 27 doctests. All three builds run in CI, not just the
 two that are cheap.
 
 **The examples below are among those doctests.** Every ` ```rust ` block in this
@@ -413,9 +500,16 @@ on any non-test path — and, the part that is easy to miss, an allocation sized
 from an untrusted manifest field goes through `Vec::try_reserve_exact` and
 returns `DecryptError::HostCannotAllocate` rather than reaching
 `handle_alloc_error`. That is not tidiness: an abort skips unwinding, so `Drop`
-never runs, so the keys above are **not** wiped. Two allocation sites remain
-outside this, and both are named in the source together with the reason they
-stay open.
+never runs, so the keys above are **not** wiped. One allocation site remains
+outside this -- `zip`'s central-directory preallocation -- named in the source
+with the reason it stays open.
+
+**Plaintext in flight is wiped too.** The streaming code moves plaintext only
+through fixed buffers that cannot grow and are zeroized on drop, so no
+reallocation leaves a copy behind. The one residue it cannot reach is miniz's
+compressor and decompressor state, which holds dictionary bytes and offers no
+way to wipe them; an application that must close that installs a
+zero-on-deallocate global allocator.
 
 **The file chooses what opening it costs.** `decrypt` has to derive the key
 before it can tell whether the password was even right, so a manifest's Argon2

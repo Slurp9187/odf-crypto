@@ -835,50 +835,41 @@ fn gcm_iv_tag_only_frame_is_not_rejected_as_too_short() {
     );
 }
 
-// --- the sized-slot inflate at its boundary ---
+// --- the inflate at its zero-length boundary ---
 //
 // `manifest:size = 0` is legal: an empty member is a normal thing for an ODF
-// package to carry. It is also the one input shape the sized-slot inflate had
-// never seen, because none of the goldens has an empty encrypted member. The
-// old grown-`Vec` inflate could not get this wrong -- it allocated nothing and
-// compared lengths afterwards. A slot is allocated first, so zero is now a real
-// case with real behaviour, and these pin it rather than assuming it.
+// package to carry, and none of the goldens has an empty encrypted member. The
+// rc.9 sized-slot inflate pinned this at its own boundary; the streaming
+// inflater that replaced it in rc.10 (`stream::InflateReader`) is pinned here
+// at the same one.
 
-/// A zero-length slot is what `try_new_with(0, ..)` hands the closure.
-/// miniz_oxide's own source special-cases it -- without that, any write against
-/// a zero-length output buffer reports `HasMoreOutput` -- so this records that
-/// the decrypt path depends on that behaviour rather than merely expecting it.
+/// An empty member inflates to nothing, not to an error.
 #[test]
-fn an_empty_member_inflates_into_a_zero_length_slot() {
+fn an_empty_member_inflates_to_nothing() {
+    use std::io::Read as _;
     let compressed = miniz_oxide::deflate::compress_to_vec(&[], 6);
-    let mut slot: [u8; 0] = [];
-    crate::decrypt::inflate_into(&compressed, &mut slot)
-        .expect("an empty member must inflate into an empty slot, not error");
+    let mut inflate = crate::stream::InflateReader::new(&compressed[..], 0, u64::MAX).unwrap();
+    let mut out = Vec::new();
+    inflate
+        .read_to_end(&mut out)
+        .expect("an empty member must inflate to nothing, not error");
+    assert!(out.is_empty());
 }
 
-/// The other half, and the one that would actually lose data: a member whose
-/// manifest claims 0 but whose ciphertext holds content must not decrypt to
-/// nothing.
-///
-/// Note which guard fires, because it is NOT the one that catches every other
-/// short inflate. At zero length our own `written != slot.len()` comparison is
-/// `0 != 0` and passes -- it cannot see this. What rejects it is the decoder
-/// itself, reporting `HasMoreOutput` because it has bytes to write and nowhere
-/// to put them. The assertion pins that distinction: an error message carrying
-/// `!=` would mean our comparison caught it, and at this length it cannot, so
-/// if that ever becomes the failing path something has changed underneath.
+/// The half that would lose data: a member whose manifest claims 0 but whose
+/// ciphertext holds content must not decrypt to nothing.
 #[test]
-fn a_zero_length_slot_refuses_a_stream_that_has_content() {
+fn a_zero_size_refuses_a_stream_that_has_content() {
+    use std::io::Read as _;
     let compressed = miniz_oxide::deflate::compress_to_vec(b"not empty", 6);
-    let mut slot: [u8; 0] = [];
-    let err = crate::decrypt::inflate_into(&compressed, &mut slot)
-        .expect_err("a non-empty stream must not pass through a zero-length slot");
-    let DecryptError::Inflate(msg) = &err else {
-        panic!("expected Inflate, got {err:?}");
-    };
+    let mut inflate = crate::stream::InflateReader::new(&compressed[..], 0, u64::MAX).unwrap();
+    let err = inflate.read_to_end(&mut Vec::new()).unwrap_err();
     assert!(
-        !msg.contains("!="),
-        "at zero length the decoder must be what refuses this, not our length          comparison, which is 0 != 0 and passes: {msg}"
+        matches!(
+            crate::stream::Fault::take(err),
+            Ok(crate::stream::Fault::Inflate(_))
+        ),
+        "a non-empty stream must not pass as a zero-size member"
     );
 }
 
@@ -1038,15 +1029,6 @@ fn a_fallible_allocation_that_succeeds_is_exact_and_filled() {
     // capacity would still be correct, but `try_reserve_exact` asking for more
     // than it needs is worth catching here rather than in a heap dump.
     assert_eq!(zeroed.capacity(), 64);
-
-    let copied = crate::decrypt::try_copy_of(b"abc", AllocationSite::CipherBuffer)
-        .expect("3 bytes is not a host-capacity failure");
-    assert_eq!(copied, b"abc");
-    assert_eq!(
-        copied.capacity(),
-        3,
-        "extend_from_slice must not have grown it"
-    );
 }
 
 #[test]
@@ -1690,4 +1672,112 @@ fn max_output_bytes_is_screened_before_derivation() {
     let limits = crate::DecryptLimits::default().with_max_output_bytes(0);
     let err = decrypt_with_limits(&bytes, "not the password", limits).unwrap_err();
     assert!(matches!(err, DecryptError::OutputLimit { .. }), "{err:?}");
+}
+
+// --- S8 (#94): the whole-buffer `decrypt` on the streaming core -------------
+
+/// SHA-256 of what rc.9's own `decrypt` returned for every fixture and password
+/// it opened, recorded from rc.9's code on 2026-10-15 before that code was
+/// replaced by the streaming core. The whole-buffer API is a contract EFV
+/// NATIVE builds on: its bytes must not move.
+const RC9_DECRYPT_SHA256: &[(&str, &str, &str)] = &[
+    (
+        "goldens/aoo-blowfish-pbkdf2.odt",
+        "PASSWORD",
+        "002922efaa0a8cf3ace01b5126f929a1554d4d8241555dd1481a8cf593db71b9",
+    ),
+    (
+        "goldens/lo-legacy-aes-cbc-image.odt",
+        "PASSWORD",
+        "a73047d500a8679ef56b9ec54c0ab60b56c3f3b9b6b786b8bea3d55db7cf6b41",
+    ),
+    (
+        "goldens/lo-legacy-aes-cbc.odt",
+        "PASSWORD",
+        "22de9ef3b590d90f40dcaa62b3c60971ee0b296da90d412fef90c48f9326da3c",
+    ),
+    (
+        "goldens/lo-odf11-nonascii-password.odt",
+        "NONASCII_PASSWORD",
+        "fc5ef0ff39da211eac0ae0ef58f9c52c336a6d8bea99bfd3b5ca9fc7fc9cfe26",
+    ),
+    (
+        "goldens/lo-opens-our-encrypt-output.odt",
+        "PASSWORD",
+        "7ac5e81e7207b42e0939c50fad59f82da3af4f680c0220c436df5db1199e07b5",
+    ),
+    (
+        "goldens/lo-wholesome-gcm-argon2.odt",
+        "PASSWORD",
+        "49465b813861a7e53b17f511dd7403db44a3053a0df89a77dd5a19e2aa2681da",
+    ),
+    (
+        "ladder/ladder-forced-sha256.odt",
+        "NONASCII_PASSWORD",
+        "fc5ef0ff39da211eac0ae0ef58f9c52c336a6d8bea99bfd3b5ca9fc7fc9cfe26",
+    ),
+    (
+        "ladder/ladder-staroffice-ms1252.odt",
+        "NONASCII_PASSWORD",
+        "fc5ef0ff39da211eac0ae0ef58f9c52c336a6d8bea99bfd3b5ca9fc7fc9cfe26",
+    ),
+    (
+        "ladder/ladder-staroffice-utf8.odt",
+        "NONASCII_PASSWORD",
+        "fc5ef0ff39da211eac0ae0ef58f9c52c336a6d8bea99bfd3b5ca9fc7fc9cfe26",
+    ),
+    (
+        "artifacts/argon2-1-1024-1.odt",
+        "PASSWORD",
+        "7ac5e81e7207b42e0939c50fad59f82da3af4f680c0220c436df5db1199e07b5",
+    ),
+    (
+        "artifacts/argon2-above-lo-default.odt",
+        "PASSWORD",
+        "7ac5e81e7207b42e0939c50fad59f82da3af4f680c0220c436df5db1199e07b5",
+    ),
+    (
+        "artifacts/argon2-floor-1-8-1.odt",
+        "PASSWORD",
+        "7ac5e81e7207b42e0939c50fad59f82da3af4f680c0220c436df5db1199e07b5",
+    ),
+    (
+        "artifacts/argon2-lanes-only.odt",
+        "PASSWORD",
+        "7ac5e81e7207b42e0939c50fad59f82da3af4f680c0220c436df5db1199e07b5",
+    ),
+    (
+        "artifacts/wholesome-default.odt",
+        "PASSWORD",
+        "7ac5e81e7207b42e0939c50fad59f82da3af4f680c0220c436df5db1199e07b5",
+    ),
+    (
+        "artifacts/wholesome-nonascii-password.odt",
+        "NONASCII_PASSWORD",
+        "7ac5e81e7207b42e0939c50fad59f82da3af4f680c0220c436df5db1199e07b5",
+    ),
+];
+
+/// The whole-buffer `decrypt` returns rc.9's bytes, byte for byte, on every
+/// fixture rc.9 opened -- wholesome and per-entry alike.
+#[test]
+fn whole_buffer_decrypt_returns_rc9_bytes() {
+    use sha2::{Digest as _, Sha256};
+    let root = crate::test_support::goldens_dir();
+    for (path, pw, want) in RC9_DECRYPT_SHA256 {
+        let (dir, name) = path.split_once('/').unwrap();
+        let bytes = std::fs::read(root.with_file_name(dir).join(name)).unwrap();
+        let pw = if *pw == "PASSWORD" {
+            PASSWORD
+        } else {
+            NONASCII_PASSWORD
+        };
+        let out = decrypt(&bytes, pw).unwrap_or_else(|e| panic!("{path}: {e:?}"));
+        let got: String = Sha256::digest(&out)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(&got, want, "{path}");
+    }
+    assert!(RC9_DECRYPT_SHA256.len() >= 15);
 }

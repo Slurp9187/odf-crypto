@@ -9,7 +9,7 @@
 //! outputs are equal member for member, not byte for byte.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek};
 
 use zip::{CompressionMethod, ZipArchive};
 
@@ -18,14 +18,14 @@ use crate::decrypt::{
     member_for_archive, screen_shape, strip_manifest, DecryptError, DecryptLimits,
 };
 use crate::decrypt_stream::{
-    declared_size, fault_error, find_key, gcm_key, gcm_member, member_shape, read_error,
-    DecryptOutcome, IntegrityOutcome,
+    fault_error, find_key, gcm_key, gcm_member, member_shape, read_error, DecryptOutcome,
+    IntegrityOutcome, Sizes,
 };
 use crate::limits::MANIFEST_READ_CAP;
 use crate::stream::{BlowfishDecryptReader, CbcDecryptReader, ChecksumGate, Fault, InflateReader};
 use crate::types::{Cipher, EntryEncryption};
 use crate::zip_err;
-use crate::zip_stream::{ZipStreamError, ZipStreamWriter};
+use crate::zip_stream::{ZipSink, ZipStreamError};
 use crate::Classification;
 
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
@@ -47,12 +47,14 @@ struct Plan<'a> {
     len: u64,
 }
 
-pub(crate) fn per_entry<R: Read + Seek, W: Write>(
+/// Rebuild a per-entry package into `out`, which the caller finishes.
+pub(crate) fn per_entry<R: Read + Seek, S: ZipSink>(
     archive: &mut ZipArchive<R>,
     class: &Classification,
-    writer: &mut W,
+    out: &mut S,
     password: &str,
     limits: &DecryptLimits,
+    sizes: Sizes,
 ) -> Result<DecryptOutcome, DecryptError> {
     // Every refusal that needs no key, for every row, before anything is
     // derived or written: the whole-buffer path refuses these before deriving
@@ -60,7 +62,7 @@ pub(crate) fn per_entry<R: Read + Seek, W: Write>(
     let mut plans: HashMap<String, Plan<'_>> = HashMap::new();
     let mut superseded: Vec<(usize, Plan<'_>)> = Vec::new();
     for row in &class.encrypted_entries {
-        let expected = declared_size(row.size)?;
+        let expected = sizes.declared(row.size)?;
         let (index, name) = member_for_archive(archive, &row.path)?;
         let (len, head) = member_shape(archive, index)?;
         screen_shape(row, len, &head)?;
@@ -78,7 +80,6 @@ pub(crate) fn per_entry<R: Read + Seek, W: Write>(
 
     let manifest = read_manifest(archive)?;
     let stripped = strip_manifest(&manifest)?;
-    let mut out = ZipStreamWriter::new(writer);
     let mut weakest = IntegrityOutcome::Verified;
     let mut produced = 0u64;
 
@@ -104,7 +105,7 @@ pub(crate) fn per_entry<R: Read + Seek, W: Write>(
                 max_output_bytes: budget,
                 ..*limits
             };
-            decrypt_member(archive, index, &name, plan, &mut out, password, &row_limits)
+            decrypt_member(archive, index, &name, plan, out, password, &row_limits)
                 .map_err(|e| with_total_limit(e, limits))?;
             produced += plan.expected;
             if integrity_of(plan.row) == IntegrityOutcome::PasswordCheckOnly {
@@ -130,7 +131,6 @@ pub(crate) fn per_entry<R: Read + Seek, W: Write>(
             }
         }
     }
-    out.finish().map_err(zip_stream_error(limits))?;
     Ok(DecryptOutcome { integrity: weakest })
 }
 
@@ -223,12 +223,12 @@ fn gated<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decrypt_member<R: Read + Seek, W: Write>(
+fn decrypt_member<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     index: usize,
     name: &str,
     plan: &Plan<'_>,
-    out: &mut ZipStreamWriter<W>,
+    out: &mut dyn ZipSink,
     password: &str,
     limits: &DecryptLimits,
 ) -> Result<(), DecryptError> {
@@ -260,8 +260,8 @@ fn decrypt_member<R: Read + Seek, W: Write>(
     })
 }
 
-fn write_inflated<W: Write>(
-    out: &mut ZipStreamWriter<W>,
+fn write_inflated(
+    out: &mut dyn ZipSink,
     name: &str,
     deflated: &mut dyn Read,
     expected: u64,
@@ -274,7 +274,9 @@ fn write_inflated<W: Write>(
     Ok(())
 }
 
-fn zip_stream_error(limits: &DecryptLimits) -> impl Fn(ZipStreamError) -> DecryptError + '_ {
+pub(crate) fn zip_stream_error(
+    limits: &DecryptLimits,
+) -> impl Fn(ZipStreamError) -> DecryptError + '_ {
     move |e| match e {
         ZipStreamError::Read(e) => match Fault::take(e) {
             Ok(fault) => fault_error(limits)(fault),

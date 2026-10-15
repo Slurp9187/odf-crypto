@@ -1,24 +1,11 @@
 //! Password decryption for LO-encrypted ODF packages.
 
-use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
+use std::io::Read;
 
-use aes::{Aes128, Aes192, Aes256};
-use aes_gcm::{
-    aead::{consts::U12, AeadInPlace, KeyInit},
-    Aes128Gcm, Aes256Gcm, AesGcm, Nonce,
-};
-use blowfish::Blowfish;
-use cbc::cipher::{BlockDecryptMut, KeyIvInit as CbcKeyIvInit};
-use cbc::Decryptor;
-use cfb_mode::BufDecryptor;
-use miniz_oxide::inflate::decompress_slice_iter_to_slice;
 use pbkdf2::pbkdf2_hmac;
 use secure_gate::{RevealSecret, RevealSecretMut};
-use sha1::{Digest, Sha1};
-use sha2::Sha256;
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use sha1::Sha1;
+use zip::ZipArchive;
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
@@ -27,26 +14,24 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
     key.ends_with(b":size") || key == b"size"
 }
 
-use crate::classify::{classify, member_matches_path, zip_entry_name};
+use crate::classify::{member_matches_path, zip_entry_name};
 use crate::kdf::KdfError;
 use crate::limits::{
     AES_BLOCK_LEN, AES_CBC_IV_LEN, AES_GCM_IV_LEN, AES_GCM_TAG_LEN, ARGON2_MAX_M_COST_KIB_READ,
-    ARGON2_MAX_P_COST_READ, ARGON2_MAX_T_COST_READ, BLOWFISH_IV_LEN, CHECKSUM_WINDOW,
-    CIPHERTEXT_READ_CEILING, DERIVED_KEY_MAX_LEN, DERIVED_KEY_MIN_LEN, INFLATE_CEILING,
-    MAX_ENCRYPTED_ENTRIES, MAX_OUTPUT_BYTES, PBKDF2_MAX_ITER, PBKDF2_MIN_ITER,
+    ARGON2_MAX_P_COST_READ, ARGON2_MAX_T_COST_READ, BLOWFISH_IV_LEN, DERIVED_KEY_MAX_LEN,
+    DERIVED_KEY_MIN_LEN, INFLATE_CEILING, MAX_ENCRYPTED_ENTRIES, MAX_OUTPUT_BYTES, PBKDF2_MAX_ITER,
+    PBKDF2_MIN_ITER,
 };
-use crate::sensitive::{DeflatedPlaintext, DerivedKey, MemberPlaintext, PasswordDigest};
-use crate::types::{Checksum, Cipher, EntryEncryption, Kdf, Mode, StartKeyAlg};
+use crate::sensitive::{DerivedKey, PasswordDigest};
+use crate::types::{Cipher, EntryEncryption, Kdf, Mode};
 use crate::zip_err;
 use crate::DetectError;
-
-const MANIFEST_PATH: &str = "META-INF/manifest.xml";
 
 /// Failures from [`decrypt`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecryptError {
-    /// [`classify`] refused the package before decryption began.
+    /// [`classify`](crate::classify) refused the package before decryption began.
     #[error("classification failed: {0}")]
     Classify(#[from] DetectError),
     /// The package classified as [`Mode::Plain`] — there is nothing to decrypt.
@@ -56,7 +41,7 @@ pub enum DecryptError {
     /// opens the package, so this crate classifies it plain.
     #[error("package is not encrypted")]
     NotEncrypted,
-    /// The password was empty. Checked before [`classify`] runs, so it implies
+    /// The password was empty. Checked before [`classify`](crate::classify) runs, so it implies
     /// nothing about whether `bytes` is a valid or encrypted package.
     #[error("password is empty")]
     EmptyPassword,
@@ -315,7 +300,7 @@ impl core::fmt::Display for AllocationSite {
 /// `n` comes from the package in every case, which is why a ceiling is not the
 /// fix: a guessed one refuses a host that could have coped and still aborts one
 /// that could not.
-fn try_zeroed(n: usize, site: AllocationSite) -> Result<Vec<u8>, DecryptError> {
+pub(crate) fn try_zeroed(n: usize, site: AllocationSite) -> Result<Vec<u8>, DecryptError> {
     let mut v = Vec::new();
     v.try_reserve_exact(n)
         .map_err(|_| DecryptError::HostCannotAllocate {
@@ -326,24 +311,6 @@ fn try_zeroed(n: usize, site: AllocationSite) -> Result<Vec<u8>, DecryptError> {
     // this only sets the length. It cannot reallocate, so it cannot reach the
     // infallible path this function exists to avoid.
     v.resize(n, 0);
-    Ok(v)
-}
-
-/// [`try_zeroed`] for a buffer that starts as a copy of `src` rather than as
-/// zeros — the cipher paths, which decrypt in place.
-///
-/// `src.to_vec()` is the infallible spelling, and is what those sites used.
-fn try_copy_of(src: &[u8], site: AllocationSite) -> Result<Vec<u8>, DecryptError> {
-    let mut v = Vec::new();
-    v.try_reserve_exact(src.len())
-        .map_err(|_| DecryptError::HostCannotAllocate {
-            site,
-            requested_bytes: src.len(),
-        })?;
-    // Capacity is already secured for exactly this many bytes, so the extend
-    // cannot grow the buffer. That matters twice: it cannot abort, and it
-    // cannot abandon an unwiped block behind a wrapper that is about to own it.
-    v.extend_from_slice(src);
     Ok(v)
 }
 
@@ -555,91 +522,7 @@ pub fn decrypt_with_limits(
     password: &str,
     limits: DecryptLimits,
 ) -> Result<Vec<u8>, DecryptError> {
-    if password.is_empty() {
-        return Err(DecryptError::EmptyPassword);
-    }
-    let class = classify(bytes)?;
-    screen_class(&class, &limits)?;
-
-    // KNOWN RESIDUAL, third party (#51). `ZipArchive::new` preallocates its
-    // central-directory vector from a count the file supplies, infallibly.
-    // `zip` bounds it by rejecting a directory whose claimed entries cannot fit
-    // the input (`spec.rs`, the end-of-central-directory consistency check),
-    // which caps the damage near 4.5x the input length rather than at
-    // `u16::MAX`-times-nothing -- mitigation, not a closed path, and not ours
-    // to close. It runs before any wrapper here is live, which is why it sits
-    // at the bottom of this list; `classify` reaches the same call, and a
-    // detection-only consumer reaches it there.
-    let mut archive =
-        ZipArchive::new(Cursor::new(bytes)).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
-    let manifest = read_member_by_path(&mut archive, MANIFEST_PATH)?;
-
-    if class.mode == Mode::Wholesome {
-        // `Classification::wholesome_row` is this selection, and calling it
-        // rather than repeating it is the point: a consumer asking "what will
-        // decrypt use" gets the same answer by construction, where a second
-        // copy could drift. See that method's docs for why it is not `common`.
-        let row = class.wholesome_row().ok_or_else(|| {
-            DecryptError::BadParameters("wholesome package missing encrypted-package row".into())
-        })?;
-        // Before `decrypt_member`, not after: `manifest:size` is attacker-controlled
-        // and needs no key to check, so refusing it here keeps it in the same class
-        // as the other pre-derivation screens -- nobody pays for a 64 MiB Argon2id
-        // to learn the manifest was never going to be acted on.
-        let n = inflated_len(row.size)?;
-        let (index, _) = member_for_archive(&mut archive, &row.path)?;
-        let ciphertext = read_member_at(&mut archive, index)?;
-        let compressed = decrypt_member(row, password, &ciphertext, &limits)?;
-        // The inflated package IS the public return value, so it leaves the
-        // wrapper here; only the deflated intermediate was ever wrapped. It is
-        // still sized up front rather than grown: the reallocation residue
-        // `inflate_into` exists to remove is the caller's document either way,
-        // and a plain `Vec` that is never resized abandons nothing.
-        return compressed.with_secret(|c| {
-            let mut out = try_zeroed(n, AllocationSite::PackagePlaintext)?;
-            inflate_into(c, &mut out)?;
-            Ok(out)
-        });
-    }
-
-    let mut plain: HashMap<String, MemberPlaintext> = HashMap::new();
-    for row in &class.encrypted_entries {
-        // As in the wholesome arm: bound the manifest's length before deriving a
-        // key from it, so a hostile row costs a comparison rather than a KDF.
-        let n = inflated_len(row.size)?;
-        let (index, member) = member_for_archive(&mut archive, &row.path)?;
-        let ciphertext = read_member_at(&mut archive, index)?;
-        let compressed = decrypt_member(row, password, &ciphertext, &limits)?;
-        // Wrapped inside the closure that produces it, not on the next line:
-        // the skill's rule is that the function creating sensitive material
-        // hands back the wrapper, and a panic between the two statements would
-        // otherwise drop inflated member plaintext as a plain `Vec`. (The
-        // wholesome path above is the exception on purpose -- there the
-        // inflated package *is* the public return value.)
-        let inflated = compressed.with_secret(|c| -> Result<_, DecryptError> {
-            // Not `MemberPlaintext::try_new_with`, which this used to call: its
-            // `try_` names the *fill*, and its body is `vec![0u8; len]`
-            // (secure-gate 0.9.0-rc.12, `dynamic.rs`) -- an infallible
-            // allocation sized from `manifest:size`, which is the site #51
-            // called the one most likely to be mistaken for already-safe.
-            //
-            // The wrapper is still built before the fill, which is the property
-            // `try_new_with` was chosen for: an `inflate_into` that gives up
-            // part-way leaves its bytes inside a wrapper that zeroizes them on
-            // drop. Allocating the slot first and moving it in with `new` keeps
-            // that and adds the fallible allocation, because `new` transfers
-            // the buffer rather than copying it.
-            let mut slot = MemberPlaintext::new(try_zeroed(n, AllocationSite::MemberPlaintext)?);
-            // `&mut buf[..]` and not `buf`: `with_secret_mut` hands out the
-            // `Vec` itself, so a slice is what makes growth -- and the unwiped
-            // block a realloc would abandon -- inexpressible here.
-            slot.with_secret_mut(|buf| inflate_into(c, &mut buf[..]))?;
-            Ok(slot)
-        })?;
-        plain.insert(member, inflated);
-    }
-
-    rebuild_zip(bytes, &manifest, &plain)
+    crate::decrypt_stream::decrypt_slice(bytes, password, &limits)
 }
 
 /// Every refusal that needs only the classification, in the order `decrypt`
@@ -695,64 +578,6 @@ fn ensure_encrypted_entry_count(n: usize, cap: usize) -> Result<(), DecryptError
         )));
     }
     Ok(())
-}
-
-fn read_member_by_path(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
-    want: &str,
-) -> Result<Vec<u8>, DecryptError> {
-    for i in 0..archive.len() {
-        let name = {
-            let file = archive
-                .by_index(i)
-                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
-            zip_entry_name(file.name_raw())
-        };
-        if member_matches_path(&name, want) {
-            return read_member_at(archive, i);
-        }
-    }
-    Err(DecryptError::BadParameters(format!(
-        "zip member {want:?} not found"
-    )))
-}
-
-fn read_member_at(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
-    index: usize,
-) -> Result<Vec<u8>, DecryptError> {
-    let mut file = archive
-        .by_index(index)
-        .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
-    // KNOWN RESIDUAL, and deliberately not closed (#51). `read_to_end` grows
-    // this buffer, infallibly, up to the ceiling the `take` imposes -- so on a
-    // host that cannot afford it the process aborts here rather than returning,
-    // with every earlier member's plaintext wrapper still live.
-    //
-    // Pre-sizing it from the zip header (`file.size()`) and a `try_reserve_exact`
-    // was written and rejected: the header is the attacker's number too, so a
-    // member declaring 1 GiB and delivering ten bytes would then cost a real
-    // 1 GiB allocation where today it costs ten bytes. That trades an abort
-    // this package could not otherwise provoke for an allocation it can, which
-    // is a worse bargain than the one it fixes.
-    //
-    // What makes it tolerable rather than merely unfixed: `buf` is ciphertext.
-    // It is neither wrapped nor worth wrapping, so the abort costs the process
-    // and not the wiping of THIS buffer -- only of the others already live.
-    // `std::io::Read` exposes no fallible `read_to_end`, so closing it properly
-    // needs a hand-rolled read loop over `try_reserve`, which is the shape to
-    // reach for if this stops being tolerable.
-    let mut buf = Vec::new();
-    file.by_ref()
-        .take(CIPHERTEXT_READ_CEILING as u64 + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| DecryptError::Zip(e.to_string()))?;
-    if buf.len() > CIPHERTEXT_READ_CEILING {
-        return Err(DecryptError::BadParameters(format!(
-            "zip member exceeds ciphertext ceiling {CIPHERTEXT_READ_CEILING}"
-        )));
-    }
-    Ok(buf)
 }
 
 /// First member whose raw or slash-collapsed name matches - the rule `classify`
@@ -911,6 +736,7 @@ fn cipher_accepts_key_len(cipher: Cipher, n: i32) -> bool {
 /// this path and kept anyway, because `decrypt_aes_gcm` indexes `blob` by a
 /// length one of them establishes — a non-local invariant is a poor thing to hang
 /// "the library does not panic" on. Each is labelled where it sits.
+#[cfg(test)]
 fn screen_before_deriving(row: &EntryEncryption, blob: &[u8]) -> Result<(), DecryptError> {
     let head = &blob[..blob.len().min(AES_GCM_IV_LEN)];
     screen_shape(row, blob.len() as u64, head)
@@ -960,242 +786,6 @@ pub(crate) fn screen_shape(
     Ok(())
 }
 
-fn decrypt_member(
-    row: &EntryEncryption,
-    password: &str,
-    blob: &[u8],
-    limits: &DecryptLimits,
-) -> Result<DeflatedPlaintext, DecryptError> {
-    screen_before_deriving(row, blob)?;
-    let first = decrypt_with_start_key(
-        row,
-        crate::kdf::start_key(password, row.start_key),
-        blob,
-        limits,
-    );
-    match first {
-        Err(DecryptError::WrongPassword) if row.start_key == StartKeyAlg::Sha1 => {}
-        other => return other,
-    }
-    // LibreOffice's legacy SHA-1 read ladder; see `crate::kdf::LegacyStartKey`.
-    // Upstream catches `WrongPasswordException` and nothing else, so any other
-    // failure on a rung ends the walk with that failure, as it does here. Each
-    // member walks it on its own, as each `ZipPackageStream` does upstream.
-    //
-    // A wrong password therefore costs four derivations per SHA-1 row rather
-    // than one. `decrypt` stops at the first member that fails, so that is four
-    // for the whole call on the usual path; the ceiling a hostile manifest can
-    // reach is four times the per-row limits in `DecryptLimits`.
-    for rung in crate::kdf::SHA1_LADDER {
-        let sk = crate::kdf::legacy_start_key(password, rung);
-        match decrypt_with_start_key(row, sk, blob, limits) {
-            Err(DecryptError::WrongPassword) => {}
-            other => return other,
-        }
-    }
-    Err(DecryptError::WrongPassword)
-}
-
-fn decrypt_with_start_key(
-    row: &EntryEncryption,
-    sk: PasswordDigest,
-    blob: &[u8],
-    limits: &DecryptLimits,
-) -> Result<DeflatedPlaintext, DecryptError> {
-    let key = derive_key(row, sk, limits)?;
-    key.with_secret(|k| match row.cipher {
-        Cipher::AesGcmW3c => decrypt_aes_gcm(k, row, blob),
-        Cipher::AesCbcW3c => decrypt_aes_cbc(k, row, blob),
-        Cipher::BlowfishCfb8 => decrypt_blowfish_cfb64(k, row, blob),
-    })
-}
-
-fn decrypt_aes_gcm(
-    key: &[u8],
-    row: &EntryEncryption,
-    blob: &[u8],
-) -> Result<DeflatedPlaintext, DecryptError> {
-    // Unreachable via `decrypt_member`, which screens this before deriving; see
-    // `screen_before_deriving`. Kept as this function's own precondition.
-    if row.iv.len() != AES_GCM_IV_LEN {
-        return Err(DecryptError::BadParameters("GCM IV length".into()));
-    }
-    if blob.len() < AES_GCM_IV_LEN + AES_GCM_TAG_LEN {
-        return Err(DecryptError::BadParameters("shorter than IV+tag".into()));
-    }
-    if blob[..AES_GCM_IV_LEN] != row.iv[..] {
-        return Err(DecryptError::BadParameters("inconsistent IV".into()));
-    }
-    // NSS selects AES-128/192/256 from the derived key length, so the row's
-    // `derived_key_len` decides the variant. `#aes128-gcm` and `#aes192-gcm` are
-    // both in the accepted URI table, and an absent `manifest:key-size` derives 16.
-    type Aes192Gcm = AesGcm<Aes192, U12>;
-    let nonce = Nonce::from_slice(&row.iv);
-    let ct = &blob[AES_GCM_IV_LEN..];
-    // Decrypted in place inside the wrapper, as the CBC and Blowfish paths
-    // already were. `Aead::decrypt` -- what this used to call -- allocates the
-    // plaintext itself, with a `Vec::from` inside `aead` sized from the
-    // member's own length: an infallible allocation, made while the derived key
-    // is live, and one no ceiling of ours sits in front of.
-    // `decrypt_in_place` writes over a buffer we allocated fallibly and
-    // truncates the tag away, so there is no second allocation and the
-    // plaintext never exists outside the wrapper.
-    let mut pt = DeflatedPlaintext::new(try_copy_of(ct, AllocationSite::CipherBuffer)?);
-    pt.with_secret_mut(|b| -> Result<(), DecryptError> {
-        match key.len() {
-            16 => Aes128Gcm::new_from_slice(key)
-                .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
-                .decrypt_in_place(nonce, b"", b),
-            24 => Aes192Gcm::new_from_slice(key)
-                .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
-                .decrypt_in_place(nonce, b"", b),
-            32 => Aes256Gcm::new_from_slice(key)
-                .map_err(|_| DecryptError::BadParameters("AES-GCM key".into()))?
-                .decrypt_in_place(nonce, b"", b),
-            n => return Err(DecryptError::BadParameters(format!("AES key length {n}"))),
-        }
-        // Unchanged: a failed tag check is a wrong key, and GCM cannot tell
-        // that from tampering.
-        .map_err(|_| DecryptError::WrongPassword)
-    })?;
-    Ok(pt)
-}
-
-fn decrypt_aes_cbc(
-    key: &[u8],
-    row: &EntryEncryption,
-    blob: &[u8],
-) -> Result<DeflatedPlaintext, DecryptError> {
-    // Unreachable via `decrypt_member`, which screens this before deriving; see
-    // `screen_before_deriving`. Kept as this function's own precondition.
-    if row.iv.len() != AES_CBC_IV_LEN {
-        return Err(DecryptError::BadParameters("CBC IV length".into()));
-    }
-    if blob.is_empty() || blob.len() % AES_BLOCK_LEN != 0 {
-        return Err(DecryptError::BadParameters("not a block multiple".into()));
-    }
-    // Decrypted in place, so the buffer is wrapped before the first block is
-    // turned into plaintext; the stripped padding bytes sit in spare capacity,
-    // which the wrapper zeroizes too.
-    let mut buf = DeflatedPlaintext::new(try_copy_of(blob, AllocationSite::CipherBuffer)?);
-    buf.with_secret_mut(|b| -> Result<(), DecryptError> {
-        // As in GCM: the variant follows the derived key length, not the URI's name.
-        macro_rules! cbc_decrypt_with {
-            ($aes:ty) => {{
-                let mut cipher = Decryptor::<$aes>::new_from_slices(key, &row.iv)
-                    .map_err(|_| DecryptError::BadParameters("AES-CBC key/IV".into()))?;
-                for chunk in b.chunks_mut(AES_BLOCK_LEN) {
-                    cipher.decrypt_block_mut(cbc::cipher::Block::<$aes>::from_mut_slice(chunk));
-                }
-            }};
-        }
-        match key.len() {
-            16 => cbc_decrypt_with!(Aes128),
-            24 => cbc_decrypt_with!(Aes192),
-            32 => cbc_decrypt_with!(Aes256),
-            n => return Err(DecryptError::BadParameters(format!("AES key length {n}"))),
-        }
-        let Some(&pad) = b.last() else {
-            return Err(DecryptError::WrongPassword);
-        };
-        let pad = pad as usize;
-        if !(1..=AES_BLOCK_LEN).contains(&pad) || b.len() < pad {
-            return Err(DecryptError::WrongPassword);
-        }
-        b.truncate(b.len() - pad);
-        verify_checksum(row, &b[..])
-    })?;
-    Ok(buf)
-}
-
-fn decrypt_blowfish_cfb64(
-    key: &[u8],
-    row: &EntryEncryption,
-    blob: &[u8],
-) -> Result<DeflatedPlaintext, DecryptError> {
-    // Unreachable via `decrypt_member`, which screens this before deriving; see
-    // `screen_before_deriving`. Kept as this function's own precondition.
-    if row.iv.len() != BLOWFISH_IV_LEN {
-        return Err(DecryptError::BadParameters("Blowfish IV length".into()));
-    }
-    type BfCfb64 = BufDecryptor<Blowfish>;
-    let mut cipher = BfCfb64::new_from_slices(key, &row.iv)
-        .map_err(|_| DecryptError::BadParameters("Blowfish key/IV".into()))?;
-    let mut pt = DeflatedPlaintext::new(try_copy_of(blob, AllocationSite::CipherBuffer)?);
-    pt.with_secret_mut(|p| cipher.decrypt(p));
-    pt.with_secret(|p| verify_checksum(row, p))?;
-    Ok(pt)
-}
-
-fn verify_checksum(row: &EntryEncryption, compressed_plain: &[u8]) -> Result<(), DecryptError> {
-    let window = &compressed_plain[..compressed_plain.len().min(CHECKSUM_WINDOW)];
-    match &row.checksum {
-        Checksum::Sha1_1K(want) => {
-            let mut h = Sha1::new();
-            h.update(window);
-            if !digest_eq(h.finalize().as_slice(), want) {
-                return Err(DecryptError::WrongPassword);
-            }
-        }
-        Checksum::Sha256_1K(want) => {
-            let mut h = Sha256::new();
-            h.update(window);
-            if !digest_eq(h.finalize().as_slice(), want) {
-                return Err(DecryptError::WrongPassword);
-            }
-        }
-        Checksum::None => {}
-    }
-    Ok(())
-}
-
-fn digest_eq(got: &[u8], want: &[u8]) -> bool {
-    if got.len() != want.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (&a, &b) in got.iter().zip(want.iter()) {
-        diff |= a ^ b;
-    }
-    diff == 0
-}
-
-/// Raw DEFLATE into a slot the caller sized from `manifest:size`, then plan
-/// section 2's two post-conditions. Both run only after the checksum or GCM tag
-/// has already passed, so neither is a password oracle.
-///
-/// The slot replaces a grown `Vec`, and that is a confidentiality fix rather
-/// than a tidy-up. `decompress_to_vec_with_limit` reallocates as it decodes,
-/// and a `Vec` realloc frees the old block *unwiped* -- abandoning copies of
-/// the plaintext document on the heap that no wrapper can reach, because the
-/// growth happened before anything wrapped it. One allocation, sized up front,
-/// removes the whole class.
-///
-/// Both post-conditions still hold, by different mechanisms than before:
-///
-/// - *The stream reaches its end marker.* An unterminated stream is an `Err`,
-///   not partial output. But `decompress_slice_iter_to_slice` does leave what
-///   it managed to write in the slot on failure -- its own docs say so -- which
-///   is why the per-entry caller builds through `try_new_with`, whose wrapper is
-///   live for the whole fill and zeroizes that partial document on `Err`.
-/// - *The length equals `manifest:size`.* Checked against the slot length rather
-///   than read off a returned `Vec`. This is load-bearing in a way it was not
-///   before: a manifest that overstates `size` now yields `Ok` with a zero-padded
-///   tail, so without this check a short inflate would pass as a whole document.
-fn inflate_into(compressed: &[u8], slot: &mut [u8]) -> Result<(), DecryptError> {
-    // `false`: ODF stores raw DEFLATE, with no zlib header. `true`: there is
-    // therefore no adler32 to verify either.
-    let written = decompress_slice_iter_to_slice(slot, core::iter::once(compressed), false, true)
-        .map_err(|e| DecryptError::Inflate(format!("{e:?}")))?;
-    if written != slot.len() {
-        return Err(DecryptError::Inflate(format!(
-            "inflated {written} != manifest:size {}",
-            slot.len()
-        )));
-    }
-    Ok(())
-}
-
 /// Bound `manifest:size` before it becomes an allocation length.
 ///
 /// **Its original reason is gone, and the same thing happened here as to
@@ -1221,7 +811,7 @@ fn inflate_into(compressed: &[u8], slot: &mut [u8]) -> Result<(), DecryptError> 
 /// longer saves one that could not. Not widened here -- that is the same
 /// decision, and it belongs with the others rather than being taken quietly in
 /// a doc comment.
-fn inflated_len(size: i64) -> Result<usize, DecryptError> {
+pub(crate) fn inflated_len(size: i64) -> Result<usize, DecryptError> {
     if !(0..=INFLATE_CEILING as i64).contains(&size) {
         return Err(DecryptError::BadParameters(format!(
             "manifest:size {size} outside 0..={INFLATE_CEILING}"
@@ -1319,61 +909,6 @@ pub(crate) fn strip_manifest(xml: &[u8]) -> Result<Vec<u8>, DecryptError> {
         }
     }
     Ok(writer.into_inner())
-}
-
-fn rebuild_zip(
-    input: &[u8],
-    manifest_xml: &[u8],
-    plain_members: &HashMap<String, MemberPlaintext>,
-) -> Result<Vec<u8>, DecryptError> {
-    let stripped = strip_manifest(manifest_xml)?;
-    let mut src =
-        ZipArchive::new(Cursor::new(input)).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
-    let mut out = ZipWriter::new(Cursor::new(Vec::new()));
-    let options = |method| SimpleFileOptions::default().compression_method(method);
-
-    for i in 0..src.len() {
-        let mut file = src
-            .by_index(i)
-            .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
-        let name = zip_entry_name(file.name_raw());
-        let method = file.compression();
-        let mut body = Vec::new();
-        file.by_ref()
-            .take(CIPHERTEXT_READ_CEILING as u64 + 1)
-            .read_to_end(&mut body)
-            .map_err(|e| DecryptError::Zip(e.to_string()))?;
-        if body.len() > CIPHERTEXT_READ_CEILING {
-            return Err(DecryptError::BadParameters(format!(
-                "zip member exceeds ciphertext ceiling {CIPHERTEXT_READ_CEILING}"
-            )));
-        }
-
-        // Each replaced member is written straight from its wrapper into the
-        // zip writer - no unwrapped clone of the plaintext along the way.
-        if member_matches_path(&name, MANIFEST_PATH) {
-            out.start_file(&name, options(CompressionMethod::Deflated))
-                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
-            out.write_all(&stripped)
-                .map_err(|e| DecryptError::Zip(e.to_string()))?;
-        } else if let Some(pt) = plain_members.get(&name) {
-            out.start_file(&name, options(CompressionMethod::Deflated))
-                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
-            pt.with_secret(|p| out.write_all(p))
-                .map_err(|e| DecryptError::Zip(e.to_string()))?;
-        } else {
-            out.start_file(&name, options(method))
-                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
-            out.write_all(&body)
-                .map_err(|e| DecryptError::Zip(e.to_string()))?;
-        }
-    }
-
-    let out_buf = out
-        .finish()
-        .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?
-        .into_inner();
-    Ok(out_buf)
 }
 
 /// Compare metadata that must survive per-entry decrypt (for tests).

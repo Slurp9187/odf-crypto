@@ -415,6 +415,133 @@ impl<W: Write> ZipStreamWriter<W> {
     }
 }
 
+/// Where a rebuilt package's members go: the streaming writer above, or
+/// `zip` 2.4.2's own writer when the output can seek. `decrypt_entries`
+/// writes through this, so the rebuild is one piece of code whichever frames
+/// the zip.
+pub(crate) trait ZipSink {
+    /// A stored member with CRC and size known up front.
+    fn stored(
+        &mut self,
+        name: &str,
+        crc: u32,
+        size: u64,
+        data: &mut dyn Read,
+    ) -> Result<(), ZipStreamError>;
+    /// A deflated member; returns the bytes read from `data`.
+    fn deflated(
+        &mut self,
+        name: &str,
+        size_hint: u64,
+        data: &mut dyn Read,
+    ) -> Result<u64, ZipStreamError>;
+}
+
+impl<W: Write> ZipSink for ZipStreamWriter<W> {
+    fn stored(
+        &mut self,
+        name: &str,
+        crc: u32,
+        size: u64,
+        data: &mut dyn Read,
+    ) -> Result<(), ZipStreamError> {
+        ZipStreamWriter::stored(self, name, crc, size, data)
+    }
+    fn deflated(
+        &mut self,
+        name: &str,
+        size_hint: u64,
+        data: &mut dyn Read,
+    ) -> Result<u64, ZipStreamError> {
+        ZipStreamWriter::deflated(self, name, size_hint, data)
+    }
+}
+
+/// `zip` 2.4.2's writer behind [`ZipSink`], for an output that can seek: it
+/// writes ordinary headers with no data descriptors, exactly as the
+/// whole-buffer `decrypt` did through rc.9, so that path's output stays byte
+/// for byte what it was. Members are copied through a wiped chunk buffer.
+pub(crate) struct SeekableZipSink<W: Write + io::Seek> {
+    zip: zip::ZipWriter<W>,
+}
+
+impl<W: Write + io::Seek> SeekableZipSink<W> {
+    pub(crate) fn new(out: W) -> Self {
+        Self {
+            zip: zip::ZipWriter::new(out),
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<W, ZipStreamError> {
+        self.zip.finish().map_err(zip_error)
+    }
+
+    fn copy(&mut self, data: &mut dyn Read, limit: u64) -> Result<(u64, u32), ZipStreamError> {
+        let mut hasher = crc32fast::Hasher::new();
+        let mut buf = chunk_buffer(CHUNK).map_err(|f| ZipStreamError::Corrupt(f.to_string()))?;
+        let mut total = 0u64;
+        loop {
+            let n = buf
+                .with_secret_mut(|b| data.read(b))
+                .map_err(ZipStreamError::Read)?;
+            if n == 0 {
+                return Ok((total, hasher.finalize()));
+            }
+            total += n as u64;
+            if total > limit {
+                return Err(ZipStreamError::Corrupt(format!(
+                    "member is larger than the {limit} bytes expected"
+                )));
+            }
+            buf.with_secret(|b| hasher.update(&b[..n]));
+            let zip = &mut self.zip;
+            buf.with_secret(|b| zip.write_all(&b[..n]))
+                .map_err(ZipStreamError::Write)?;
+        }
+    }
+}
+
+fn zip_error(e: zip::result::ZipError) -> ZipStreamError {
+    match e {
+        zip::result::ZipError::Io(e) => ZipStreamError::Write(e),
+        other => ZipStreamError::Corrupt(crate::zip_err::message(&other)),
+    }
+}
+
+impl<W: Write + io::Seek> ZipSink for SeekableZipSink<W> {
+    fn stored(
+        &mut self,
+        name: &str,
+        crc: u32,
+        size: u64,
+        data: &mut dyn Read,
+    ) -> Result<(), ZipStreamError> {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        self.zip.start_file(name, options).map_err(zip_error)?;
+        let (got, got_crc) = self.copy(data, size)?;
+        if got != size {
+            return Err(ZipStreamError::Corrupt("stored member is short".into()));
+        }
+        if got_crc != crc {
+            return Err(ZipStreamError::Corrupt("stored member CRC mismatch".into()));
+        }
+        Ok(())
+    }
+
+    fn deflated(
+        &mut self,
+        name: &str,
+        size_hint: u64,
+        data: &mut dyn Read,
+    ) -> Result<u64, ZipStreamError> {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        self.zip.start_file(name, options).map_err(zip_error)?;
+        Ok(self.copy(data, size_hint)?.0)
+    }
+}
+
 #[cfg(test)]
 #[path = "zip_stream_tests.rs"]
 mod tests;

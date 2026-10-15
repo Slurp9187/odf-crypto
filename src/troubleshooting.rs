@@ -19,6 +19,8 @@
 //! - [Which Argon2 cost should I pick?](#which-argon2-cost-should-i-pick)
 //! - [The error contains text I did not write](#the-error-contains-text-i-did-not-write)
 //! - [`encrypt` refused a file LibreOffice does not ask a password for](#encrypt-refused-a-file-libreoffice-does-not-ask-a-password-for)
+//! - [`decrypt_to` wrote output, then returned an error](#decrypt_to-wrote-output-then-returned-an-error)
+//! - [`reencrypt_to` refused a file `decrypt` opens](#reencrypt_to-refused-a-file-decrypt-opens)
 //!
 //! # `decrypt` returned `BadParameters`
 //!
@@ -283,5 +285,48 @@
 //! LibreOffice raises `ERRCODE_SFX_INCOMPLETE_ENCRYPTION` and disables macro
 //! execution (`sfx2/source/doc/objmisc.cxx:1028-1063`). Until `0.1.0-rc.9`
 //! only half of that predicate was visible here.
+//!
+//! # `decrypt_to` wrote output, then returned an error
+//!
+//! **Discard the output. It is not a document.** The streaming functions write
+//! as they go, so a failure found late in a member arrives after earlier bytes
+//! were written. What they never do is write a member before it was accepted:
+//!
+//! - an AES-GCM member's tag is checked in a first pass that writes nothing,
+//!   so a wrong password -- or a tampered member -- writes none of it;
+//! - an AES-CBC or Blowfish member is held back until its first 1 KiB matches
+//!   the manifest's checksum. Past that window nothing is authenticated, here
+//!   or in LibreOffice, so damage there surfaces later as
+//!   [`DecryptError::Inflate`](crate::DecryptError::Inflate) or `Zip`, with
+//!   output already written. [`IntegrityOutcome::PasswordCheckOnly`](crate::IntegrityOutcome::PasswordCheckOnly)
+//!   is the success-side name for the same fact.
+//!
+//! So write to somewhere you can throw away -- a temporary file, renamed into
+//! place on `Ok`, is what the `odf-crypto` binary does -- and treat every `Err`
+//! as "delete it".
+//!
+//! [`DecryptError::Io`](crate::DecryptError::Io) of kind `InvalidData` has one
+//! extra meaning: the input changed between the two passes over an AES-GCM
+//! member. Check what else is writing to that file.
+//!
+//! # `reencrypt_to` refused a file `decrypt` opens
+//!
+//! **That is policy, and it is this crate's, not LibreOffice's.** A per-entry
+//! package -- the older AES-CBC and Blowfish profiles -- is refused when any
+//! listed part of it is not encrypted
+//! ([`ReencryptError::PartiallyEncrypted`](crate::ReencryptError::PartiallyEncrypted))
+//! or when it holds parts its manifest does not list
+//! ([`ReencryptError::UnexpectedStreams`](crate::ReencryptError::UnexpectedStreams)).
+//!
+//! The reason is what the re-key would do. Those parts were never protected by
+//! the old password, and the new file is AES-GCM: its tag would vouch for them.
+//! A part someone slipped into an old file would come out looking as
+//! trustworthy as the rest. LibreOffice opens such a file, after warning that
+//! it has unencrypted parts and with macros disabled, which is why
+//! [`decrypt_to`](crate::decrypt_to) opens it too.
+//!
+//! To re-key it anyway, decide what to do with those parts first: decrypt it,
+//! inspect or drop them, and [`encrypt_to`](crate::encrypt_to) the result
+//! under the new password.
 
 // No items. This module is a page.
