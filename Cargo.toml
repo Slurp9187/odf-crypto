@@ -121,6 +121,7 @@ crypto-ops = [
     "dep:cbc",
     "dep:aes-gcm",
     "dep:ctr",
+    "dep:crc32fast",
     "dep:ghash",
     "dep:blowfish",
     "dep:cfb-mode",
@@ -199,6 +200,9 @@ blowfish = { version = "0.9", optional = true, features = ["zeroize"] }
 # the CTR state and the GHASH key on drop, as aes-gcm's own feature does.
 ctr = { version = "0.9", optional = true, features = ["zeroize"] }
 ghash = { version = "0.5", optional = true, default-features = false, features = ["zeroize"] }
+# The streaming zip writer (`src/zip_stream.rs`) computes each member's CRC-32
+# itself. Already in the graph under `zip`, so naming it adds no crate.
+crc32fast = { version = "1", optional = true }
 cfb-mode = { version = "0.8", optional = true, features = ["zeroize"] }
 miniz_oxide = { version = "0.8", optional = true }
 

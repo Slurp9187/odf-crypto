@@ -99,6 +99,9 @@ mod sensitive;
 // gated rather than `allow(dead_code)`, because until then it has no caller.
 #[cfg(all(feature = "crypto-ops", test))]
 mod stream;
+// Test-only until `decrypt_to` writes through it (the next commit).
+#[cfg(all(feature = "crypto-ops", test))]
+mod zip_stream;
 
 // A doc-only module: `//!` docs, no items, no runtime cost. Gated on
 // `crypto-ops` because five of its six symptoms are about `decrypt` and
