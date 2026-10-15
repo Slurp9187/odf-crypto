@@ -156,7 +156,7 @@ Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9.
   - The owner asked for the sibling APIs to match. Byte-identity to rc.9 is kept where it is a contract, in the whole-buffer `decrypt` (S8).
 
 - **Streaming zip writer: reversed after S1 (#87).**
-  - The plan assumed `zip` 2.4.2 had `ZipWriter::new_stream`. It does not: its writer is only `impl<W: Write + Seek>` (`write.rs:789`). `new_stream` first appears in 4.x (checked: 4.6.1, 6.0.0, 8.6.0); current is 9.0.3.
+  - The plan assumed `zip` 2.4.2 had `ZipWriter::new_stream`. It does not: its writer is only `impl<W: Write + Seek>` (`zip-2.4.2/src/write.rs:789`). `new_stream` first appears in 4.x (checked: 4.6.1, 6.0.0, 8.6.0); current is 9.0.3.
   - The arc coordinator decided (option A) on a **crate-private streaming zip writer** for the two outputs that cannot seek: the per-entry `decrypt_to` rebuild and re-encrypt's inner zip. Reading stays on `zip` 2.4.2.
   - Bumping `zip` to 9 would replace the reader under `classify`. Its LibreOffice fidelity depends on raw names, data-descriptor metadata and the central-directory consistency check that caps #51. That is its own arc if anyone wants it.
   - Conditions set with the decision, all owned by S4:
