@@ -116,7 +116,7 @@ pub(crate) struct ZipStreamWriter<W: Write> {
 /// is stored blocks: 5 bytes of header per 65,535 bytes, plus the final block.
 /// Doubled per block and padded, so it errs high: a high guess costs a Zip64
 /// extra field nobody needed; a low one would be a corrupt descriptor.
-fn deflate_bound(n: u64) -> u64 {
+pub(crate) fn deflate_bound(n: u64) -> u64 {
     n.saturating_add((n / 65_535 + 1).saturating_mul(10))
         .saturating_add(64)
 }

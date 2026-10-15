@@ -94,6 +94,8 @@ mod decrypt_stream;
 #[cfg(feature = "crypto-ops")]
 mod encrypt;
 #[cfg(feature = "crypto-ops")]
+mod encrypt_stream;
+#[cfg(feature = "crypto-ops")]
 mod kdf;
 #[cfg(feature = "crypto-ops")]
 mod ms1252;
@@ -127,6 +129,8 @@ pub use decrypt_stream::{decrypt_to, decrypt_with_limits_to, DecryptOutcome, Int
 pub use encrypt::{
     encrypt, encrypt_with_params, Argon2Axis, Argon2Params, EncryptError, ParamsReason,
 };
+#[cfg(feature = "crypto-ops")]
+pub use encrypt_stream::{encrypt_to, encrypt_with_params_to};
 
 // Compiles every ```rust block in README.md, and renders none of it.
 //

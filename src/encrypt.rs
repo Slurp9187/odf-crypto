@@ -38,22 +38,22 @@ const MANIFEST_PATH: &str = "META-INF/manifest.xml";
 /// the two cannot drift: a key derived under one `m` while the manifest
 /// promises another is a bug no round-trip test would catch if the two were
 /// separate literals, because `decrypt` reads the manifest's copy.
-struct Profile {
+pub(crate) struct Profile {
     /// Argon2 `(t, m, p)` in the manifest's own `sal_Int32` type, in the
     /// order `manifest:` writes them -- *not* `Params::new`'s `(m, t, p)`.
     argon2_t: i32,
     argon2_m_kib: i32,
     argon2_p: i32,
     derived_key_len: usize,
-    salt_len: usize,
-    iv_len: usize,
+    pub(crate) salt_len: usize,
+    pub(crate) iv_len: usize,
     odf_version: &'static str,
 }
 
 /// `SetupStorage`'s wholesome row: Argon2id `(3, 65536, 4)`, AES-256-GCM,
 /// SHA-256 start key, no checksum (`objstor.cxx:349-399`); salt 16 bytes and
 /// IV 12 bytes per `ZipPackageStream.cxx:587-607`.
-const WHOLESOME: Profile = Profile {
+pub(crate) const WHOLESOME: Profile = Profile {
     argon2_t: 3,
     argon2_m_kib: 65536,
     argon2_p: 4,
@@ -672,24 +672,16 @@ pub fn encrypt_with_params(
         return Err(EncryptError::EmptyPassword);
     }
     let class = classify(bytes)?;
-    if class.mode != Mode::Plain {
-        // The latch, not the row count. `package_encrypted` is LibreOffice's
-        // `HasEncryptedEntries`, and it is what decides whether LO prompts --
-        // so it is what decides which refusal is true of this file.
-        return Err(if class.package_encrypted {
-            EncryptError::AlreadyEncrypted
-        } else {
-            EncryptError::PartiallyEncrypted
-        });
-    }
-    if class.odf12_fatal {
-        return Err(EncryptError::Odf12Fatal);
-    }
+    screen_input(&class)?;
 
     // Plan §3's mimetype fallback chain, resolved before any crypto: it
     // depends only on `bytes` and `class`, and a rejection here should not
     // cost a whole-input deflate plus a 64 MiB Argon2id first.
-    let mimetype = resolve_mimetype(bytes, class.media_type.as_deref())?;
+    let mimetype = resolve_mimetype(
+        &mut ZipArchive::new(Cursor::new(bytes))
+            .map_err(|e| EncryptError::Zip(zip_err::message(&e)))?,
+        class.media_type.as_deref(),
+    )?;
 
     // Plan §6 step 3: raw-deflate the whole input buffer, unparsed. Wrapped
     // before the cipher runs, mirroring how the in-place read-side ciphers
@@ -703,43 +695,7 @@ pub fn encrypt_with_params(
     // wrapped: both are written to the manifest in the clear.
     let salt = random_bytes(WHOLESOME.salt_len)?;
     let iv = random_bytes(WHOLESOME.iv_len)?;
-
-    // Plan §6 step 4/6: start key, then Argon2id over it with `salt` --
-    // `crate::kdf`'s helpers, shared verbatim with `decrypt`, so the two
-    // directions cannot derive keys differently.
-    let start_key = crate::kdf::start_key(password, StartKeyAlg::Sha256);
-    let mut derived_key = DerivedKey::new(vec![0u8; WHOLESOME.derived_key_len]);
-    start_key.with_secret(|sk| {
-        derived_key.with_secret_mut(|key| {
-            crate::kdf::derive_argon2id(
-                sk,
-                &salt,
-                params.t,
-                params.m_kib,
-                params.p,
-                // The write path's own ceilings, not `DecryptLimits::default()`:
-                // these are the caller's numbers about their own machine, so
-                // only the field widths and the cipher bound them. Same
-                // reasoning as `ARGON2_MAX_M_COST_KIB_WRITE`'s own doc.
-                &crate::DecryptLimits::PERMISSIVE
-                    .with_argon2_max_t(ARGON2_MAX_T_COST_WRITE)
-                    .with_argon2_max_m_kib(ARGON2_MAX_M_COST_KIB_WRITE),
-                key,
-            )
-            .map_err(
-                // Exhaustive, no `_` arm: the next `KdfError` variant must be
-                // given a deliberate mapping here rather than silently
-                // inheriting one -- the same discipline `Argon2Axis`'s
-                // `Display` impl follows at its own match, above.
-                |e| match e {
-                    crate::kdf::KdfError::Params(s) => EncryptError::Internal(s),
-                    crate::kdf::KdfError::HostCannotAllocate { requested_bytes } => {
-                        EncryptError::HostCannotAllocate { requested_bytes }
-                    }
-                },
-            )
-        })
-    })?;
+    let derived_key = derive_write_key(password, &salt, params)?;
 
     // Plan §6 step 7 / `ciphercontext.cxx`'s encrypt branch: AES-256-GCM,
     // empty AAD, the 16-byte tag appended to the ciphertext. Sealing in place
@@ -785,6 +741,71 @@ pub fn encrypt_with_params(
     )
 }
 
+/// Plan §6 step 4/6: the SHA-256 start key, then Argon2id over it with `salt`
+/// -- `crate::kdf`'s helpers, shared verbatim with `decrypt`, so the two
+/// directions cannot derive keys differently. Shared by [`encrypt`] and
+/// `encrypt_to`.
+pub(crate) fn derive_write_key(
+    password: &str,
+    salt: &[u8],
+    params: Argon2Params,
+) -> Result<DerivedKey, EncryptError> {
+    let start_key = crate::kdf::start_key(password, StartKeyAlg::Sha256);
+    let mut derived_key = DerivedKey::new(vec![0u8; WHOLESOME.derived_key_len]);
+    start_key.with_secret(|sk| {
+        derived_key.with_secret_mut(|key| {
+            crate::kdf::derive_argon2id(
+                sk,
+                salt,
+                params.t,
+                params.m_kib,
+                params.p,
+                // The write path's own ceilings, not `DecryptLimits::default()`:
+                // these are the caller's numbers about their own machine, so
+                // only the field widths and the cipher bound them. Same
+                // reasoning as `ARGON2_MAX_M_COST_KIB_WRITE`'s own doc.
+                &crate::DecryptLimits::PERMISSIVE
+                    .with_argon2_max_t(ARGON2_MAX_T_COST_WRITE)
+                    .with_argon2_max_m_kib(ARGON2_MAX_M_COST_KIB_WRITE),
+                key,
+            )
+            .map_err(
+                // Exhaustive, no `_` arm: the next `KdfError` variant must be
+                // given a deliberate mapping here rather than silently
+                // inheriting one -- the same discipline `Argon2Axis`'s
+                // `Display` impl follows at its own match, above.
+                |e| match e {
+                    crate::kdf::KdfError::Params(s) => EncryptError::Internal(s),
+                    crate::kdf::KdfError::HostCannotAllocate { requested_bytes } => {
+                        EncryptError::HostCannotAllocate { requested_bytes }
+                    }
+                },
+            )
+        })
+    })?;
+
+    Ok(derived_key)
+}
+
+/// The refusals `encrypt` makes from the classification alone. Shared with
+/// `encrypt_to`, so the two refuse the same inputs for the same reasons.
+pub(crate) fn screen_input(class: &crate::Classification) -> Result<(), EncryptError> {
+    if class.mode != Mode::Plain {
+        // The latch, not the row count. `package_encrypted` is LibreOffice's
+        // `HasEncryptedEntries`, and it is what decides whether LO prompts --
+        // so it is what decides which refusal is true of this file.
+        return Err(if class.package_encrypted {
+            EncryptError::AlreadyEncrypted
+        } else {
+            EncryptError::PartiallyEncrypted
+        });
+    }
+    if class.odf12_fatal {
+        return Err(EncryptError::Odf12Fatal);
+    }
+    Ok(())
+}
+
 /// Raw DEFLATE of the whole input buffer (the opposite direction to
 /// `decrypt::inflate_into`, though not its shape: deflate has no declared
 /// output length to size a slot from, so this still returns a grown `Vec`). No zlib wrapper -- LO's own
@@ -810,7 +831,7 @@ fn raw_deflate_with_ceiling(bytes: &[u8], ceiling: usize) -> Result<Vec<u8>, Enc
 /// `aes-gcm` dependency the crate already has; plan OQ2). Uses the fallible
 /// `try_fill_bytes`, not `fill_bytes`, which panics -- a library must not
 /// panic for an ordinary CSPRNG failure (plan §4).
-fn random_bytes(len: usize) -> Result<Vec<u8>, EncryptError> {
+pub(crate) fn random_bytes(len: usize) -> Result<Vec<u8>, EncryptError> {
     let mut buf = vec![0u8; len];
     OsRng
         .try_fill_bytes(&mut buf)
@@ -835,11 +856,11 @@ fn random_bytes(len: usize) -> Result<Vec<u8>, EncryptError> {
 /// writer takes `&str` and has nothing left to unwrap. Copying stays verbatim
 /// -- `String::from_utf8` does not transform the bytes, and `as_bytes()` hands
 /// back exactly what the input member held.
-fn resolve_mimetype(
-    bytes: &[u8],
+pub(crate) fn resolve_mimetype<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
     classify_media_type: Option<&str>,
 ) -> Result<Option<String>, EncryptError> {
-    if let Some(raw) = read_input_mimetype_member(bytes)? {
+    if let Some(raw) = read_input_mimetype_member(archive)? {
         return Ok(Some(validate_media_type(raw)?));
     }
     Ok(classify_media_type.map(str::to_owned))
@@ -900,9 +921,9 @@ fn is_xml_char(c: char) -> bool {
 /// A root `mimetype` member is exactly `"mimetype"` -- `collapse_slashes`
 /// cannot turn any other name into it -- so this is `zip`'s own O(1)
 /// name lookup rather than decrypt's `member_matches_path` scan.
-fn read_input_mimetype_member(bytes: &[u8]) -> Result<Option<Vec<u8>>, EncryptError> {
-    let mut archive =
-        ZipArchive::new(Cursor::new(bytes)).map_err(|e| EncryptError::Zip(zip_err::message(&e)))?;
+fn read_input_mimetype_member<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+) -> Result<Option<Vec<u8>>, EncryptError> {
     let Ok(mut file) = archive.by_name("mimetype") else {
         return Ok(None);
     };
@@ -930,7 +951,7 @@ fn read_input_mimetype_member(bytes: &[u8]) -> Result<Option<Vec<u8>>, EncryptEr
 /// Every parameter it writes comes from [`WHOLESOME`] or from this call's own
 /// salt/IV, so the manifest cannot promise a tuple the key was not derived
 /// under.
-fn build_manifest(
+pub(crate) fn build_manifest(
     size: i64,
     iv: &[u8],
     salt: &[u8],

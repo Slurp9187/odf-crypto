@@ -87,6 +87,9 @@ pub(crate) enum Fault {
     OutputLimit,
     /// A buffer could not be allocated.
     Alloc(usize),
+    /// The compressor refused its input. Not expected from miniz on any
+    /// input; reported rather than assumed away.
+    Deflate(String),
 }
 
 impl std::fmt::Display for Fault {
@@ -97,6 +100,7 @@ impl std::fmt::Display for Fault {
             Fault::BadParameters(s) | Fault::Inflate(s) => f.write_str(s),
             Fault::OutputLimit => f.write_str("output limit exceeded"),
             Fault::Alloc(n) => write!(f, "could not allocate {n} bytes"),
+            Fault::Deflate(s) => write!(f, "deflate failed: {s}"),
         }
     }
 }
@@ -309,8 +313,6 @@ impl GcmStream {
     }
 
     /// Encrypt `buf` in place, then hash the ciphertext.
-    // Test-only until `encrypt_to` (S5) calls it; gated, not allowed.
-    #[cfg(test)]
     pub(crate) fn encrypt(&mut self, buf: &mut [u8]) {
         self.ctr.apply(buf);
         self.ghash.update(buf);
@@ -408,6 +410,53 @@ impl<R: Read> Read for GcmDecryptReader<R> {
         gcm.decrypt(&mut out[..n]);
         self.left -= n as u64;
         Ok(n)
+    }
+}
+
+/// The write side of [`GcmStream`]: plaintext in, ciphertext out to `dst`, a
+/// chunk at a time. [`GcmEncryptWriter::finish`] writes the tag after the last
+/// chunk and must be called.
+///
+/// What arrives here is deflated plaintext. It is copied into a wiped
+/// [`ChunkBuffer`] and encrypted there, so the only plaintext this type ever
+/// holds is inside that buffer.
+pub(crate) struct GcmEncryptWriter<W: Write> {
+    dst: W,
+    gcm: GcmStream,
+    buf: ChunkBuffer,
+}
+
+impl<W: Write> GcmEncryptWriter<W> {
+    pub(crate) fn new(dst: W, gcm: GcmStream) -> Result<Self, Fault> {
+        Ok(Self {
+            dst,
+            gcm,
+            buf: chunk_buffer(CHUNK)?,
+        })
+    }
+
+    /// Write the tag and return the inner writer.
+    pub(crate) fn finish(self) -> io::Result<W> {
+        let GcmEncryptWriter { mut dst, gcm, .. } = self;
+        dst.write_all(&gcm.tag())?;
+        Ok(dst)
+    }
+}
+
+impl<W: Write> Write for GcmEncryptWriter<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let n = data.len().min(CHUNK);
+        let (gcm, dst) = (&mut self.gcm, &mut self.dst);
+        self.buf.with_secret_mut(|b| {
+            b[..n].copy_from_slice(&data[..n]);
+            gcm.encrypt(&mut b[..n]);
+            dst.write_all(&b[..n])
+        })?;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.dst.flush()
     }
 }
 
@@ -780,8 +829,6 @@ impl<W: Write> DeflateWriter<W> {
     }
 
     /// Uncompressed bytes accepted so far -- `manifest:size` once finished.
-    // Test-only until `encrypt_to` (S5) calls it; gated, not allowed.
-    #[cfg(test)]
     pub(crate) fn consumed(&self) -> u64 {
         self.consumed
     }
@@ -804,11 +851,11 @@ impl<W: Write> DeflateWriter<W> {
                         return Ok(());
                     }
                     if used == 0 && made == 0 && !finishing {
-                        return Err(io::Error::other("deflate made no progress"));
+                        return Err(Fault::Deflate("no progress".into()).into_io());
                     }
                 }
                 other => {
-                    return Err(io::Error::other(format!("deflate failed: {other:?}")));
+                    return Err(Fault::Deflate(format!("{other:?}")).into_io());
                 }
             }
         }

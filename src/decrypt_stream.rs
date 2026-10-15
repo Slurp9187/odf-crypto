@@ -387,6 +387,9 @@ pub(crate) fn fault_error(limits: &DecryptLimits) -> impl Fn(Fault) -> DecryptEr
             site: AllocationSite::StreamBuffer,
             requested_bytes: n,
         },
+        // Only the rebuild's own re-deflate can raise it: an invariant of
+        // ours, not a property of the package.
+        Fault::Deflate(s) => DecryptError::Internal(format!("deflate failed: {s}")),
     }
 }
 
