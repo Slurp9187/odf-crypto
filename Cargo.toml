@@ -117,7 +117,7 @@ default = []
 # `cargo install odf-crypto --features cli` is the install line. Making it a
 # default would put rpassword in front of every library consumer, and
 # `cargo install` on a library is not the common path anyway.
-cli = ["crypto-ops", "dep:rpassword", "dep:clap", "dep:serde_json"]
+cli = ["crypto-ops", "dep:rpassword", "dep:clap", "dep:serde_json", "dep:ctrlc"]
 
 crypto-ops = [
     "dep:sha1",
@@ -218,6 +218,14 @@ miniz_oxide = { version = "0.8", optional = true }
 # rtoolbox and windows-sys; libc is already in the crypto-ops graph. The
 # alternative is echoing a password to the terminal, which is not one.
 rpassword = { version = "7", optional = true }
+
+# Ctrl-C for the `cli` feature only: the handler cancels the run through the
+# library's own reader-driven cancel, so the plaintext temp file beside the
+# target is deleted rather than left behind. A second Ctrl-C deletes it and
+# exits at once (key derivation cannot be interrupted). A hard kill still
+# leaves it: an OS-deleted temp needs a raw call this crate's
+# `unsafe_code = "forbid"` rules out. See README, "The CLI".
+ctrlc = { version = "=3.5.2", optional = true }
 
 # Builder API, not `derive`, and no `wrap_help`. Measured: derive is 21 crates,
 # builder+suggestions is 5, adding wrap_help is 8. Five is worth it for

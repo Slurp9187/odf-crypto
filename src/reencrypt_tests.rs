@@ -475,3 +475,23 @@ fn a_per_entry_golden_with_a_picture_rekeys() {
     decrypt_to(Cursor::new(&src), &mut streamed, PASSWORD).unwrap();
     assert!(decrypt(&out, NEW).unwrap() == streamed);
 }
+
+/// The library half of the CLI exit-code guard (CLAUDE.md, "The CLI"): no `_`
+/// arm, so a new `ReencryptError` variant stops this compiling.
+///
+/// **If this stopped compiling, you added a variant.** Give it an exit code in
+/// `reencrypt_exit`, add it to `the_reencrypt_exit_map_is_the_documented_one`
+/// in `src/bin/odf-crypto_tests.rs`, then name it here.
+#[test]
+fn every_reencrypt_error_variant_is_accounted_for_in_the_cli_exit_map() {
+    fn accounted_for(e: &ReencryptError) {
+        match e {
+            ReencryptError::Decrypt(_) => (),
+            ReencryptError::Encrypt(_) => (),
+            ReencryptError::PartiallyEncrypted => (),
+            ReencryptError::UnexpectedStreams => (),
+            ReencryptError::Io(_) => (),
+        }
+    }
+    accounted_for(&ReencryptError::PartiallyEncrypted);
+}

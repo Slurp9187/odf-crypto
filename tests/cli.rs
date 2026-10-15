@@ -844,3 +844,213 @@ fn each_argon2_axis_defaults_independently() {
         "t and p should still be LibreOffice's: {json}"
     );
 }
+
+// --- rekey, and what a failed run leaves behind (#94) -----------------------
+
+/// Every file in `s` whose name marks it as this binary's temporary output.
+fn temps_in(s: &Scratch) -> Vec<String> {
+    std::fs::read_dir(&s.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".odf-crypto.tmp"))
+        .collect()
+}
+
+fn rekey(s: &Scratch, input: &Path, out_name: &str, old: &str, new: &str) -> Output {
+    Command::new(bin())
+        .args([
+            "rekey",
+            input.to_str().unwrap(),
+            "-o",
+            s.join(out_name).to_str().unwrap(),
+            "--password-env",
+            "ODF_CLI_OLD",
+            "--new-password-env",
+            "ODF_CLI_NEW",
+            "--argon2-t",
+            "1",
+            "--argon2-m",
+            "8",
+            "--argon2-p",
+            "1",
+        ])
+        .env("ODF_CLI_OLD", old)
+        .env("ODF_CLI_NEW", new)
+        .stdin(Stdio::null())
+        .output()
+        .expect("runs")
+}
+
+/// `rekey` writes a package the new password opens and the old one does not,
+/// holding exactly what the old one held -- for both source shapes.
+#[test]
+fn rekey_changes_the_password() {
+    let s = Scratch::new("rekey");
+    for name in ["lo-wholesome-gcm-argon2.odt", "lo-legacy-aes-cbc.odt"] {
+        let out = rekey(&s, &golden(name), "rekeyed.odt", PASSWORD, "brand new");
+        assert_eq!(code(&out), EX_OK, "{name}: {}", stderr(&out));
+        let before = decrypt_to(&s, &golden(name), "before.odt");
+        assert_eq!(code(&before), EX_OK);
+
+        let pw = s.join("new.txt");
+        std::fs::write(&pw, "brand new").unwrap();
+        let after = run(&[
+            "decrypt",
+            s.join("rekeyed.odt").to_str().unwrap(),
+            "-o",
+            s.join("after.odt").to_str().unwrap(),
+            "--password-file",
+            pw.to_str().unwrap(),
+        ]);
+        assert_eq!(code(&after), EX_OK, "{name}: {}", stderr(&after));
+        let old = decrypt_to(&s, &s.join("rekeyed.odt"), "old.odt");
+        assert_eq!(
+            code(&old),
+            EX_WRONG_PASSWORD,
+            "{name}: the old password still opens it"
+        );
+        if name.starts_with("lo-wholesome") {
+            // A wholesome re-key carries the inner package over byte for byte.
+            assert_eq!(
+                std::fs::read(s.join("after.odt")).unwrap(),
+                std::fs::read(s.join("before.odt")).unwrap(),
+                "{name}"
+            );
+        }
+        for f in ["rekeyed.odt", "before.odt", "after.odt"] {
+            let _ = std::fs::remove_file(s.join(f));
+        }
+        assert!(temps_in(&s).is_empty(), "{name}: {:?}", temps_in(&s));
+    }
+}
+
+/// A per-entry package with a member its manifest does not list: `rekey`
+/// refuses it with exit 5 and leaves neither a temporary file nor a target.
+#[test]
+fn a_refused_rekey_leaves_no_temp_and_no_target() {
+    let s = Scratch::new("rekey-refused");
+    let src = s.join("unlisted.odt");
+    {
+        let golden_bytes = std::fs::read(golden("aoo-blowfish-pbkdf2.odt")).unwrap();
+        let mut zin = zip::ZipArchive::new(std::io::Cursor::new(golden_bytes)).unwrap();
+        let mut zout = zip::ZipWriter::new(std::fs::File::create(&src).unwrap());
+        for i in 0..zin.len() {
+            zout.raw_copy_file(zin.by_index_raw(i).unwrap()).unwrap();
+        }
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zout.start_file("unlisted.xml", stored).unwrap();
+        zout.write_all(b"<x/>").unwrap();
+        zout.finish().unwrap();
+    }
+    let out = rekey(&s, &src, "rekeyed.odt", PASSWORD, "brand new");
+    assert_eq!(code(&out), EX_REFUSED, "{}", stderr(&out));
+    assert!(
+        !s.join("rekeyed.odt").exists(),
+        "a refused rekey wrote its target"
+    );
+    assert!(temps_in(&s).is_empty(), "left behind: {:?}", temps_in(&s));
+}
+
+/// A wrong old password: exit 4, nothing left behind.
+#[test]
+fn a_wrong_old_password_leaves_no_temp_and_no_target() {
+    let s = Scratch::new("rekey-wrong");
+    let out = rekey(
+        &s,
+        &golden("lo-legacy-aes-cbc.odt"),
+        "rekeyed.odt",
+        "wrong",
+        "new",
+    );
+    assert_eq!(code(&out), EX_WRONG_PASSWORD, "{}", stderr(&out));
+    assert!(!s.join("rekeyed.odt").exists());
+    assert!(temps_in(&s).is_empty(), "left behind: {:?}", temps_in(&s));
+}
+
+/// Tampered past the window the password check covers: the checked 1 KiB
+/// passes, plaintext is already on its way to the temporary file, and the
+/// member then fails to inflate. That partial plaintext must not survive --
+/// not as a temporary file, and not as the target.
+#[test]
+fn a_tampered_input_leaves_no_temp_and_no_target() {
+    let s = Scratch::new("tampered");
+    let mut bytes = std::fs::read(golden("lo-legacy-aes-cbc.odt")).unwrap();
+    let at = {
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+        let f = z.by_name("content.xml").unwrap();
+        assert!(
+            f.compressed_size() > 1300,
+            "content.xml must outrun the checked window"
+        );
+        (f.data_start() + 1200) as usize
+    };
+    bytes[at] ^= 0x5a;
+    let src = s.join("tampered.odt");
+    std::fs::write(&src, &bytes).unwrap();
+
+    let out = decrypt_to(&s, &src, "out.odt");
+    assert_ne!(code(&out), EX_OK, "a tampered member decrypted");
+    assert!(
+        !s.join("out.odt").exists(),
+        "a failed decrypt wrote its target"
+    );
+    assert!(temps_in(&s).is_empty(), "left behind: {:?}", temps_in(&s));
+}
+
+/// `encrypt` and `rekey` to stdout must seek while writing, so they go through
+/// a scratch file -- which is gone once the run ends.
+#[test]
+fn encrypt_and_rekey_to_stdout_leave_no_scratch_file() {
+    for (verb, input) in [
+        ("encrypt", "lo-unencrypted.odt"),
+        ("rekey", "lo-wholesome-gcm-argon2.odt"),
+    ] {
+        let mut cmd = Command::new(bin());
+        cmd.arg(verb)
+            .arg(golden(input))
+            .args(["-o", "-", "--password-env", "ODF_CLI_OLD"])
+            .args(["--argon2-t", "1", "--argon2-m", "8", "--argon2-p", "1"])
+            .env("ODF_CLI_OLD", PASSWORD)
+            .env("ODF_CLI_NEW", "brand new")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if verb == "rekey" {
+            cmd.args(["--new-password-env", "ODF_CLI_NEW"]);
+        }
+        let child = cmd.spawn().expect("runs");
+        let pid = child.id();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(code(&out), EX_OK, "{verb}: {}", stderr(&out));
+        assert_eq!(&out.stdout[..2], b"PK", "{verb}: stdout must carry the zip");
+        let scratch = std::env::temp_dir().join(format!("odf-crypto-{pid}.tmp"));
+        assert!(!scratch.exists(), "{verb}: left {scratch:?}");
+    }
+}
+
+/// On Unix the temporary file takes the target's mode before a byte is
+/// written, so `--force` over a 0600 file leaves a 0600 file.
+#[cfg(unix)]
+#[test]
+fn an_overwritten_target_keeps_its_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Scratch::new("perms");
+    let target = s.join("out.odt");
+    std::fs::write(&target, b"old").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let pw = s.join("pw.txt");
+    std::fs::write(&pw, PASSWORD).unwrap();
+    let out = run(&[
+        "decrypt",
+        golden("lo-wholesome-gcm-argon2.odt").to_str().unwrap(),
+        "-o",
+        target.to_str().unwrap(),
+        "--force",
+        "--password-file",
+        pw.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), EX_OK, "{}", stderr(&out));
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}
