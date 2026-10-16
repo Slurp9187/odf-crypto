@@ -773,7 +773,7 @@ pub(crate) fn screen_shape(
             if row.iv.len() != AES_CBC_IV_LEN {
                 return Err(DecryptError::BadParameters("CBC IV length".into()));
             }
-            if len == 0 || len % AES_BLOCK_LEN as u64 != 0 {
+            if len == 0 || !len.is_multiple_of(AES_BLOCK_LEN as u64) {
                 return Err(DecryptError::BadParameters("not a block multiple".into()));
             }
         }

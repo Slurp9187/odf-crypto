@@ -198,7 +198,7 @@ pub(crate) fn strict_b64_decode(s: &str) -> Result<Vec<u8>, String> {
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(format!(
             "{s:?}: length {} is not a multiple of 4",
             bytes.len()

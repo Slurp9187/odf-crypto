@@ -162,7 +162,7 @@ fn per_entry(body: &mut dyn Read, size: u64) -> Vec<u8> {
     let pad = 16 - deflated.len() % 16;
     deflated.extend(std::iter::repeat_n(pad as u8, pad));
     let mut enc = cbc::Encryptor::<aes::Aes256>::new_from_slices(&key, &iv).unwrap();
-    for block in deflated.chunks_exact_mut(16) {
+    for block in deflated.as_chunks_mut::<16>().0 {
         enc.encrypt_block_mut(cbc::cipher::Block::<aes::Aes256>::from_mut_slice(block));
     }
 
