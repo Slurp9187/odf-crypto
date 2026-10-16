@@ -31,6 +31,8 @@ are unchanged, with one wording change and one deliberate departure below.
   against `zip`'s own both hold unchanged. A consumer that enables another
   flate2 backend gets it by feature unification: still valid DEFLATE, but
   different bytes.
+- **MSRV 1.85 → 1.88.** `zip` 8.6.0 declares `rust-version = "1.88"` (it
+  uses let-chains), so this crate cannot promise less.
 - **Fewer crates.** 22 by default (was 25), 56 with `crypto-ops` (was 59), and
   `cli` 70 / 72 / 76 on Windows / Linux / macOS (was 73 / 75 / 79). `bumpalo`,
   `displaydoc`, `log` and `zopfli` left the graph; `typed-path` joined it.

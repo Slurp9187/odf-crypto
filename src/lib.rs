@@ -77,7 +77,7 @@
 //!
 //! # Stability
 //!
-//! Pre-1.0 — the API may change between releases. Requires Rust 1.85.
+//! Pre-1.0 — the API may change between releases. Requires Rust 1.88.
 
 // Scoped to the one config where `decrypt`/`encrypt` genuinely are not compiled.
 #![cfg_attr(not(feature = "crypto-ops"), allow(rustdoc::broken_intra_doc_links))]

@@ -3,7 +3,7 @@ name = "odf-crypto"
 version = "0.1.0-rc.11"
 edition = "2021"
 description = "LibreOffice-faithful encryption for ODF packages (.odt, .ods, .odp): detect it, decrypt it, write it"
-rust-version = "1.85"
+rust-version = "1.88"
 # Every src/bin/*.rs is otherwise auto-discovered as its own binary, which turns
 # the CLI's `#[path]` test module into a second bin target with no `main`. The
 # one binary is declared explicitly in [[bin]] below.
