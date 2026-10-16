@@ -4,6 +4,8 @@ use super::*;
 
 use std::io::Cursor;
 
+use zip::write::SimpleFileOptions;
+
 use crate::classify::classify;
 use crate::decrypt::decrypt;
 use crate::decrypt_stream::decrypt_to;

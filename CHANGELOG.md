@@ -11,6 +11,40 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.11] - Unreleased
+
+### Changed
+
+**`zip` 2.4.2 → 8.6.0.** Every `zip` 2.x through 2.6.0 is yanked, and 2.6.1
+does not build this crate, so a consumer's `cargo deny` failed on rc.10 with
+no lockfile way out. 8.6.0 is what `encrypted-file-vault` already uses, so its
+graph now holds one `zip`. The public API, the streaming API and their errors
+are unchanged, with one wording change and one deliberate departure below.
+
+- **Output bytes are unchanged.** `zip` 8 records the build host in "version
+  made by" (DOS on Windows, Unix elsewhere), where 2.4.2 wrote Unix everywhere,
+  and its `deflate` feature moved to zlib-rs and zopfli. Every `ZipWriter` here
+  now takes `System::Unix` from one helper (`zip_stream::file_options`), and
+  `Cargo.toml` selects `deflate-flate2` with flate2's `rust_backend`
+  (miniz_oxide), which is what 2.4.2's `deflate` meant. The rc.9 byte pins on
+  `decrypt` and the field-by-field comparison of the streaming zip writer
+  against `zip`'s own both hold unchanged. A consumer that enables another
+  flate2 backend gets it by feature unification: still valid DEFLATE, but
+  different bytes.
+- **Fewer crates.** 22 by default (was 25), 56 with `crypto-ops` (was 59), and
+  `cli` 70 / 72 / 76 on Windows / Linux / macOS (was 73 / 75 / 79). `bumpalo`,
+  `displaydoc`, `log` and `zopfli` left the graph; `typed-path` joined it.
+- **`Zip(String)` payloads.** `zip` 8 widened `InvalidArchive` to
+  `Cow<'static, str>`, and some of its messages now interpolate run-time
+  text. `zip_err`'s explicit `&'static str` binding was written to make that
+  widening a compile error, and it was one. A borrowed (literal) message is
+  quoted as before. An owned message is reduced to `invalid Zip archive` with
+  no payload, so no package-controlled text reaches the error. A test pins
+  this and was checked by breaking it. `InvalidPassword` now reads
+  `provided password is incorrect`, as in `zip` 8 (never reached here: this
+  crate uses no zip encryption). The new `CompressionMethodNotSupported`
+  variant gets a message of its own.
+
 ## [0.1.0-rc.10] - 2026-10-15
 
 The streaming arc (#86, plan `docs/plans/odf-streaming-2026-10-15.md`), for

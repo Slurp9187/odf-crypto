@@ -8,7 +8,6 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use secure_gate::{RevealSecret, RevealSecretMut};
-use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify_latched;
@@ -29,7 +28,7 @@ use crate::stream::{
     InflateReader, CHUNK,
 };
 use crate::zip_err;
-use crate::zip_stream::{deflate_bound, ZipStreamWriter};
+use crate::zip_stream::{self, deflate_bound, ZipStreamWriter};
 use crate::{Classification, Mode};
 
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
@@ -239,7 +238,7 @@ fn write_package<W: Write + Seek>(
             other => EncryptError::Zip(zip_err::message(&other)).into(),
         }
     };
-    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let stored = zip_stream::file_options(CompressionMethod::Stored);
     let mut out = ZipWriter::new(writer);
     out.start_file("mimetype", stored).map_err(to_zip)?;
     out.write_all(mimetype.as_deref().map(str::as_bytes).unwrap_or(&[]))
@@ -262,7 +261,7 @@ fn write_package<W: Write + Seek>(
     let size = i64::try_from(size)
         .map_err(|_| EncryptError::Internal(format!("inner package of {size} bytes")))?;
     let manifest = build_manifest(size, &iv, &salt, mimetype.as_deref(), params)?;
-    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let deflated = zip_stream::file_options(CompressionMethod::Deflated);
     out.start_file(MANIFEST_PATH, deflated).map_err(to_zip)?;
     out.write_all(&manifest).map_err(ReencryptError::Io)?;
     out.finish().map_err(to_zip)?;

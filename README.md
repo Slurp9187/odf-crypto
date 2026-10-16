@@ -19,7 +19,7 @@ accept predicates, so a package this crate calls encrypted is one LibreOffice
 would prompt for, and a package it refuses is one LibreOffice would refuse to
 open.
 
-> **Pre-release.** This is `0.1.0-rc.10`. The API may change before `0.1.0`.
+> **Pre-release.** This is `0.1.0-rc.11`. The API may change before `0.1.0`.
 
 ## What it does
 
@@ -84,10 +84,10 @@ the file afterwards. It is evidenced separately — see
 ```toml
 [dependencies]
 # Detection only — no cryptographic dependency.
-odf-crypto = "0.1.0-rc.10"
+odf-crypto = "0.1.0-rc.11"
 
 # Detection, reading and writing.
-odf-crypto = { version = "0.1.0-rc.10", features = ["crypto-ops"] }
+odf-crypto = { version = "0.1.0-rc.11", features = ["crypto-ops"] }
 ```
 
 Pre-release versions are not matched by ordinary requirements — name the full
@@ -408,9 +408,9 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0-rc.10"` | `classify` alone. No cryptographic dependency. **25 crates.** |
-| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **59 crates.** |
-| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **73 crates** on Windows, 75 on Linux, 79 on macOS. |
+| **Detection-only** | `odf-crypto = "0.1.0-rc.11"` | `classify` alone. No cryptographic dependency. **22 crates.** |
+| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **56 crates.** |
+| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **70 crates** on Windows, 72 on Linux, 76 on macOS. |
 
 **Detection is the default because it is cheap.** `classify` parses
 `META-INF/manifest.xml` and the zip central directory; it never derives a key or
@@ -473,7 +473,7 @@ onto the streaming code, and LibreOffice 26.8.0.3 opens what `decrypt_to`,
 `encrypt_to` and `reencrypt_to` write (`tests/goldens/validate_decrypt_to.py`,
 `validate_encrypted_outputs.py`), refusing each with a wrong password.
 
-**321 tests, passing in every feature configuration** — 230 library, 21 CLI
+**322 tests, passing in every feature configuration** — 231 library, 21 CLI
 unit, 41 CLI end-to-end, 2 memory-bound, 27 doctests. All three builds run in CI, not just the
 two that are cheap.
 

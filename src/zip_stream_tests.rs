@@ -1,4 +1,4 @@
-//! The streaming zip writer against `zip` 2.4.2's own writer, against
+//! The streaming zip writer against `zip`'s own writer, against
 //! `classify`, and at the Zip64 boundaries. Conditions (1)-(3) of the zip
 //! writer decision, `docs/plans/odf-streaming-2026-10-15.md` §7.
 
@@ -6,7 +6,6 @@ use super::*;
 
 use std::io::Cursor;
 
-use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify;
@@ -41,12 +40,7 @@ fn both() -> (Vec<u8>, Vec<u8>) {
         } else {
             CompressionMethod::Stored
         };
-        theirs
-            .start_file(
-                *name,
-                SimpleFileOptions::default().compression_method(method),
-            )
-            .unwrap();
+        theirs.start_file(*name, file_options(method)).unwrap();
         theirs.write_all(body).unwrap();
     }
     let theirs = theirs.finish().unwrap().into_inner();
@@ -176,13 +170,13 @@ fn parse(b: &[u8]) -> (Vec<Local>, Vec<Cen>) {
     }
 }
 
-/// Condition (2): every byte that differs from `zip` 2.4.2's output is named.
+/// Condition (2): every byte that differs from `zip`'s output is named.
 /// The only differences allowed are the ones a writer that cannot seek must
 /// make on a **deflated** member: bit 3 set, zero CRC and sizes in its local
 /// header, a 16-byte data descriptor after it -- and the later offsets that
 /// descriptor shifts. Everything else, the DEFLATE data included, is equal.
 #[test]
-fn every_difference_from_zip_242_is_a_data_descriptor() {
+fn every_difference_from_zips_writer_is_a_data_descriptor() {
     let (ours, theirs) = both();
     let (ol, oc) = parse(&ours);
     let (tl, tc) = parse(&theirs);
@@ -218,7 +212,7 @@ fn every_difference_from_zip_242_is_a_data_descriptor() {
     assert_eq!(oe[20..], te[20..]);
 }
 
-/// Condition (2): the output reads back through `zip` 2.4.2 with every
+/// Condition (2): the output reads back through `zip` with every
 /// member's CRC checked, and `classify` accepts it.
 #[test]
 fn the_output_reads_back_through_zip_and_classify() {
@@ -419,7 +413,7 @@ fn deflate_bound_is_above_the_worst_case() {
 }
 
 /// Condition (3), the real run: a zip past 4 GiB on disk, read back through
-/// `zip` 2.4.2 with both members' CRCs checked. Measured on the dev machine
+/// `zip` with both members' CRCs checked. Measured on the dev machine
 /// (release): see the commit that added it. Ignored by default: it writes
 /// and reads 4 GiB.
 #[test]

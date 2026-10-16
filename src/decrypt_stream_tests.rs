@@ -152,7 +152,7 @@ fn input_changed_between_passes_fails_the_call() {
     let at = {
         let mut z = ZipArchive::new(Cursor::new(&bytes)).unwrap();
         let f = z.by_name("encrypted-package").unwrap();
-        f.data_start() + 100
+        f.data_start().unwrap() + 100
     };
     let reader = ChangesOnSecondPass {
         inner: Cursor::new(bytes),
@@ -316,7 +316,7 @@ fn damage_at_a_member_end_fails_both_paths_alike() {
     for row in &class.encrypted_entries {
         let end = {
             let f = z.by_name(&row.path).unwrap();
-            f.data_start() + f.compressed_size() - 1
+            f.data_start().unwrap() + f.compressed_size() - 1
         };
         let mut bad = golden.clone();
         bad[end as usize] ^= 0x5a;

@@ -1,6 +1,6 @@
 [package]
 name = "odf-crypto"
-version = "0.1.0-rc.10"
+version = "0.1.0-rc.11"
 edition = "2021"
 description = "LibreOffice-faithful encryption for ODF packages (.odt, .ods, .odp): detect it, decrypt it, write it"
 rust-version = "1.85"
@@ -85,7 +85,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Detection only. `classify` needs no cryptographic dependency, so the default
-# build pulls 25 crates where a cryptographic one pulls 59. Nobody pays for a
+# build pulls 22 crates where a cryptographic one pulls 56. Nobody pays for a
 # cipher stack to ask whether a file is encrypted.
 #
 # It does still pull an inflate implementation -- zip -> flate2 -> miniz_oxide,
@@ -139,7 +139,17 @@ crypto-ops = [
 [dependencies]
 quick-xml = "0.41"
 thiserror = "2"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# `deflate-flate2` plus flate2's `rust_backend` is the pair zip 2.4.2's
+# `deflate` meant: flate2 over miniz_oxide. zip 8's `deflate` names zopfli
+# (used only above level 9, and nothing here sets a level) and zlib-rs, whose
+# output differs from miniz_oxide's -- which broke `decrypt`'s byte-for-byte
+# rc.9 pin and `zip_stream`'s byte comparison against zip's own writer.
+# zip declares flate2 with `default-features = false`, so the backend is
+# chosen by naming flate2 here; nothing calls it directly. A consumer that
+# enables another flate2 backend (EFV enables zlib-rs) gets that one by
+# feature unification: still valid DEFLATE, different bytes.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 # Not gated behind `decrypt`: this is the crate's only zeroizing primitive, so
 # it's unconditional rather than following the optional-dependency pattern
 # below. Its own zeroize-on-drop replaces the direct `zeroize` dependency this
@@ -231,7 +241,7 @@ ctrlc = { version = "=3.5.2", optional = true }
 # builder+suggestions is 5, adding wrap_help is 8. Five is worth it for
 # `--flag=value`, "did you mean --password-env", and help that cannot drift from
 # the definitions it documents. None of it reaches a library consumer: `cli` is
-# opt-in, and the default build still resolves 25 crates.
+# opt-in, and the default build still resolves 22 crates.
 clap = { version = "4", optional = true, default-features = false, features = [
     "std",
     "help",

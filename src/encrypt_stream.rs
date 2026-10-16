@@ -10,7 +10,6 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use secure_gate::{RevealSecret, RevealSecretMut};
-use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify_latched;
@@ -22,7 +21,7 @@ use crate::io_latch::{Latch, Latched};
 use crate::limits::AES_GCM_TAG_LEN;
 use crate::stream::{chunk_buffer, DeflateWriter, Fault, GcmEncryptWriter, GcmStream, CHUNK};
 use crate::zip_err;
-use crate::zip_stream::deflate_bound;
+use crate::zip_stream::{self, deflate_bound};
 
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
 
@@ -156,7 +155,7 @@ fn run<R: Read + Seek, W: Write + Seek>(
         zip::result::ZipError::Io(e) => EncryptError::Io(e),
         other => EncryptError::Zip(zip_err::message(&other)),
     };
-    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let stored = zip_stream::file_options(CompressionMethod::Stored);
     let mut out = ZipWriter::new(writer);
     out.start_file("mimetype", stored).map_err(to_zip)?;
     out.write_all(mimetype.as_deref().map(str::as_bytes).unwrap_or(&[]))
@@ -190,7 +189,7 @@ fn run<R: Read + Seek, W: Write + Seek>(
         Ok(())
     })?;
 
-    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let deflated = zip_stream::file_options(CompressionMethod::Deflated);
     out.start_file(MANIFEST_PATH, deflated).map_err(to_zip)?;
     out.write_all(&manifest_xml).map_err(EncryptError::Io)?;
     out.finish().map_err(to_zip)?;

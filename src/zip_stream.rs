@@ -1,10 +1,13 @@
 //! A zip writer for an output that cannot seek.
 //!
-//! `zip` 2.4.2 writes only to `Write + Seek`: it seeks back to patch each local
-//! header once a member's CRC and sizes are known. Two outputs here cannot
-//! seek -- `decrypt_to`'s per-entry rebuild, whose writer is `Write` only, and
-//! `reencrypt_to`'s inner package, which lives inside a cipher stream -- so
-//! this writes the other way the format allows. Reading stays on `zip` 2.4.2.
+//! `zip` 2.4.2, which this crate used through rc.10, writes only to
+//! `Write + Seek`: it seeks back to patch each local header once a member's
+//! CRC and sizes are known. Two outputs here cannot seek -- `decrypt_to`'s
+//! per-entry rebuild, whose writer is `Write` only, and `reencrypt_to`'s inner
+//! package, which lives inside a cipher stream -- so this writes the other way
+//! the format allows. Reading stays on `zip`, now 8.6.0, which does have
+//! `ZipWriter::new_stream`; moving to it is a separate decision, not part of
+//! the version port that brought it into reach.
 //! See `docs/plans/odf-streaming-2026-10-15.md`, §7.
 //!
 //! # Two kinds of member
@@ -18,11 +21,12 @@
 //!   header, and a data descriptor after the data. LibreOffice reads these
 //!   (`ZipFile.cxx:1047, 1634, 1763`).
 //!
-//! # Matching `zip` 2.4.2
+//! # Matching `zip`'s writer
 //!
-//! Every field this writer shares with `zip` 2.4.2's own output takes the value
-//! that crate writes, measured from its output: version needed 10 (stored) or
-//! 20 (deflated), 45 with Zip64; made-by Unix (`3 << 8 | needed`); time 0, date
+//! Every field this writer shares with `zip`'s own output takes the value
+//! that crate writes, measured from 2.4.2's output and held under 8.6.0 by
+//! [`file_options`] and the `flate2` backend `Cargo.toml` names: version
+//! needed 10 (stored) or 20 (deflated), 45 with Zip64; made-by Unix (`3 << 8 | needed`); time 0, date
 //! 1980-01-01; bit 11 (UTF-8) exactly when the name is not ASCII; external
 //! attributes `0o100644 << 16`; no extra field unless Zip64 needs one. The
 //! DEFLATE data is level 6 raw, the same as `zip`'s. `zip_stream_tests.rs`
@@ -57,7 +61,7 @@ const FLAG_DESCRIPTOR: u16 = 1 << 3;
 const FLAG_UTF8: u16 = 1 << 11;
 const MADE_BY_UNIX: u16 = 3 << 8;
 const EXTERNAL_ATTRIBUTES: u32 = 0o100_644 << 16;
-/// 1980-01-01 in MS-DOS date format, with time 0: `zip` 2.4.2's default when
+/// 1980-01-01 in MS-DOS date format, with time 0: `zip`'s default when
 /// built without its `time` feature, as it is here.
 /// Year 0 (1980) in bits 9-15, month 1 in bits 5-8, day 1 in bits 0-4.
 const DOS_DATE: u16 = (1 << 5) | 1;
@@ -416,7 +420,7 @@ impl<W: Write> ZipStreamWriter<W> {
 }
 
 /// Where a rebuilt package's members go: the streaming writer above, or
-/// `zip` 2.4.2's own writer when the output can seek. `decrypt_entries`
+/// `zip`'s own writer when the output can seek. `decrypt_entries`
 /// writes through this, so the rebuild is one piece of code whichever frames
 /// the zip.
 pub(crate) trait ZipSink {
@@ -457,7 +461,7 @@ impl<W: Write> ZipSink for ZipStreamWriter<W> {
     }
 }
 
-/// `zip` 2.4.2's writer behind [`ZipSink`], for an output that can seek: it
+/// `zip`'s writer behind [`ZipSink`], for an output that can seek: it
 /// writes ordinary headers with no data descriptors, exactly as the
 /// whole-buffer `decrypt` did through rc.9, so that path's output stays byte
 /// for byte what it was. Members are copied through a wiped chunk buffer.
@@ -501,6 +505,19 @@ impl<W: Write + io::Seek> SeekableZipSink<W> {
     }
 }
 
+/// `zip`'s write options for `method`, with the host system pinned to Unix.
+///
+/// `zip` 8 records `System::Dos` in "version made by" when built for Windows
+/// and `System::Unix` elsewhere (`zip-8.6.0/src/types.rs:425-434`). `zip`
+/// 2.4.2 wrote Unix on every host, and so does [`ZipStreamWriter`]. Pinning it
+/// keeps every writer's output the same on every host and byte for byte what
+/// rc.10 wrote. Every `ZipWriter` this crate drives takes its options here.
+pub(crate) fn file_options(method: zip::CompressionMethod) -> zip::write::SimpleFileOptions {
+    zip::write::SimpleFileOptions::default()
+        .compression_method(method)
+        .system(zip::System::Unix)
+}
+
 fn zip_error(e: zip::result::ZipError) -> ZipStreamError {
     match e {
         zip::result::ZipError::Io(e) => ZipStreamError::Write(e),
@@ -516,8 +533,7 @@ impl<W: Write + io::Seek> ZipSink for SeekableZipSink<W> {
         size: u64,
         data: &mut dyn Read,
     ) -> Result<(), ZipStreamError> {
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
+        let options = file_options(zip::CompressionMethod::Stored);
         self.zip.start_file(name, options).map_err(zip_error)?;
         let (got, got_crc) = self.copy(data, size)?;
         if got != size {
@@ -535,8 +551,7 @@ impl<W: Write + io::Seek> ZipSink for SeekableZipSink<W> {
         size_hint: u64,
         data: &mut dyn Read,
     ) -> Result<u64, ZipStreamError> {
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options = file_options(zip::CompressionMethod::Deflated);
         self.zip.start_file(name, options).map_err(zip_error)?;
         Ok(self.copy(data, size_hint)?.0)
     }
