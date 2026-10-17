@@ -183,8 +183,8 @@ fn run<R: Read + Seek, W: Write>(
 /// - The output is one buffer, allocated fallibly at a computed bound before
 ///   any member is decrypted, and never grown: a grown `Vec` would leave
 ///   reallocated copies of the plaintext behind, unwiped. A per-entry rebuild
-///   is framed by `zip` 2.4.2's own writer, as in rc.9, so the bytes are
-///   rc.9's bytes.
+///   is framed by `zip`'s own writer, configured as 2.4.2's was in rc.9
+///   ([`crate::zip_stream::file_options`]), so the bytes are rc.9's bytes.
 pub(crate) fn decrypt_slice(
     bytes: &[u8],
     password: &str,
@@ -475,7 +475,7 @@ pub(crate) fn gcm_key<R: Read + Seek>(
 pub(crate) fn open_after_iv<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     index: usize,
-) -> Result<zip::read::ZipFile<'_>, DecryptError> {
+) -> Result<zip::read::ZipFile<'_, R>, DecryptError> {
     let mut file = archive
         .by_index(index)
         .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;

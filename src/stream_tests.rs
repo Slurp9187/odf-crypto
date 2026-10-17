@@ -242,7 +242,7 @@ fn cbc_seal(key: &[u8], iv: &[u8], pt: &[u8]) -> Vec<u8> {
     let mut buf = pt.to_vec();
     buf.extend(std::iter::repeat_n(pad as u8, pad));
     let mut enc = cbc::Encryptor::<Aes256>::new_from_slices(key, iv).unwrap();
-    for block in buf.chunks_exact_mut(AES_BLOCK_LEN) {
+    for block in buf.as_chunks_mut::<AES_BLOCK_LEN>().0 {
         enc.encrypt_block_mut(cbc::cipher::Block::<Aes256>::from_mut_slice(block));
     }
     buf

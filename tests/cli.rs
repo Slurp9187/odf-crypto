@@ -984,7 +984,7 @@ fn a_tampered_input_leaves_no_temp_and_no_target() {
             f.compressed_size() > 1300,
             "content.xml must outrun the checked window"
         );
-        (f.data_start() + 1200) as usize
+        (f.data_start().unwrap() + 1200) as usize
     };
     bytes[at] ^= 0x5a;
     let src = s.join("tampered.odt");

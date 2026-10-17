@@ -212,7 +212,7 @@ impl GhashStream {
             self.partial_len = 0;
         }
         let whole = data.len() - data.len() % 16;
-        for block in data[..whole].chunks_exact(16) {
+        for block in data[..whole].as_chunks::<16>().0 {
             self.h.update(&[*GenericArray::from_slice(block)]);
         }
         let rest = &data[whole..];

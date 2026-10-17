@@ -133,7 +133,7 @@ fn staroffice_sha1(msg: &[u8]) -> PasswordDigest {
     let mut state = SHA1_INIT;
     let full = msg.len() - msg.len() % SHA1_BLOCK;
     let (blocks, tail) = msg.split_at(full);
-    for block in blocks.chunks_exact(SHA1_BLOCK) {
+    for block in blocks.as_chunks::<SHA1_BLOCK>().0 {
         sha1::compress(
             &mut state,
             core::slice::from_ref(Sha1Block::<Sha1Core>::from_slice(block)),
@@ -159,7 +159,7 @@ fn staroffice_sha1(msg: &[u8]) -> PasswordDigest {
         }
     });
     padded.with_secret(|buf| {
-        for block in buf.chunks_exact(SHA1_BLOCK) {
+        for block in buf.as_chunks::<SHA1_BLOCK>().0 {
             sha1::compress(
                 &mut state,
                 core::slice::from_ref(Sha1Block::<Sha1Core>::from_slice(block)),
@@ -167,7 +167,7 @@ fn staroffice_sha1(msg: &[u8]) -> PasswordDigest {
         }
     });
     PasswordDigest::new_with(20, |slot| {
-        for (dst, word) in slot.chunks_exact_mut(4).zip(state) {
+        for (dst, word) in slot.as_chunks_mut::<4>().0.iter_mut().zip(state) {
             dst.copy_from_slice(&word.to_be_bytes());
         }
     })

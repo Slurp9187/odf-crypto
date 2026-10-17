@@ -116,11 +116,11 @@ jobs:
 
   msrv:
     # Keep in step with `rust-version` in Cargo.toml; bump both together.
-    name: MSRV 1.85
+    name: MSRV 1.88
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
@@ -135,7 +135,8 @@ jobs:
       # superset, and it is the only configuration that compiles clap,
       # serde_json and rpassword -- three dependency trees with MSRVs of their
       # own, which `rust-version` in Cargo.toml promises for and nothing here
-      # checked. Measured at 1.85.0 before the switch: it builds clean.
+      # checked. Measured at 1.85.0 before the switch: it builds clean. Raised to
+      # 1.88 in rc.11 because `zip` 8.6.0 and 9.0.4 declare it (let-chains).
       - run: cargo build --locked --no-default-features --features cli
 
   docs:

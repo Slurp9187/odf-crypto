@@ -1,7 +1,7 @@
 //! Reproduces `zip::result::ZipError`'s `Display` wording without ever
 //! calling `ZipError::to_string`.
 //!
-//! `ZipError` is `#[non_exhaustive]` (`zip-2.4.2/src/result.rs:19`) — semver
+//! `ZipError` is `#[non_exhaustive]` (`zip-9.0.4/src/result.rs:14`) — semver
 //! protects the shape of the variants already enumerated, not that the
 //! enumeration stays complete. Calling `.to_string()` on it directly would
 //! flow whatever a future variant's `Display` writes straight into a public
@@ -10,32 +10,38 @@
 //! `InvalidArchive(&'static str)` to `InvalidArchive(Cow<'static, str>)` and
 //! began interpolating an archive entry name into it
 //! (`"Duplicate filename: {}"`, `zip-6.0.0/src/write.rs:1061`, still present
-//! at `zip-8.6.0/src/write.rs:1382`).
+//! at `zip-8.6.0/src/write.rs:1382`, and as `{:?}` at
+//! `zip-9.0.4/src/write.rs:786`).
 //!
-//! [`message`] matches every variant `zip` 2.4.2 declares and reproduces its
-//! `displaydoc` string byte for byte — pinned by a test in this module that
+//! [`message`] matches every variant `zip` 9.0.4 declares and reproduces its
+//! `Display` string byte for byte — pinned by a test in this module that
 //! asserts `message(&e) == e.to_string()` for each one. That test is the
 //! guard: it is the one that fires the day a `zip` minor release changes its
-//! wording. The `InvalidArchive` and `UnsupportedArchive` arms bind their
-//! payload as `&'static str` explicitly (`let s: &'static str = s;`, relying
-//! on the annotation to force the type rather than leaving it inferred), so a
-//! future widening to `Cow<'static, str>` — the exact move `zip` 6.0.0
-//! already made once — is a compile error here rather than a silent quote of
-//! package-controlled text: `Cow`'s own `Deref` would still coerce, but only
-//! to a reference borrowed for the match, not one that can satisfy
-//! `'static`. The wildcard arm, present only because `#[non_exhaustive]`
+//! wording. The wildcard arm, present only because `#[non_exhaustive]`
 //! requires one, contributes no text of its own.
 //!
-//! That second guard was checked rather than reasoned about, because a guard
-//! that only looks protective is worse than none. Both shapes were compiled
-//! standalone: `enum Narrow { InvalidArchive(&'static str) }` with this exact
-//! binding compiles, and `enum Wide { InvalidArchive(Cow<'static, str>) }`
-//! with the same binding fails — `error: lifetime may not live long enough`.
-//! So the annotation is load-bearing, not decoration.
+//! **The one deliberate departure is an owned `InvalidArchive`.** Through
+//! 0.1.0-rc.10 this crate was on `zip` 2.4.2, where both string payloads were
+//! `&'static str`, and the arms bound them with an explicit
+//! `let s: &'static str = s;` so that the widening `zip` 6.0.0 made would be
+//! a compile error here rather than a silent quote of package-controlled
+//! text. Checked rather than reasoned about at the time — the binding
+//! compiled against `&'static str` and failed against `Cow<'static, str>`
+//! with `lifetime may not live long enough` — and it fired exactly so on the
+//! move to 8.6.0 (and on 2.6.1, which made the same change; 9.0.4 is the
+//! same again). The answer is
+//! to split on the `Cow` rather than drop the guard: `Cow::Borrowed` holds a
+//! `&'static str`, which in `zip` is a literal, so it is quoted (the binding
+//! still forces `'static`); `Cow::Owned` was formatted at run time — e.g.
+//! `"Extra field {} header truncated"` (`zip-9.0.4/src/extra_fields/extra_field.rs:106`) — and
+//! gets the variant's fixed prefix only. That is the one place `message`
+//! and `Display` intentionally differ, and a test pins it.
 
+use std::borrow::Cow;
 use zip::result::ZipError;
 
-/// Formats `err` the way `zip` 2.4.2's `Display` impl does.
+/// Formats `err` the way `zip` 9.0.4's `Display` impl does, except that an
+/// owned `InvalidArchive` message is not quoted.
 ///
 /// Every call site in this crate that turns a `ZipError` into one of the
 /// three `Zip(String)` payloads (`DetectError`, `DecryptError`,
@@ -44,16 +50,20 @@ use zip::result::ZipError;
 pub(crate) fn message(err: &ZipError) -> String {
     match err {
         ZipError::Io(io_err) => format!("i/o error: {io_err}"),
-        ZipError::InvalidArchive(s) => {
+        ZipError::InvalidArchive(Cow::Borrowed(s)) => {
             let s: &'static str = s;
             format!("invalid Zip archive: {s}")
         }
+        ZipError::InvalidArchive(Cow::Owned(_)) => "invalid Zip archive".to_string(),
         ZipError::UnsupportedArchive(s) => {
             let s: &'static str = s;
             format!("unsupported Zip archive: {s}")
         }
         ZipError::FileNotFound => "specified file not found in archive".to_string(),
-        ZipError::InvalidPassword => "The password provided is incorrect".to_string(),
+        ZipError::InvalidPassword => "provided password is incorrect".to_string(),
+        ZipError::CompressionMethodNotSupported(id) => {
+            format!("compression method not supported: {id}")
+        }
         _ => "zip error (unrecognized variant)".to_string(),
     }
 }
@@ -61,10 +71,11 @@ pub(crate) fn message(err: &ZipError) -> String {
 #[cfg(test)]
 mod tests {
     use super::message;
+    use std::borrow::Cow;
     use std::io;
     use zip::result::ZipError;
 
-    /// Methods whose `Result` carries a [`ZipError`] in `zip` 2.4.2.
+    /// Methods whose `Result` carries a [`ZipError`] in `zip` 9.0.4.
     const ZIP_RETURNING: [&str; 5] = [
         "ZipArchive::new",
         ".by_index(",
@@ -155,21 +166,32 @@ mod tests {
     }
 
     /// Pins `message` to `ZipError`'s own `Display` for every variant `zip`
-    /// 2.4.2 declares. Broken on purpose once to prove it fires (CLAUDE.md:
-    /// "test the guard by breaking the thing it guards") — deleting the
-    /// `FileNotFound` arm's string made this fail, as expected, and it was
-    /// restored.
+    /// 9.0.4 declares, with `InvalidArchive` in its borrowed form. Broken on
+    /// purpose once to prove it fires (CLAUDE.md: "test the guard by breaking
+    /// the thing it guards") — deleting the `FileNotFound` arm's string made
+    /// this fail, as expected, and it was restored.
     #[test]
     fn message_matches_display_for_every_known_variant() {
         let cases = [
             ZipError::Io(io::Error::other("disk exploded")),
-            ZipError::InvalidArchive("bad local file header"),
+            ZipError::InvalidArchive(Cow::Borrowed("bad local file header")),
             ZipError::UnsupportedArchive("zip64 not supported"),
             ZipError::FileNotFound,
             ZipError::InvalidPassword,
+            ZipError::CompressionMethodNotSupported(99),
         ];
         for case in cases {
             assert_eq!(message(&case), case.to_string());
         }
+    }
+
+    /// An owned `InvalidArchive` was formatted at run time and may carry
+    /// package-controlled text, so `message` keeps the prefix and drops the
+    /// payload -- the one place it departs from `Display` on purpose.
+    #[test]
+    fn an_owned_invalid_archive_message_is_not_quoted() {
+        let e = ZipError::InvalidArchive(Cow::Owned("Duplicate filename: EVIL".into()));
+        assert_eq!(message(&e), "invalid Zip archive");
+        assert_ne!(message(&e), e.to_string());
     }
 }

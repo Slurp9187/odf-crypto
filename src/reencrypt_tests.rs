@@ -4,6 +4,8 @@ use super::*;
 
 use std::io::Cursor;
 
+use zip::write::SimpleFileOptions;
+
 use crate::classify::classify;
 use crate::decrypt::decrypt;
 use crate::decrypt_stream::decrypt_to;
@@ -162,7 +164,7 @@ fn with_plain_listed_row() -> Vec<u8> {
     let mut src = ZipArchive::new(Cursor::new(&golden)).unwrap();
     let mut out = ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..src.len() {
-        let name = src.by_index(i).unwrap().name().to_string();
+        let name = src.by_index(i).unwrap().name().unwrap().to_string();
         if name == MANIFEST_PATH {
             let mut xml = String::new();
             src.by_index(i).unwrap().read_to_string(&mut xml).unwrap();
@@ -232,7 +234,7 @@ fn without_content() -> Vec<u8> {
     let mut src = ZipArchive::new(Cursor::new(&golden)).unwrap();
     let mut out = ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..src.len() {
-        let name = src.by_index(i).unwrap().name().to_string();
+        let name = src.by_index(i).unwrap().name().unwrap().to_string();
         if name == "content.xml" {
             continue;
         }

@@ -41,7 +41,7 @@ fn members(zip: &[u8]) -> Vec<(String, Vec<u8>)> {
             let mut f = z.by_index(i).unwrap();
             let mut body = Vec::new();
             f.read_to_end(&mut body).unwrap();
-            (f.name().to_string(), body)
+            (f.name().unwrap().to_string(), body)
         })
         .collect()
 }
@@ -152,7 +152,7 @@ fn input_changed_between_passes_fails_the_call() {
     let at = {
         let mut z = ZipArchive::new(Cursor::new(&bytes)).unwrap();
         let f = z.by_name("encrypted-package").unwrap();
-        f.data_start() + 100
+        f.data_start().unwrap() + 100
     };
     let reader = ChangesOnSecondPass {
         inner: Cursor::new(bytes),
@@ -316,7 +316,7 @@ fn damage_at_a_member_end_fails_both_paths_alike() {
     for row in &class.encrypted_entries {
         let end = {
             let f = z.by_name(&row.path).unwrap();
-            f.data_start() + f.compressed_size() - 1
+            f.data_start().unwrap() + f.compressed_size() - 1
         };
         let mut bad = golden.clone();
         bad[end as usize] ^= 0x5a;
@@ -381,7 +381,7 @@ fn a_bad_crc_past_the_deflate_end_is_caught_on_blowfish() {
     let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..z.len() {
         let f = z.by_index_raw(i).unwrap();
-        if f.name() == "content.xml" {
+        if f.name().unwrap() == "content.xml" {
             let opt = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             drop(f);

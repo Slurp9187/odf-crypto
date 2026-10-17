@@ -81,9 +81,9 @@ Three configurations, and every change must hold in all of them.
 
 | Feature | Default | What it adds |
 | --- | --- | --- |
-| *(none)* | **yes** | `classify` / `classify_reader` only. 25 crates, no cryptographic dependency. |
-| `crypto-ops` | opt-in | `decrypt`, `encrypt` and their streaming `*_to` forms, and `reencrypt_to`. 59 crates. |
-| `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`, `ctrlc`. 73 crates on Windows, 75 on Linux, 79 on macOS (counts are per target, measured with `--target`). |
+| *(none)* | **yes** | `classify` / `classify_reader` only. 22 crates, no cryptographic dependency. |
+| `crypto-ops` | opt-in | `decrypt`, `encrypt` and their streaming `*_to` forms, and `reencrypt_to`. 56 crates. |
+| `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`, `ctrlc`. 70 crates on Windows, 72 on Linux, 76 on macOS (counts are per target, measured with `--target`). |
 
 **Detection-only is the default on purpose.** Nobody should resolve a cipher
 stack to ask whether a file is encrypted, and it makes the crate cheap for a
@@ -222,7 +222,7 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-321 of them: 230 library, 21 CLI unit, 41 CLI end-to-end (one Unix-only, so
+322 of them: 231 library, 21 CLI unit, 41 CLI end-to-end (one Unix-only, so
 `--list` shows 40 on Windows), 2 memory-bound, 27 doctests. All must pass in every feature configuration.
 
 **Count test functions, not passing tests.** `cargo test`'s summary line omits
