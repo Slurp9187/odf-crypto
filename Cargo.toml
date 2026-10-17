@@ -140,7 +140,7 @@ crypto-ops = [
 quick-xml = "0.41"
 thiserror = "2"
 # `deflate-flate2` plus flate2's `rust_backend` is the pair zip 2.4.2's
-# `deflate` meant: flate2 over miniz_oxide. zip 8's `deflate` names zopfli
+# `deflate` meant: flate2 over miniz_oxide. zip 8's and 9's `deflate` names zopfli
 # (used only above level 9, and nothing here sets a level) and zlib-rs, whose
 # output differs from miniz_oxide's -- which broke `decrypt`'s byte-for-byte
 # rc.9 pin and `zip_stream`'s byte comparison against zip's own writer.
@@ -148,7 +148,7 @@ thiserror = "2"
 # chosen by naming flate2 here; nothing calls it directly. A consumer that
 # enables another flate2 backend (EFV enables zlib-rs) gets that one by
 # feature unification: still valid DEFLATE, different bytes.
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 # Not gated behind `decrypt`: this is the crate's only zeroizing primitive, so
 # it's unconditional rather than following the optional-dependency pattern

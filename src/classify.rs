@@ -166,7 +166,7 @@ fn collect_members<R: Read + Seek>(
             name,
             index: i,
             stored: file.compression() == CompressionMethod::Stored,
-            data_descriptor: meta.using_data_descriptor,
+            data_descriptor: meta.is_using_data_descriptor(),
         });
     }
     Ok(members)

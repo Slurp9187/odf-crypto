@@ -532,7 +532,7 @@ RustCrypto crates, and inherit their properties rather than this crate's.
 
 ## MSRV
 
-Rust **1.88**, set by `zip` 8.6.0's own `rust-version` (1.85 through rc.10).
+Rust **1.88**, set by `zip` 9.0.4's own `rust-version` (1.85 through rc.10).
 
 ## Sibling crate
 

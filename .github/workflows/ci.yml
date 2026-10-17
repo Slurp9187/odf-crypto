@@ -136,7 +136,7 @@ jobs:
       # serde_json and rpassword -- three dependency trees with MSRVs of their
       # own, which `rust-version` in Cargo.toml promises for and nothing here
       # checked. Measured at 1.85.0 before the switch: it builds clean. Raised to
-      # 1.88 in rc.11 because `zip` 8.6.0 declares it (let-chains).
+      # 1.88 in rc.11 because `zip` 8.6.0 and 9.0.4 declare it (let-chains).
       - run: cargo build --locked --no-default-features --features cli
 
   docs:

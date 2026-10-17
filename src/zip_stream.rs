@@ -5,7 +5,7 @@
 //! CRC and sizes are known. Two outputs here cannot seek -- `decrypt_to`'s
 //! per-entry rebuild, whose writer is `Write` only, and `reencrypt_to`'s inner
 //! package, which lives inside a cipher stream -- so this writes the other way
-//! the format allows. Reading stays on `zip`, now 8.6.0, which does have
+//! the format allows. Reading stays on `zip`, now 9.0.4, which does have
 //! `ZipWriter::new_stream`; moving to it is a separate decision, not part of
 //! the version port that brought it into reach.
 //! See `docs/plans/odf-streaming-2026-10-15.md`, §7.
@@ -24,7 +24,7 @@
 //! # Matching `zip`'s writer
 //!
 //! Every field this writer shares with `zip`'s own output takes the value
-//! that crate writes, measured from 2.4.2's output and held under 8.6.0 by
+//! that crate writes, measured from 2.4.2's output and held under 9.0.4 by
 //! [`file_options`] and the `flate2` backend `Cargo.toml` names: version
 //! needed 10 (stored) or 20 (deflated), 45 with Zip64; made-by Unix (`3 << 8 | needed`); time 0, date
 //! 1980-01-01; bit 11 (UTF-8) exactly when the name is not ASCII; external
@@ -507,8 +507,8 @@ impl<W: Write + io::Seek> SeekableZipSink<W> {
 
 /// `zip`'s write options for `method`, with the host system pinned to Unix.
 ///
-/// `zip` 8 records `System::Dos` in "version made by" when built for Windows
-/// and `System::Unix` elsewhere (`zip-8.6.0/src/types.rs:425-434`). `zip`
+/// `zip` 8 and 9 record `System::Dos` in "version made by" when built for Windows
+/// and `System::Unix` elsewhere (`zip-9.0.4/src/types.rs:320-331`). `zip`
 /// 2.4.2 wrote Unix on every host, and so does [`ZipStreamWriter`]. Pinning it
 /// keeps every writer's output the same on every host and byte for byte what
 /// rc.10 wrote. Every `ZipWriter` this crate drives takes its options here.

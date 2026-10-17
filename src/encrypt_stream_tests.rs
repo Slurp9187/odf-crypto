@@ -77,7 +77,7 @@ fn shape(zip: &[u8]) -> Vec<(String, zip::CompressionMethod, u64)> {
     (0..z.len())
         .map(|i| {
             let f = z.by_index(i).unwrap();
-            (f.name().to_string(), f.compression(), f.size())
+            (f.name().unwrap().to_string(), f.compression(), f.size())
         })
         .collect()
 }

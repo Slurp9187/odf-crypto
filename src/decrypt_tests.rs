@@ -196,7 +196,7 @@ fn mutate_bytes(
     let mut out = ZipWriter::new(Cursor::new(&mut buf));
     for i in 0..src.len() {
         let mut file = src.by_index(i).unwrap();
-        let name = file.name().to_string();
+        let name = file.name().unwrap().to_string();
         let method = file.compression();
         let mut body = Vec::new();
         file.read_to_end(&mut body).unwrap();
@@ -441,7 +441,7 @@ fn reencrypt_cbc_as_aes128(golden: &str) -> Vec<u8> {
     let mut out = ZipWriter::new(Cursor::new(&mut buf));
     for i in 0..src.len() {
         let mut file = src.by_index(i).unwrap();
-        let name = file.name().to_string();
+        let name = file.name().unwrap().to_string();
         let method = file.compression();
         let mut body = Vec::new();
         file.read_to_end(&mut body).unwrap();

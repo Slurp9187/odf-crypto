@@ -63,7 +63,7 @@ pub(crate) fn load_golden(name: &str) -> Vec<u8> {
 pub(crate) fn zip_namelist(bytes: &[u8]) -> Vec<String> {
     let mut z = ZipArchive::new(Cursor::new(bytes)).unwrap();
     (0..z.len())
-        .map(|i| z.by_index(i).unwrap().name().to_string())
+        .map(|i| z.by_index(i).unwrap().name().unwrap().to_string())
         .collect()
 }
 
@@ -77,7 +77,7 @@ pub(crate) fn read_member(zip_bytes: &[u8], path: &str) -> Vec<u8> {
     let mut z = ZipArchive::new(Cursor::new(zip_bytes)).unwrap();
     for i in 0..z.len() {
         let mut f = z.by_index(i).unwrap();
-        if f.name() == path {
+        if f.name().unwrap() == path {
             let mut buf = Vec::new();
             f.read_to_end(&mut buf).unwrap();
             return buf;
@@ -125,7 +125,7 @@ pub(crate) fn append_stored_member(zip: &[u8], name: &str, body: &[u8]) -> Vec<u
     let mut out = ZipWriter::new(Cursor::new(Vec::new()));
     for i in 0..src.len() {
         let mut file = src.by_index(i).unwrap();
-        let file_name = file.name().to_string();
+        let file_name = file.name().unwrap().to_string();
         let method = file.compression();
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).unwrap();
@@ -251,7 +251,7 @@ pub(crate) fn unlatched_package() -> Vec<u8> {
     let mut out = ZipWriter::new(Cursor::new(&mut buf));
     for i in 0..src.len() {
         let mut file = src.by_index(i).unwrap();
-        let name = file.name().to_string();
+        let name = file.name().unwrap().to_string();
         let method = file.compression();
         let mut body = Vec::new();
         file.read_to_end(&mut body).unwrap();
