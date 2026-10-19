@@ -13,7 +13,8 @@ use zip::ZipArchive;
 
 use crate::classify::classify_latched;
 use crate::decrypt::{
-    derive_key, member_for_archive, screen_class, screen_shape, AllocationSite, DecryptError,
+    derive_key, member_for_archive, no_member, screen_class, screen_shape, AllocationSite,
+    DecryptError,
     DecryptLimits,
 };
 use crate::io_latch::{Latch, Latched};
@@ -147,11 +148,7 @@ fn run<R: Read + Seek, W: Write>(
         ZipArchive::new(&mut *src).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     match class.mode {
         Mode::Wholesome => {
-            let row = class.wholesome_row().ok_or_else(|| {
-                DecryptError::BadParameters(
-                    "wholesome package missing encrypted-package row".into(),
-                )
-            })?;
+            let row = crate::decrypt::wholesome_row(&class)?;
             wholesome(&mut archive, row, writer, password, limits, Sizes::Streamed)?;
             Ok(DecryptOutcome {
                 integrity: IntegrityOutcome::Verified,
@@ -200,12 +197,8 @@ pub(crate) fn decrypt_slice(
     let mut out;
     let len = match class.mode {
         Mode::Wholesome => {
-            let row = class.wholesome_row().ok_or_else(|| {
-                DecryptError::BadParameters(
-                    "wholesome package missing encrypted-package row".into(),
-                )
-            })?;
-            let n = crate::decrypt::inflated_len(row.size)?;
+            let row = crate::decrypt::wholesome_row(&class)?;
+            let n = crate::decrypt::inflated_len(row.1.size)?;
             out = crate::decrypt::try_zeroed(n, AllocationSite::PackagePlaintext)?;
             let mut slot = SliceWriter::new(&mut out[..]);
             wholesome(
@@ -331,16 +324,26 @@ fn rebuild_bound<R: Read + Seek>(
         let declared = u64::try_from(row.size).unwrap_or(0).min(ceiling);
         bound += deflate_bound(declared);
     }
-    usize::try_from(bound)
-        .map_err(|_| DecryptError::BadParameters(format!("rebuild of {bound} bytes")))
+    // Only a 32-bit host fails this: a limit of the host, not of the manifest
+    // (#105), so it is the allocation refusal rather than a bad parameter.
+    usize::try_from(bound).map_err(|_| DecryptError::HostCannotAllocate {
+        site: AllocationSite::PackagePlaintext,
+        requested_bytes: usize::MAX,
+    })
 }
 
 /// `manifest:size` as a byte count. Negative is meaningless and refused, as in
 /// the whole-buffer path; there is no 1 GiB ceiling here, because nothing is
 /// allocated from it. [`DecryptLimits::max_output_bytes`] bounds it instead.
 pub(crate) fn declared_size(size: i64) -> Result<u64, DecryptError> {
-    u64::try_from(size)
-        .map_err(|_| DecryptError::BadParameters(format!("manifest:size {size} is negative")))
+    u64::try_from(size).map_err(|_| {
+        DecryptError::BadParameters(crate::BadParameter::OutOfRange {
+            field: crate::ManifestField::Size,
+            got: size,
+            min: 0,
+            max: i64::MAX,
+        })
+    })
 }
 
 /// Which rule bounds `manifest:size`: the streaming path's (any non-negative
@@ -409,14 +412,14 @@ pub(crate) fn member_shape<R: Read + Seek>(
 /// write. The inner package is written verbatim, as `decrypt` returns it.
 fn wholesome<R: Read + Seek, W: Write>(
     archive: &mut ZipArchive<R>,
-    row: &EntryEncryption,
+    (row_index, row): (usize, &EntryEncryption),
     writer: &mut W,
     password: &str,
     limits: &DecryptLimits,
     sizes: Sizes,
 ) -> Result<(), DecryptError> {
     let expected = sizes.declared(row.size)?;
-    let (index, _) = member_for_archive(archive, &row.path)?;
+    let (index, _) = member_for_archive(archive, &row.path, no_member(row_index))?;
     let (len, head) = member_shape(archive, index)?;
     screen_shape(row, len, &head)?;
     gcm_member(archive, index, row, len, password, limits, |plain| {
@@ -440,8 +443,9 @@ pub(crate) fn gcm_member<R: Read + Seek>(
     let key = gcm_key(archive, index, row, len, password, limits)?;
     let mut file = open_after_iv(archive, index)?;
     key.with_secret(|k| -> Result<(), DecryptError> {
-        let gcm = GcmStream::new(k, &row.iv)
-            .ok_or_else(|| DecryptError::BadParameters("AES-GCM key".into()))?;
+        let gcm = GcmStream::new(k, &row.iv).ok_or_else(|| {
+            DecryptError::Internal("an AES-GCM key length screen_shape passed".into())
+        })?;
         let mut plain = GcmDecryptReader::new(&mut file, gcm, ct_len);
         release(&mut plain)?;
         // The inflater stops at the DEFLATE end marker, which can come before
@@ -481,7 +485,9 @@ pub(crate) fn open_after_iv<R: Read + Seek>(
         .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     let mut iv = [0u8; AES_GCM_IV_LEN];
     if read_full(&mut file, &mut iv).map_err(read_error)? != AES_GCM_IV_LEN {
-        return Err(DecryptError::BadParameters("shorter than IV+tag".into()));
+        return Err(DecryptError::BadParameters(crate::BadParameter::Member(
+            crate::MemberFault::ShorterThanIvAndTag,
+        )));
     }
     Ok(file)
 }
@@ -493,9 +499,9 @@ fn ensure_end<R: Read>(file: &mut R) -> Result<(), DecryptError> {
     let mut one = [0u8; 1];
     match read_full(file, &mut one).map_err(read_error)? {
         0 => Ok(()),
-        _ => Err(DecryptError::BadParameters(
-            "member is longer than its zip header says".into(),
-        )),
+        _ => Err(DecryptError::BadParameters(crate::BadParameter::Member(
+            crate::MemberFault::LongerThanHeader,
+        ))),
     }
 }
 
@@ -572,7 +578,8 @@ pub(crate) fn fault_error(limits: &DecryptLimits) -> impl Fn(Fault) -> DecryptEr
             io::ErrorKind::InvalidData,
             "the input changed between the verify and release passes",
         )),
-        Fault::BadParameters(s) => DecryptError::BadParameters(s),
+        Fault::BadParameters(b) => DecryptError::BadParameters(b),
+        Fault::Internal(s) => DecryptError::Internal(s.to_string()),
         Fault::Inflate(s) => DecryptError::Inflate(s),
         Fault::OutputLimit => DecryptError::OutputLimit {
             limit: limits.max_output_bytes,

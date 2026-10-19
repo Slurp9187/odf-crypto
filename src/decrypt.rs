@@ -14,6 +14,7 @@ fn is_manifest_size_attr(key: &[u8]) -> bool {
     key.ends_with(b":size") || key == b"size"
 }
 
+use crate::bad_parameter::{wide, BadParameter, ManifestField, MemberFault, Primitive};
 use crate::classify::{member_matches_path, zip_entry_name};
 use crate::kdf::KdfError;
 use crate::limits::{
@@ -82,16 +83,17 @@ pub enum DecryptError {
     /// [`DecryptError::Inflate`] instead.
     #[error("wrong password")]
     WrongPassword,
-    /// A manifest field is outside the range this crate will act on — an
-    /// iteration count, Argon2 cost or key size beyond its floor or ceiling, or
-    /// more encrypted rows than will be processed. The string is a diagnostic;
-    /// do not match on its content.
+    /// The package's own encryption settings were refused: which setting, the
+    /// value the file declares, and what was allowed ([`BadParameter`]). It
+    /// carries no text from the file, so a caller may match on it and quote
+    /// its numbers. Changed in `0.1.0-rc.13` from a `String`, which could
+    /// carry a row's `manifest:full-path` unbounded.
     ///
     /// A verdict on the manifest, and the same verdict on every machine. A cost
     /// this crate accepted and the host then could not meet is
     /// [`DecryptError::HostCannotAllocate`], not a bad parameter.
     #[error("invalid encryption parameters: {0}")]
-    BadParameters(String),
+    BadParameters(crate::BadParameter),
     /// Deliberately NOT the `BadParameters` analogue: that reports a hostile
     /// value read out of the manifest, and this reports an invariant of our own
     /// that something upstream was supposed to have enforced. Reaching it means
@@ -573,18 +575,25 @@ fn screen_output_limit(class: &crate::Classification, limit: u64) -> Result<(), 
 
 fn ensure_encrypted_entry_count(n: usize, cap: usize) -> Result<(), DecryptError> {
     if n > cap {
-        return Err(DecryptError::BadParameters(format!(
-            "encrypted entry count {n} exceeds ceiling {cap}"
-        )));
+        return Err(DecryptError::BadParameters(BadParameter::OutOfRange {
+            field: ManifestField::EncryptedEntries,
+            got: wide(n),
+            min: 0,
+            max: wide(cap),
+        }));
     }
     Ok(())
 }
 
 /// First member whose raw or slash-collapsed name matches - the rule `classify`
 /// itself uses, because a row path is a folder-tree path, not a namelist key.
+/// `missing` is the refusal when none does: a row's
+/// [`BadParameter::NoMember`], by its index and never its path (#105), or an
+/// invariant of ours for a member `classify` already read.
 pub(crate) fn member_for_archive<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     path: &str,
+    missing: impl FnOnce() -> DecryptError,
 ) -> Result<(usize, String), DecryptError> {
     for i in 0..archive.len() {
         let file = archive
@@ -595,9 +604,29 @@ pub(crate) fn member_for_archive<R: Read + std::io::Seek>(
             return Ok((i, name));
         }
     }
-    Err(DecryptError::BadParameters(format!(
-        "row path {path:?} has no zip member"
-    )))
+    Err(missing())
+}
+
+/// The refusal for encrypted row `row` naming no zip member.
+pub(crate) fn no_member(row: usize) -> impl FnOnce() -> DecryptError {
+    move || DecryptError::BadParameters(BadParameter::NoMember { row })
+}
+
+/// The index among `class`'s encrypted rows of its wholesome row, which
+/// `classify` puts there whenever it reports [`Mode::Wholesome`].
+pub(crate) fn wholesome_row(
+    class: &crate::Classification,
+) -> Result<(usize, &EntryEncryption), DecryptError> {
+    class
+        .encrypted_entries
+        .iter()
+        .enumerate()
+        .find(|(_, e)| class.mode == Mode::Wholesome && e.path == "encrypted-package")
+        .ok_or_else(|| {
+            DecryptError::Internal(
+                "a wholesome classification without its encrypted-package row".into(),
+            )
+        })
 }
 
 /// Give a [`KdfError`] its verdict on this side.
@@ -615,7 +644,8 @@ pub(crate) fn member_for_archive<R: Read + std::io::Seek>(
 /// these numbers and this side is reading them.
 fn kdf_error(e: KdfError) -> DecryptError {
     match e {
-        KdfError::Params(s) => DecryptError::BadParameters(s),
+        KdfError::Params(b) => DecryptError::BadParameters(b),
+        KdfError::Internal(s) => DecryptError::Internal(s.into()),
         KdfError::HostCannotAllocate { requested_bytes } => DecryptError::HostCannotAllocate {
             site: AllocationSite::KeyDerivation,
             requested_bytes,
@@ -640,10 +670,13 @@ pub(crate) fn derive_key(
     // out loud rather than left to be rediscovered, because an unreachable guard
     // that reads as live is how the next person concludes the length is checked
     // here and removes the screen.
+    //
+    // So reaching it is an invariant of ours breaking, not a verdict on the
+    // file (#105): `Internal`, not `BadParameters`.
     if !(DERIVED_KEY_MIN_LEN..=DERIVED_KEY_MAX_LEN).contains(&n) {
-        return Err(DecryptError::BadParameters(format!(
-            "derived_key_len {n} outside {DERIVED_KEY_MIN_LEN}..={DERIVED_KEY_MAX_LEN}"
-        )));
+        return Err(DecryptError::Internal(
+            "derive_key reached with a derived key length screen_shape refuses".into(),
+        ));
     }
     let n = n as usize;
     let mut derived = DerivedKey::new(try_zeroed(n, AllocationSite::DerivedKey)?);
@@ -651,14 +684,19 @@ pub(crate) fn derive_key(
         derived.with_secret_mut(|derived_bytes| -> Result<(), DecryptError> {
             match &row.kdf {
                 Kdf::Pbkdf2 { iterations, salt } => {
-                    let iters = u32::try_from(*iterations).map_err(|_| {
-                        DecryptError::BadParameters(format!("iterations {iterations}"))
-                    })?;
+                    // A negative count is outside the range too, with its sign.
+                    let out_of_range = |got: i64| {
+                        DecryptError::BadParameters(BadParameter::OutOfRange {
+                            field: ManifestField::IterationCount,
+                            got,
+                            min: PBKDF2_MIN_ITER.into(),
+                            max: limits.pbkdf2_max_iter.into(),
+                        })
+                    };
+                    let iters = u32::try_from(*iterations)
+                        .map_err(|_| out_of_range((*iterations).into()))?;
                     if !(PBKDF2_MIN_ITER..=limits.pbkdf2_max_iter).contains(&iters) {
-                        return Err(DecryptError::BadParameters(format!(
-                            "iterations {iters} outside {PBKDF2_MIN_ITER}..={}",
-                            limits.pbkdf2_max_iter
-                        )));
+                        return Err(out_of_range(iters.into()));
                     }
                     pbkdf2_hmac::<Sha1>(sk_bytes, salt, iters, derived_bytes);
                     Ok(())
@@ -728,9 +766,8 @@ fn cipher_accepts_key_len(cipher: Cipher, n: i32) -> bool {
 /// and the two member-shape tests. Each cost a full derivation to report
 /// something knowable from an integer comparison.
 ///
-/// **The messages are unchanged, deliberately.** Only the moment of the refusal
-/// moves, so no outcome and no error text a caller might already be matching on
-/// changes with it.
+/// Only the moment of the refusal moved when these came forward. Since #105
+/// each carries a structured [`BadParameter`] rather than a message.
 ///
 /// The cipher functions still carry these checks. They are unreachable through
 /// this path and kept anyway, because `decrypt_aes_gcm` indexes `blob` by a
@@ -752,36 +789,43 @@ pub(crate) fn screen_shape(
     head: &[u8],
 ) -> Result<(), DecryptError> {
     if !cipher_accepts_key_len(row.cipher, row.derived_key_len) {
-        return Err(DecryptError::BadParameters(format!(
-            "key length {} cannot be used with {:?}",
-            row.derived_key_len, row.cipher
-        )));
+        return Err(DecryptError::BadParameters(BadParameter::KeySizeForCipher {
+            got: row.derived_key_len,
+            cipher: row.cipher,
+        }));
     }
+    // A cipher's IV length is the cipher's own requirement, exactly one value.
+    let iv_len = |by: Primitive, want: usize| {
+        if row.iv.len() == want {
+            Ok(())
+        } else {
+            Err(DecryptError::BadParameters(BadParameter::CipherRejects {
+                field: ManifestField::IvLen,
+                by,
+                got: wide(row.iv.len()),
+                min: wide(want),
+                max: wide(want),
+            }))
+        }
+    };
+    let member = |fault| Err(DecryptError::BadParameters(BadParameter::Member(fault)));
     match row.cipher {
         Cipher::AesGcmW3c => {
-            if row.iv.len() != AES_GCM_IV_LEN {
-                return Err(DecryptError::BadParameters("GCM IV length".into()));
-            }
+            iv_len(Primitive::AesGcm, AES_GCM_IV_LEN)?;
             if len < (AES_GCM_IV_LEN + AES_GCM_TAG_LEN) as u64 || head.len() < AES_GCM_IV_LEN {
-                return Err(DecryptError::BadParameters("shorter than IV+tag".into()));
+                return member(MemberFault::ShorterThanIvAndTag);
             }
             if head[..AES_GCM_IV_LEN] != row.iv[..] {
-                return Err(DecryptError::BadParameters("inconsistent IV".into()));
+                return member(MemberFault::IvMismatch);
             }
         }
         Cipher::AesCbcW3c => {
-            if row.iv.len() != AES_CBC_IV_LEN {
-                return Err(DecryptError::BadParameters("CBC IV length".into()));
-            }
+            iv_len(Primitive::AesCbc, AES_CBC_IV_LEN)?;
             if len == 0 || !len.is_multiple_of(AES_BLOCK_LEN as u64) {
-                return Err(DecryptError::BadParameters("not a block multiple".into()));
+                return member(MemberFault::NotBlockMultiple);
             }
         }
-        Cipher::BlowfishCfb8 => {
-            if row.iv.len() != BLOWFISH_IV_LEN {
-                return Err(DecryptError::BadParameters("Blowfish IV length".into()));
-            }
-        }
+        Cipher::BlowfishCfb8 => iv_len(Primitive::Blowfish, BLOWFISH_IV_LEN)?,
     }
     Ok(())
 }
@@ -813,9 +857,12 @@ pub(crate) fn screen_shape(
 /// a doc comment.
 pub(crate) fn inflated_len(size: i64) -> Result<usize, DecryptError> {
     if !(0..=INFLATE_CEILING as i64).contains(&size) {
-        return Err(DecryptError::BadParameters(format!(
-            "manifest:size {size} outside 0..={INFLATE_CEILING}"
-        )));
+        return Err(DecryptError::BadParameters(BadParameter::OutOfRange {
+            field: ManifestField::Size,
+            got: size,
+            min: 0,
+            max: wide(INFLATE_CEILING),
+        }));
     }
     // Bounded above by INFLATE_CEILING, itself a `usize`, so this cannot truncate.
     Ok(size as usize)

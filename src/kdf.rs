@@ -177,11 +177,16 @@ fn staroffice_sha1(msg: &[u8]) -> PasswordDigest {
 /// difference is what the caller can do about it.
 #[derive(Debug)]
 pub(crate) enum KdfError {
-    /// The `(t, m, p)` tuple or the requested output length is one this
-    /// crate -- or `argon2` itself -- will not run. Deterministic: it
-    /// fails identically on every machine. Carries the diagnostic text
-    /// both directions already render today.
-    Params(String),
+    /// The `(t, m, p)` tuple, or the salt's length, is one this crate -- or
+    /// `argon2` itself -- will not run. Deterministic: it fails identically on
+    /// every machine. Structured, with no text from the manifest
+    /// ([`crate::BadParameter`]).
+    Params(crate::BadParameter),
+    /// `argon2` refused something no manifest field reaches past the checks
+    /// above (an output length outside 4..=2^32-1, a password or secret too
+    /// long): an invariant of ours. Matched by name, never formatted from
+    /// `argon2`'s own message.
+    Internal(&'static str),
     /// This host could not allocate argon2's `block_count() * Block::SIZE`
     /// working buffer. Says nothing about the tuple: the same tuple may
     /// derive fine on a machine with more free memory.
@@ -252,14 +257,39 @@ pub(crate) fn derive_argon2id(
     limits: &crate::DecryptLimits,
     out: &mut [u8],
 ) -> Result<(), KdfError> {
-    let t = u32::try_from(t).map_err(|_| KdfError::Params(format!("argon2 iterations {t}")))?;
-    let m = u32::try_from(m).map_err(|_| KdfError::Params(format!("argon2 memory {m}")))?;
-    let p = u32::try_from(p).map_err(|_| KdfError::Params(format!("argon2 lanes {p}")))?;
-    if !(ARGON2_MIN_T_COST..=limits.argon2_max_t).contains(&t) {
-        return Err(KdfError::Params(format!(
-            "argon2 iterations {t} outside {ARGON2_MIN_T_COST}..={}",
-            limits.argon2_max_t
-        )));
+    use crate::bad_parameter::{wide, BadParameter, ManifestField, Primitive};
+    use crate::Argon2Axis;
+    // Each axis's range: the format's floor (`positiveInteger`) to the caller's
+    // ceiling. A negative manifest value is outside it too, and reported with
+    // its own sign.
+    let out_of_range = |axis, got: i64, min: u32, max: u32| {
+        KdfError::Params(BadParameter::OutOfRange {
+            field: ManifestField::Argon2(axis),
+            got,
+            min: min.into(),
+            max: max.into(),
+        })
+    };
+    let argon2_rejects = |field, got: i64, min: i64, max: i64| {
+        KdfError::Params(BadParameter::CipherRejects {
+            field,
+            by: Primitive::Argon2,
+            got,
+            min,
+            max,
+        })
+    };
+    let (t_max, m_max) = (limits.argon2_max_t, limits.argon2_max_m_kib);
+    let t = u32::try_from(t)
+        .map_err(|_| out_of_range(Argon2Axis::T, t.into(), ARGON2_MIN_T_COST, t_max))?;
+    let m = u32::try_from(m)
+        .map_err(|_| out_of_range(Argon2Axis::MKib, m.into(), ARGON2_MIN_M_COST_KIB, m_max))?;
+    let p_wide = i64::from(p);
+    let p = u32::try_from(p).map_err(|_| {
+        out_of_range(Argon2Axis::P, p_wide, ARGON2_MIN_P_COST, limits.argon2_max_p)
+    })?;
+    if !(ARGON2_MIN_T_COST..=t_max).contains(&t) {
+        return Err(out_of_range(Argon2Axis::T, t.into(), ARGON2_MIN_T_COST, t_max));
     }
     // `max_m_kib` is the caller's, not this function's, and that asymmetry is
     // the point: `decrypt` passes `ARGON2_MAX_M_COST_KIB_READ` because a
@@ -267,20 +297,47 @@ pub(crate) fn derive_argon2id(
     // verified; `encrypt` passes `..._WRITE`, the field's own width, because
     // the caller chose to spend their own memory. This function cannot know
     // which threat model it is in. Its callers can.
-    if !(ARGON2_MIN_M_COST_KIB..=limits.argon2_max_m_kib).contains(&m) {
-        return Err(KdfError::Params(format!(
-            "argon2 memory {m} KiB outside {ARGON2_MIN_M_COST_KIB}..={}",
-            limits.argon2_max_m_kib
-        )));
+    if !(ARGON2_MIN_M_COST_KIB..=m_max).contains(&m) {
+        return Err(out_of_range(Argon2Axis::MKib, m.into(), ARGON2_MIN_M_COST_KIB, m_max));
     }
     // Both: ours (a judgement about untrusted input, overridable) and argon2's
-    // (what the cipher can run, not overridable). Checking ours first means the
-    // message names whichever is actually tighter.
-    if !(ARGON2_MIN_P_COST..=limits.argon2_max_p.min(Params::MAX_P_COST)).contains(&p) {
-        return Err(KdfError::Params(format!("argon2 lanes {p}")));
+    // (what the cipher can run, not overridable). The one that is tighter is
+    // the one named, so the reason says whose rule it actually was.
+    let p_max = limits.argon2_max_p.min(Params::MAX_P_COST);
+    if !(ARGON2_MIN_P_COST..=p_max).contains(&p) {
+        return Err(if p > Params::MAX_P_COST && Params::MAX_P_COST <= limits.argon2_max_p {
+            argon2_rejects(
+                ManifestField::Argon2(Argon2Axis::P),
+                p.into(),
+                ARGON2_MIN_P_COST.into(),
+                Params::MAX_P_COST.into(),
+            )
+        } else {
+            out_of_range(Argon2Axis::P, p.into(), ARGON2_MIN_P_COST, limits.argon2_max_p)
+        });
     }
-    let params = Params::new(m, t, p, Some(out.len()))
-        .map_err(|e| KdfError::Params(format!("argon2 params: {e}")))?;
+    // argon2's own two requirements a manifest can break, checked here so the
+    // KDF never starts and so its message is never passed through: at least
+    // 8 KiB per lane (`params.rs`'s `m_cost < p_cost * 8`), and a salt of at
+    // least `MIN_SALT_LEN` bytes, which nothing screened before (libargon2,
+    // which LibreOffice links, has the same 8-byte floor).
+    if u64::from(m) < 8 * u64::from(p) {
+        return Err(argon2_rejects(
+            ManifestField::Argon2(Argon2Axis::MKib),
+            m.into(),
+            8 * i64::from(p),
+            m_max.into(),
+        ));
+    }
+    if !(argon2::MIN_SALT_LEN..=argon2::MAX_SALT_LEN).contains(&salt.len()) {
+        return Err(argon2_rejects(
+            ManifestField::SaltLen,
+            wide(salt.len()),
+            wide(argon2::MIN_SALT_LEN),
+            wide(argon2::MAX_SALT_LEN),
+        ));
+    }
+    let params = Params::new(m, t, p, Some(out.len())).map_err(argon2_internal)?;
 
     // Read off `params` BEFORE it is moved into `Argon2::new` below -- the
     // count and the byte figure the error carries are both unreachable after
@@ -313,7 +370,28 @@ pub(crate) fn derive_argon2id(
 
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into_with_memory(start_key, salt, out, &mut blocks)
-        .map_err(|e| KdfError::Params(format!("argon2: {e}")))
+        .map_err(argon2_internal)
+}
+
+/// An `argon2::Error` the checks in [`derive_argon2id`] leave reachable only
+/// through an invariant of ours, named by variant. Its own message is never
+/// passed through.
+fn argon2_internal(e: argon2::Error) -> KdfError {
+    KdfError::Internal(match e {
+        argon2::Error::OutputTooShort | argon2::Error::OutputTooLong => {
+            "argon2 refused the derived key length"
+        }
+        argon2::Error::PwdTooLong | argon2::Error::SecretTooLong => {
+            "argon2 refused the start key's length"
+        }
+        argon2::Error::SaltTooShort | argon2::Error::SaltTooLong => {
+            "argon2 refused a salt length the screen passed"
+        }
+        argon2::Error::MemoryTooLittle | argon2::Error::MemoryTooMuch => {
+            "argon2 refused a memory cost the screen passed"
+        }
+        _ => "argon2 refused parameters the screen passed",
+    })
 }
 
 #[cfg(test)]
