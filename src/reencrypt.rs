@@ -333,10 +333,9 @@ fn wholesome<R: Read + Seek, W: Write + Seek>(
     write_package(writer, new, params, mimetype, len, |sealer, _| {
         let mut file = open_after_iv(archive, index)?;
         old_key.with_secret(|k| -> Result<u64, ReencryptError> {
-            let gcm = GcmStream::new(k, &row.iv)
-                .ok_or_else(|| {
-                    DecryptError::Internal("an AES-GCM key length screen_shape passed".into())
-                })?;
+            let gcm = GcmStream::new(k, &row.iv).ok_or_else(|| {
+                DecryptError::Internal("an AES-GCM key length screen_shape passed".into())
+            })?;
             let plain = GcmDecryptReader::new(&mut file, gcm, ct_len);
             let mut tee = Tee {
                 src: plain,

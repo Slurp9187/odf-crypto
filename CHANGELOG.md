@@ -11,6 +11,47 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.13] - Unreleased
+
+### Changed
+
+**A decrypt refusal carries no text from the file** (#105). Breaking:
+`DecryptError::BadParameters(String)` is now
+`DecryptError::BadParameters(BadParameter)`. `BadParameter` names the setting
+(`ManifestField`), the value the file declares and the range allowed, and whose
+rule that range is: `OutOfRange` (this crate's limits, or a floor the format
+sets), `CipherRejects` (argon2's or a cipher's own requirement, naming the
+`Primitive`), `KeySizeForCipher`, `Member(MemberFault)` and `NoMember { row }`.
+Every payload is an enum or an integer, and every `Display` renders only those,
+so a caller can match on it and write its own sentence from the numbers.
+Requested by encrypted-file-vault, which quoted the old string through its own
+sanitizer.
+
+- **Closed: a row's `manifest:full-path` reached the error unbounded.** A row
+  naming no zip member was reported as `row path "…" has no zip member`, with
+  the path up to the 8 MiB manifest cap, and the CLI printed it to stderr. The
+  row is now named by its index among `Classification::encrypted_entries`.
+- **argon2's own messages are no longer passed through.** `m >= 8p` and a salt
+  of at least 8 bytes are now checked before `argon2::Params::new`, so the KDF
+  never starts on a tuple it cannot run, and the refusal is `CipherRejects`.
+  The salt length was not screened before at all. Any other `argon2::Error` is
+  matched by name into `Internal`, never formatted.
+- **The lanes refusal says whose bound it was.** It used to name no range. It
+  is `OutOfRange` against `DecryptLimits::argon2_max_p`, or `CipherRejects`
+  against argon2's `MAX_P_COST`, whichever is tighter. A negative manifest value
+  keeps its sign in `got`.
+- **Moved meaning, which compiles silently behind `#[non_exhaustive]`:**
+  - Our own invariants leave `BadParameters` for `Internal`, so the CLI exits 5,
+    not 6. These are: the derived-key length guard in `derive_key`; an AES-GCM,
+    AES-CBC or Blowfish key or IV that `screen_shape` already passed; an AES-GCM
+    member reaching the checksum path; a wholesome classification without its
+    `encrypted-package` row (`classify` always pushes it); and the manifest
+    member `classify` read going missing.
+  - The 32-bit streaming rebuild whose bound does not fit `usize` is
+    `HostCannotAllocate { site: PackagePlaintext }`, a limit of the host, so the
+    CLI exits 7, not 6.
+- Which files decrypt is unchanged, and so are the output bytes.
+
 ## [0.1.0-rc.12] - 2026-10-18
 
 ### Changed

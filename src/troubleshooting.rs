@@ -24,17 +24,17 @@
 //!
 //! # `decrypt` returned `BadParameters`
 //!
-//! **Whose fault is it?** Four different answers wear this one name, and the
-//! string does not distinguish them — its own doc says do not match on its
-//! content. What decides the answer is *which bound* the manifest field
-//! failed, and `src/limits.rs` labels every one of them.
+//! **Whose fault is it?** Four different answers meet here. Since `0.1.0-rc.13`
+//! the variant carries a [`BadParameter`](crate::BadParameter) that says which:
+//! the setting, the value the file declares, the range allowed, and whose rule
+//! the range is. It carries no text from the file.
 //!
-//! | case | means | where the label is |
+//! | case | means | what it carries |
 //! | --- | --- | --- |
-//! | 1. the format forbids it | OASIS or LibreOffice says no | bounds labelled `spec` / `LibreOffice` |
-//! | 2. the cipher or KDF cannot run it | a block size, an IV length, `argon2`'s own `m >= 8p` | bounds labelled `hard` |
+//! | 1. the format forbids it | a negative or zero cost, a negative size | `OutOfRange`, below the format's floor |
+//! | 2. the cipher or KDF cannot run it | an IV length, `argon2`'s own `m >= 8p`, a salt under 8 bytes | `CipherRejects`, naming the [`Primitive`](crate::Primitive); `KeySizeForCipher`; `Member` |
 //! | 3. **this host** cannot afford it | not this variant at all | [`crate::DecryptError::HostCannotAllocate`] |
-//! | 4. spec-legal, runnable, **and this crate declined** | a policy cap of ours | bounds labelled `policy` — and see below |
+//! | 4. spec-legal, runnable, **and this crate declined** | a policy cap of ours | `OutOfRange`, above a [`crate::DecryptLimits`] or `limits.rs` ceiling — and see below |
 //!
 //! **Case 4 is the one worth knowing about**, because reporting a policy cap as
 //! case 1 tells a user their file is invalid when it is not. These are ours,
@@ -83,17 +83,22 @@
 //! obtained.
 //!
 //! ```
-//! use odf_crypto::{decrypt, DecryptError};
+//! use odf_crypto::{decrypt, BadParameter, DecryptError};
 //!
 //! fn explain(bytes: &[u8], password: &str) -> String {
 //!     match decrypt(bytes, password) {
 //!         Ok(_) => "decrypted".into(),
-//!         // The string is a diagnostic. Which of cases 1, 2 and 4 this is
-//!         // cannot be recovered from it -- look up the bound it names in
-//!         // `limits.rs` and read its label.
-//!         Err(DecryptError::BadParameters(msg)) => {
-//!             format!("this crate will not act on a manifest field: {msg}")
+//!         // Structured, with no text from the file: quote its numbers in
+//!         // your own words. Case 2 is the cipher's rule, not this crate's.
+//!         Err(DecryptError::BadParameters(BadParameter::CipherRejects { field, by, got, .. })) => {
+//!             format!("the file declares {field} = {got}, which {by} cannot run")
 //!         }
+//!         // Cases 1 and 4: a file the format and LibreOffice allow can land
+//!         // here, so never call it damaged.
+//!         Err(DecryptError::BadParameters(BadParameter::OutOfRange { field, got, max, .. })) => {
+//!             format!("the file declares {field} = {got}; the most this app acts on is {max}")
+//!         }
+//!         Err(DecryptError::BadParameters(other)) => format!("not opened: {other}"),
 //!         // Case 3. Say "try again, or try on a bigger machine" -- never
 //!         // "your file is damaged", which is what exit 6 used to imply.
 //!         Err(DecryptError::HostCannotAllocate { site, requested_bytes }) => {
@@ -230,7 +235,7 @@
 //! | [`DetectError::Inconsistent`](crate::DetectError::Inconsistent) | **yes**, bounded to `DIAGNOSTIC_ELISION` (96 bytes) |
 //! | the zip half of any `Zip` variant | no — rendered from `&'static str` this crate chose, never the zip crate's `Display` |
 //! | the quick-xml half of [`crate::DecryptError::Zip`] | **yes**, and un-elided — see its own docs for why that is safe |
-//! | [`crate::DecryptError::BadParameters`] | **yes** — it quotes manifest field values |
+//! | [`crate::DecryptError::BadParameters`] | no — enums and integers only, since `0.1.0-rc.13`; before that it quoted manifest values, a row's `manifest:full-path` among them, unbounded |
 //! | `Internal` on either error | no — our own text about our own invariant |
 //!
 //! **Elision bounds volume, not trust.** 96 bytes of attacker-chosen text is

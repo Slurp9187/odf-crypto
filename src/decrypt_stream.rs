@@ -14,8 +14,7 @@ use zip::ZipArchive;
 use crate::classify::classify_latched;
 use crate::decrypt::{
     derive_key, member_for_archive, no_member, screen_class, screen_shape, AllocationSite,
-    DecryptError,
-    DecryptLimits,
+    DecryptError, DecryptLimits,
 };
 use crate::io_latch::{Latch, Latched};
 use crate::limits::{AES_GCM_IV_LEN, AES_GCM_TAG_LEN};

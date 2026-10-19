@@ -546,14 +546,20 @@ impl<R: Read> CbcDecryptReader<R> {
             let room = (b.len() - off) / AES_BLOCK_LEN * AES_BLOCK_LEN;
             let n = read_full(src, &mut b[off..off + room])?;
             if n % AES_BLOCK_LEN != 0 {
-                return Err(Fault::BadParameters(crate::BadParameter::Member(crate::MemberFault::NotBlockMultiple)).into_io());
+                return Err(Fault::BadParameters(crate::BadParameter::Member(
+                    crate::MemberFault::NotBlockMultiple,
+                ))
+                .into_io());
             }
             dec.decrypt_blocks(&mut b[off..off + n]);
             Ok((off + n, n < room))
         })?;
         if n == 0 {
             // An empty member, as the whole-buffer path also refuses.
-            return Err(Fault::BadParameters(crate::BadParameter::Member(crate::MemberFault::NotBlockMultiple)).into_io());
+            return Err(Fault::BadParameters(crate::BadParameter::Member(
+                crate::MemberFault::NotBlockMultiple,
+            ))
+            .into_io());
         }
         self.start = 0;
         if at_end {

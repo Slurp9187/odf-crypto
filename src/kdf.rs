@@ -203,8 +203,9 @@ pub(crate) enum KdfError {
 /// Returns [`KdfError`] rather than either caller's own error type, because
 /// the two callers want different things from the same tuple failure and both
 /// are right: a [`KdfError::Params`] is a hostile manifest field to decrypt,
-/// which maps it to `DecryptError::BadParameters`, and a broken invariant of
-/// ours to encrypt, which maps it to `EncryptError::Internal` -- encrypt only
+/// which maps it to `DecryptError::BadParameters` with its structured
+/// [`crate::BadParameter`], and a broken invariant of ours to encrypt, which
+/// renders it into `EncryptError::Internal` -- encrypt only
 /// ever passes a tuple `Argon2Params::new` already validated, so a rejection
 /// here means that guard failed, not that a caller was wrong.
 /// [`KdfError::HostCannotAllocate`] is the one axis they render identically:
@@ -286,10 +287,20 @@ pub(crate) fn derive_argon2id(
         .map_err(|_| out_of_range(Argon2Axis::MKib, m.into(), ARGON2_MIN_M_COST_KIB, m_max))?;
     let p_wide = i64::from(p);
     let p = u32::try_from(p).map_err(|_| {
-        out_of_range(Argon2Axis::P, p_wide, ARGON2_MIN_P_COST, limits.argon2_max_p)
+        out_of_range(
+            Argon2Axis::P,
+            p_wide,
+            ARGON2_MIN_P_COST,
+            limits.argon2_max_p,
+        )
     })?;
     if !(ARGON2_MIN_T_COST..=t_max).contains(&t) {
-        return Err(out_of_range(Argon2Axis::T, t.into(), ARGON2_MIN_T_COST, t_max));
+        return Err(out_of_range(
+            Argon2Axis::T,
+            t.into(),
+            ARGON2_MIN_T_COST,
+            t_max,
+        ));
     }
     // `max_m_kib` is the caller's, not this function's, and that asymmetry is
     // the point: `decrypt` passes `ARGON2_MAX_M_COST_KIB_READ` because a
@@ -298,23 +309,35 @@ pub(crate) fn derive_argon2id(
     // the caller chose to spend their own memory. This function cannot know
     // which threat model it is in. Its callers can.
     if !(ARGON2_MIN_M_COST_KIB..=m_max).contains(&m) {
-        return Err(out_of_range(Argon2Axis::MKib, m.into(), ARGON2_MIN_M_COST_KIB, m_max));
+        return Err(out_of_range(
+            Argon2Axis::MKib,
+            m.into(),
+            ARGON2_MIN_M_COST_KIB,
+            m_max,
+        ));
     }
     // Both: ours (a judgement about untrusted input, overridable) and argon2's
     // (what the cipher can run, not overridable). The one that is tighter is
     // the one named, so the reason says whose rule it actually was.
     let p_max = limits.argon2_max_p.min(Params::MAX_P_COST);
     if !(ARGON2_MIN_P_COST..=p_max).contains(&p) {
-        return Err(if p > Params::MAX_P_COST && Params::MAX_P_COST <= limits.argon2_max_p {
-            argon2_rejects(
-                ManifestField::Argon2(Argon2Axis::P),
-                p.into(),
-                ARGON2_MIN_P_COST.into(),
-                Params::MAX_P_COST.into(),
-            )
-        } else {
-            out_of_range(Argon2Axis::P, p.into(), ARGON2_MIN_P_COST, limits.argon2_max_p)
-        });
+        return Err(
+            if p > Params::MAX_P_COST && Params::MAX_P_COST <= limits.argon2_max_p {
+                argon2_rejects(
+                    ManifestField::Argon2(Argon2Axis::P),
+                    p.into(),
+                    ARGON2_MIN_P_COST.into(),
+                    Params::MAX_P_COST.into(),
+                )
+            } else {
+                out_of_range(
+                    Argon2Axis::P,
+                    p.into(),
+                    ARGON2_MIN_P_COST,
+                    limits.argon2_max_p,
+                )
+            },
+        );
     }
     // argon2's own two requirements a manifest can break, checked here so the
     // KDF never starts and so its message is never passed through: at least

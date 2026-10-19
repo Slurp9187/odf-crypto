@@ -1407,7 +1407,10 @@ fn the_lanes_refusal_names_whose_bound_it_was() {
     assert!(
         matches!(
             negative,
-            Err(crate::kdf::KdfError::Params(BadParameter::OutOfRange { got: -3, .. }))
+            Err(crate::kdf::KdfError::Params(BadParameter::OutOfRange {
+                got: -3,
+                ..
+            }))
         ),
         "{negative:?}"
     );
@@ -1425,23 +1428,26 @@ fn a_missing_member_is_named_by_index_and_carries_no_path() {
     let hostile = format!("evil-{}-path", "X".repeat(1 << 20));
     let blob = {
         let mut w = ZipWriter::new(Cursor::new(Vec::new()));
-        w.start_file("mimetype", SimpleFileOptions::default()).unwrap();
-        w.write_all(b"application/vnd.oasis.opendocument.text").unwrap();
+        w.start_file("mimetype", SimpleFileOptions::default())
+            .unwrap();
+        w.write_all(b"application/vnd.oasis.opendocument.text")
+            .unwrap();
         w.finish().unwrap().into_inner()
     };
     let mut archive = ZipArchive::new(Cursor::new(blob)).unwrap();
-    let err = crate::decrypt::member_for_archive(
-        &mut archive,
-        &hostile,
-        crate::decrypt::no_member(3),
-    )
-    .expect_err("no member has that name");
+    let err =
+        crate::decrypt::member_for_archive(&mut archive, &hostile, crate::decrypt::no_member(3))
+            .expect_err("no member has that name");
     assert!(matches!(
         err,
         DecryptError::BadParameters(BadParameter::NoMember { row: 3 })
     ));
     for rendered in [err.to_string(), format!("{err:?}")] {
-        assert!(!rendered.contains("XXXX"), "{}", &rendered[..80.min(rendered.len())]);
+        assert!(
+            !rendered.contains("XXXX"),
+            "{}",
+            &rendered[..80.min(rendered.len())]
+        );
         assert!(!rendered.contains("evil"), "{rendered}");
         assert!(rendered.len() < 200, "{}", rendered.len());
     }

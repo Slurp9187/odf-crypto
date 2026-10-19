@@ -217,7 +217,9 @@ fn gated<'a>(
         Cipher::AesCbcW3c => Box::new(CbcDecryptReader::new(file, key, &row.iv)?),
         Cipher::BlowfishCfb8 => Box::new(BlowfishDecryptReader::new(file, key, &row.iv)?),
         Cipher::AesGcmW3c => {
-            return Err(Fault::Internal("an AES-GCM member reached the checksum path"))
+            return Err(Fault::Internal(
+                "an AES-GCM member reached the checksum path",
+            ))
         }
     };
     ChecksumGate::new(plain, row.checksum.clone())

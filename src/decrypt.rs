@@ -789,10 +789,12 @@ pub(crate) fn screen_shape(
     head: &[u8],
 ) -> Result<(), DecryptError> {
     if !cipher_accepts_key_len(row.cipher, row.derived_key_len) {
-        return Err(DecryptError::BadParameters(BadParameter::KeySizeForCipher {
-            got: row.derived_key_len,
-            cipher: row.cipher,
-        }));
+        return Err(DecryptError::BadParameters(
+            BadParameter::KeySizeForCipher {
+                got: row.derived_key_len,
+                cipher: row.cipher,
+            },
+        ));
     }
     // A cipher's IV length is the cipher's own requirement, exactly one value.
     let iv_len = |by: Primitive, want: usize| {
