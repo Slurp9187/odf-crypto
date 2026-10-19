@@ -13,7 +13,7 @@ use crate::test_support::{
     append_stored_member, load_golden, load_ladder_fixture, pgp_two_row_zip, read_member,
     zip_namelist, NONASCII_PASSWORD, PASSWORD,
 };
-use crate::{Kdf, Mode};
+use crate::{BadParameter, Kdf, ManifestField, MemberFault, Mode, Primitive};
 
 // --- S1 ---
 
@@ -597,10 +597,12 @@ fn hostile_manifest_size_is_refused_before_allocating() {
         "fixture must carry the hostile size"
     );
     match decrypt(&bytes, PASSWORD) {
-        Err(DecryptError::BadParameters(msg)) => {
-            assert!(msg.contains("manifest:size"), "unexpected message: {msg}")
-        }
-        other => panic!("expected BadParameters, got {other:?}"),
+        Err(DecryptError::BadParameters(BadParameter::OutOfRange {
+            field: ManifestField::Size,
+            got,
+            ..
+        })) => assert_eq!(got, 9_000_000_000),
+        other => panic!("expected the manifest:size refusal, got {other:?}"),
     }
 }
 
@@ -731,11 +733,10 @@ fn hostile_derived_key_len_is_refused_before_allocating() {
         "fixture must carry the hostile key-size"
     );
     match decrypt(&bytes, PASSWORD) {
-        Err(DecryptError::BadParameters(msg)) => assert!(
-            msg.contains("key length 2000000000"),
-            "unexpected message: {msg}"
-        ),
-        other => panic!("expected BadParameters, got {other:?}"),
+        Err(DecryptError::BadParameters(BadParameter::KeySizeForCipher { got, .. })) => {
+            assert_eq!(got, 2_000_000_000)
+        }
+        other => panic!("expected the key-size refusal, got {other:?}"),
     }
 }
 
@@ -799,12 +800,25 @@ fn pbkdf2_zero_iterations_is_bad_parameters() {
 fn encrypted_entry_count_ceiling_refuses_without_running_kdf() {
     assert!(super::ensure_encrypted_entry_count(1, 1).is_ok());
     let err = super::ensure_encrypted_entry_count(2, 1).unwrap_err();
-    match err {
-        DecryptError::BadParameters(msg) => {
-            assert!(msg.contains("encrypted entry count"), "message: {msg}");
-        }
-        other => panic!("expected BadParameters, got {other:?}"),
-    }
+    assert_eq!(
+        err.to_string(),
+        DecryptError::BadParameters(BadParameter::OutOfRange {
+            field: ManifestField::EncryptedEntries,
+            got: 2,
+            min: 0,
+            max: 1,
+        })
+        .to_string()
+    );
+    assert!(matches!(
+        err,
+        DecryptError::BadParameters(BadParameter::OutOfRange {
+            field: ManifestField::EncryptedEntries,
+            got: 2,
+            max: 1,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -830,7 +844,10 @@ fn gcm_iv_tag_only_frame_is_not_rejected_as_too_short() {
     );
     let err = decrypt(&blob, PASSWORD).unwrap_err();
     assert!(
-        !matches!(err, DecryptError::BadParameters(ref m) if m.contains("shorter than IV+tag")),
+        !matches!(
+            err,
+            DecryptError::BadParameters(BadParameter::Member(MemberFault::ShorterThanIvAndTag))
+        ),
         "IV||tag-only member must reach the cipher, not BadParameters: {err:?}"
     );
 }
@@ -983,8 +1000,14 @@ fn a_host_capacity_failure_is_not_a_bad_parameter() {
 
     // And the other arm still lands where it did, so the split is real rather
     // than everything becoming HostCannotAllocate.
-    let params = crate::decrypt::kdf_error(crate::kdf::KdfError::Params("argon2 t 0".into()));
-    assert!(matches!(params, DecryptError::BadParameters(_)));
+    let reason = BadParameter::OutOfRange {
+        field: ManifestField::Argon2(crate::Argon2Axis::T),
+        got: 0,
+        min: 1,
+        max: 10,
+    };
+    let params = crate::decrypt::kdf_error(crate::kdf::KdfError::Params(reason));
+    assert!(matches!(params, DecryptError::BadParameters(r) if r == reason));
 }
 
 #[test]
@@ -1289,7 +1312,139 @@ fn permissive_still_defers_to_the_cipher_and_the_host() {
     let mut out = [0u8; 32];
     let err = crate::kdf::derive_argon2id(b"probe", &salt, 1, 8, 4, &l, &mut out)
         .expect_err("m = 8 with p = 4 is below argon2's own m >= 8p");
-    assert!(matches!(err, crate::kdf::KdfError::Params(_)), "{err:?}");
+    // Refused by our own check, before `Params::new`, and named as argon2's
+    // rule. Falsify: drop the `m < 8p` check in `derive_argon2id`, and argon2's
+    // own refusal arrives instead, as `KdfError::Internal`.
+    assert!(
+        matches!(
+            err,
+            crate::kdf::KdfError::Params(BadParameter::CipherRejects {
+                field: ManifestField::Argon2(crate::Argon2Axis::MKib),
+                by: Primitive::Argon2,
+                got: 8,
+                min: 32,
+                ..
+            })
+        ),
+        "{err:?}"
+    );
+}
+
+/// #105: a salt under argon2's 8-byte floor is refused before the KDF runs,
+/// named as argon2's rule. Nothing screened it before, and argon2's own
+/// refusal used to be formatted into the message.
+///
+/// Falsify: drop the salt-length check in `derive_argon2id`; argon2 refuses it
+/// itself, which now arrives as `KdfError::Internal`.
+#[test]
+fn a_salt_under_eight_bytes_is_refused_before_the_kdf() {
+    let mut out = [0u8; 32];
+    let err = crate::kdf::derive_argon2id(
+        b"probe",
+        &[0u8; 7],
+        1,
+        8,
+        1,
+        &crate::DecryptLimits::default(),
+        &mut out,
+    )
+    .expect_err("a 7-byte salt is below argon2's floor");
+    assert!(
+        matches!(
+            err,
+            crate::kdf::KdfError::Params(BadParameter::CipherRejects {
+                field: ManifestField::SaltLen,
+                by: Primitive::Argon2,
+                got: 7,
+                min: 8,
+                ..
+            })
+        ),
+        "{err:?}"
+    );
+}
+
+/// #105: the lanes refusal names whose bound was the tighter one: ours (the
+/// default 16) under the default limits, argon2's own 0xFFFFFF under
+/// `PERMISSIVE`, and a negative value keeps its sign.
+///
+/// Falsify: always report `OutOfRange` for lanes.
+#[test]
+fn the_lanes_refusal_names_whose_bound_it_was() {
+    let salt = [0u8; 16];
+    // `m` within every limit, so the lanes check is the one that answers.
+    let derive = |p: i32, l: &crate::DecryptLimits| {
+        let mut out = [0u8; 32];
+        crate::kdf::derive_argon2id(b"probe", &salt, 1, 1024, p, l, &mut out)
+    };
+    let ours = derive(17, &crate::DecryptLimits::default());
+    assert!(
+        matches!(
+            ours,
+            Err(crate::kdf::KdfError::Params(BadParameter::OutOfRange {
+                field: ManifestField::Argon2(crate::Argon2Axis::P),
+                got: 17,
+                max: 16,
+                ..
+            }))
+        ),
+        "{ours:?}"
+    );
+    let argon2s = derive(0x0100_0000, &crate::DecryptLimits::PERMISSIVE);
+    assert!(
+        matches!(
+            argon2s,
+            Err(crate::kdf::KdfError::Params(BadParameter::CipherRejects {
+                by: Primitive::Argon2,
+                got: 0x0100_0000,
+                max: 0x00FF_FFFF,
+                ..
+            }))
+        ),
+        "{argon2s:?}"
+    );
+    let negative = derive(-3, &crate::DecryptLimits::default());
+    assert!(
+        matches!(
+            negative,
+            Err(crate::kdf::KdfError::Params(BadParameter::OutOfRange { got: -3, .. }))
+        ),
+        "{negative:?}"
+    );
+}
+
+/// #105: a row naming no zip member is reported by its index, and no byte of
+/// its `manifest:full-path` reaches the error, its `Display` or its `Debug`.
+/// The old message quoted the path with no bound (up to the 8 MiB manifest
+/// cap) and the CLI printed it.
+///
+/// Falsify: give `NoMember` a field holding the path, or format the path into
+/// the refusal.
+#[test]
+fn a_missing_member_is_named_by_index_and_carries_no_path() {
+    let hostile = format!("evil-{}-path", "X".repeat(1 << 20));
+    let blob = {
+        let mut w = ZipWriter::new(Cursor::new(Vec::new()));
+        w.start_file("mimetype", SimpleFileOptions::default()).unwrap();
+        w.write_all(b"application/vnd.oasis.opendocument.text").unwrap();
+        w.finish().unwrap().into_inner()
+    };
+    let mut archive = ZipArchive::new(Cursor::new(blob)).unwrap();
+    let err = crate::decrypt::member_for_archive(
+        &mut archive,
+        &hostile,
+        crate::decrypt::no_member(3),
+    )
+    .expect_err("no member has that name");
+    assert!(matches!(
+        err,
+        DecryptError::BadParameters(BadParameter::NoMember { row: 3 })
+    ));
+    for rendered in [err.to_string(), format!("{err:?}")] {
+        assert!(!rendered.contains("XXXX"), "{}", &rendered[..80.min(rendered.len())]);
+        assert!(!rendered.contains("evil"), "{rendered}");
+        assert!(rendered.len() < 200, "{}", rendered.len());
+    }
 }
 
 /// The defaults are the constants, so raising one in `limits.rs` cannot leave
@@ -1427,12 +1582,11 @@ fn key_length_is_screened_before_the_kdf_runs() {
         "fixture must carry the incompatible key-size"
     );
     match decrypt(&bytes, PASSWORD) {
-        Err(DecryptError::BadParameters(msg)) => assert!(
-            msg.contains("key length 64"),
-            "expected the key-length refusal, got {msg:?} -- an iteration message \
+        Err(DecryptError::BadParameters(BadParameter::KeySizeForCipher { got: 64, .. })) => {}
+        other => panic!(
+            "expected the key-size refusal, got {other:?} -- an iteration refusal \
              means the KDF was reached first and the screen did not run"
         ),
-        other => panic!("expected BadParameters, got {other:?}"),
     }
 }
 
@@ -1472,49 +1626,56 @@ fn every_pre_key_fault_is_decided_in_the_screen() {
     // The baseline must pass, or every case below would pass for the wrong reason.
     assert!(screen_before_deriving(&row(Cipher::AesGcmW3c, gcm_ok.clone(), 32), &body).is_ok());
 
-    let cases: Vec<(&str, EntryEncryption, Vec<u8>)> = vec![
+    let iv = |by, got: i64, want: i64| BadParameter::CipherRejects {
+        field: ManifestField::IvLen,
+        by,
+        got,
+        min: want,
+        max: want,
+    };
+    let cases: Vec<(BadParameter, EntryEncryption, Vec<u8>)> = vec![
         (
-            "key length 64",
+            BadParameter::KeySizeForCipher {
+                got: 64,
+                cipher: Cipher::AesGcmW3c,
+            },
             row(Cipher::AesGcmW3c, gcm_ok.clone(), 64),
             body.clone(),
         ),
         (
-            "GCM IV length",
+            iv(Primitive::AesGcm, 11, 12),
             row(Cipher::AesGcmW3c, vec![0u8; 11], 32),
             body.clone(),
         ),
         (
-            "shorter than IV+tag",
+            BadParameter::Member(MemberFault::ShorterThanIvAndTag),
             row(Cipher::AesGcmW3c, gcm_ok.clone(), 32),
             vec![0u8; 20],
         ),
         (
-            "inconsistent IV",
+            BadParameter::Member(MemberFault::IvMismatch),
             row(Cipher::AesGcmW3c, vec![9u8; 12], 32),
             body.clone(),
         ),
         (
-            "CBC IV length",
+            iv(Primitive::AesCbc, 15, 16),
             row(Cipher::AesCbcW3c, vec![0u8; 15], 32),
             vec![0u8; 32],
         ),
         (
-            "not a block multiple",
+            BadParameter::Member(MemberFault::NotBlockMultiple),
             row(Cipher::AesCbcW3c, vec![0u8; 16], 32),
             vec![0u8; 31],
         ),
         (
-            "Blowfish IV length",
+            iv(Primitive::Blowfish, 7, 8),
             row(Cipher::BlowfishCfb8, vec![0u8; 7], 16),
             vec![0u8; 32],
         ),
     ];
     for (expected, r, blob) in cases {
         match screen_before_deriving(&r, &blob) {
-            Err(DecryptError::BadParameters(msg)) => assert!(
-                msg.contains(expected),
-                "expected {expected:?} from the screen, got {msg:?}"
-            ),
+            Err(DecryptError::BadParameters(got)) => assert_eq!(got, expected),
             other => panic!("expected {expected:?} to be screened, got {other:?}"),
         }
     }
