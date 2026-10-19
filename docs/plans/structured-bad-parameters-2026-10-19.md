@@ -1,4 +1,4 @@
-Status: **Planned.** Authored 2026-10-19 by the encrypted-file-vault session that consumes this crate (EFV #1064, the #309 line). The owner decided the shape (below). Five scope points went to the owner with recommendations on 2026-10-19 UTC, and this plan follows those recommendations until the answers arrive (§ Open points). No code has landed.
+Status: **Approved, in progress.** Authored 2026-10-19 by the encrypted-file-vault session that consumes this crate (EFV #1064, the #309 line). The owner decided the shape and answered all five open points as recommended (2026-10-19 UTC; § Open points).
 
 # Plan — a decrypt refusal carries no text from the file
 
@@ -134,7 +134,7 @@ that seeded this plan. By outcome:
 - **Every feature configuration** builds and tests: detect-only, `crypto-ops`
   and `cli`.
 
-## Open points (sent to the owner 2026-10-19 UTC, with recommendations)
+## Open points (answered by the owner 2026-10-19 UTC: all five as recommended)
 
 1. Invariant sites leave `BadParameters` for `Internal` (exit 6 → 5).
    Recommended: yes.
