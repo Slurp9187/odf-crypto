@@ -697,7 +697,8 @@ pub(crate) fn derive_write_key(
                 // inheriting one -- the same discipline `Argon2Axis`'s
                 // `Display` impl follows at its own match, above.
                 |e| match e {
-                    crate::kdf::KdfError::Params(s) => EncryptError::Internal(s),
+                    crate::kdf::KdfError::Params(b) => EncryptError::Internal(b.to_string()),
+                    crate::kdf::KdfError::Internal(s) => EncryptError::Internal(s.into()),
                     crate::kdf::KdfError::HostCannotAllocate { requested_bytes } => {
                         EncryptError::HostCannotAllocate { requested_bytes }
                     }

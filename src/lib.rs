@@ -97,6 +97,8 @@ mod zip_tree;
 mod test_support;
 
 #[cfg(feature = "crypto-ops")]
+mod bad_parameter;
+#[cfg(feature = "crypto-ops")]
 mod decrypt;
 #[cfg(feature = "crypto-ops")]
 mod decrypt_entries;
@@ -134,6 +136,8 @@ pub use types::{
     StartKeyAlg,
 };
 
+#[cfg(feature = "crypto-ops")]
+pub use bad_parameter::{BadParameter, ManifestField, MemberFault, Primitive};
 #[cfg(feature = "crypto-ops")]
 pub use decrypt::{decrypt, decrypt_with_limits, AllocationSite, DecryptError, DecryptLimits};
 #[cfg(feature = "crypto-ops")]

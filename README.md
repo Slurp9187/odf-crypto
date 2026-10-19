@@ -19,7 +19,7 @@ accept predicates, so a package this crate calls encrypted is one LibreOffice
 would prompt for, and a package it refuses is one LibreOffice would refuse to
 open.
 
-> **Pre-release.** This is `0.1.0-rc.12`. The API may change before `0.1.0`.
+> **Pre-release.** This is `0.1.0-rc.13`. The API may change before `0.1.0`.
 
 ## What it does
 
@@ -84,10 +84,10 @@ the file afterwards. It is evidenced separately — see
 ```toml
 [dependencies]
 # Detection only — no cryptographic dependency.
-odf-crypto = "0.1.0-rc.12"
+odf-crypto = "0.1.0-rc.13"
 
 # Detection, reading and writing.
-odf-crypto = { version = "0.1.0-rc.12", features = ["crypto-ops"] }
+odf-crypto = { version = "0.1.0-rc.13", features = ["crypto-ops"] }
 ```
 
 Pre-release versions are not matched by ordinary requirements — name the full
@@ -268,6 +268,13 @@ was broken**, because those need different things from a caller:
 | `OutOfRange` | a policy bound of **this crate** | the OpenDocument format permits this value; the library is stricter than the format |
 | `CipherRejects` | **`argon2`** cannot run it (`m < 8p`, or `p` above its `MAX_P_COST`) | not a setting any library could relax |
 
+The read side has the same shape. A package whose own settings `decrypt` will
+not act on returns `DecryptError::BadParameters(BadParameter)`: the setting, the
+value the file declares, the range allowed, and whose rule it is
+(`OutOfRange` for this crate's `DecryptLimits` or a format floor,
+`CipherRejects` for argon2's or a cipher's own). It carries no text from the
+file, so its numbers can be quoted in your own words.
+
 The distinction is not cosmetic, and the Argon2 attributes make it sharp: they
 are defined by **LibreOffice's own extension schema**
 (`OpenDocument-v1.4+libreoffice-manifest-schema.rng`) and appear in no OASIS
@@ -408,7 +415,7 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0-rc.12"` | `classify` alone. No cryptographic dependency. **22 crates.** |
+| **Detection-only** | `odf-crypto = "0.1.0-rc.13"` | `classify` alone. No cryptographic dependency. **22 crates.** |
 | **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **56 crates.** |
 | **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **70 crates** on Windows, 72 on Linux, 76 on macOS. |
 

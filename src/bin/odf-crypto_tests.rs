@@ -342,7 +342,10 @@ fn the_decrypt_exit_map_is_the_documented_one() {
         (DecryptError::Odf12Fatal, EX_REFUSED),
         (DecryptError::UnsupportedPgp, EX_REFUSED),
         (DecryptError::EmptyPassword, EX_REFUSED),
-        (DecryptError::BadParameters(String::new()), EX_MALFORMED),
+        (
+            DecryptError::BadParameters(odf_crypto::BadParameter::NoMember { row: 0 }),
+            EX_MALFORMED,
+        ),
         (DecryptError::Inflate(String::new()), EX_MALFORMED),
         (DecryptError::Zip(String::new()), EX_MALFORMED),
         (DecryptError::Internal(String::new()), EX_INTERNAL),

@@ -11,7 +11,9 @@ use secure_gate::{RevealSecret, RevealSecretMut};
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::classify::classify_latched;
-use crate::decrypt::{member_for_archive, screen_class, screen_shape, DecryptError, DecryptLimits};
+use crate::decrypt::{
+    member_for_archive, no_member, screen_class, screen_shape, DecryptError, DecryptLimits,
+};
 use crate::decrypt_stream::{
     declared_size, fault_error, gcm_key, member_shape, open_after_iv, DecryptOutcome,
     IntegrityOutcome, Sizes,
@@ -318,11 +320,9 @@ fn wholesome<R: Read + Seek, W: Write + Seek>(
     params: Argon2Params,
     mimetype: Option<String>,
 ) -> Result<DecryptOutcome, ReencryptError> {
-    let row = class.wholesome_row().ok_or_else(|| {
-        DecryptError::BadParameters("wholesome package missing encrypted-package row".into())
-    })?;
+    let (row_index, row) = crate::decrypt::wholesome_row(class)?;
     let expected = declared_size(row.size)?;
-    let (index, _) = member_for_archive(archive, &row.path)?;
+    let (index, _) = member_for_archive(archive, &row.path, no_member(row_index))?;
     let (len, head) = member_shape(archive, index)?;
     screen_shape(row, len, &head)?;
     // The verify pass, under the old key, before anything is derived for the
@@ -333,8 +333,9 @@ fn wholesome<R: Read + Seek, W: Write + Seek>(
     write_package(writer, new, params, mimetype, len, |sealer, _| {
         let mut file = open_after_iv(archive, index)?;
         old_key.with_secret(|k| -> Result<u64, ReencryptError> {
-            let gcm = GcmStream::new(k, &row.iv)
-                .ok_or_else(|| DecryptError::BadParameters("AES-GCM key".into()))?;
+            let gcm = GcmStream::new(k, &row.iv).ok_or_else(|| {
+                DecryptError::Internal("an AES-GCM key length screen_shape passed".into())
+            })?;
             let plain = GcmDecryptReader::new(&mut file, gcm, ct_len);
             let mut tee = Tee {
                 src: plain,

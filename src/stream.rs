@@ -80,7 +80,10 @@ pub(crate) enum Fault {
     /// the input changed between them.
     Changed,
     /// A structural problem with the ciphertext, e.g. not a block multiple.
-    BadParameters(String),
+    BadParameters(crate::BadParameter),
+    /// An invariant of ours that an earlier screen enforces (a key or IV
+    /// length `screen_shape` already checked): not a property of the member.
+    Internal(&'static str),
     /// Not valid DEFLATE, or not the declared length.
     Inflate(String),
     /// Inflating past the caller's output limit.
@@ -97,7 +100,9 @@ impl std::fmt::Display for Fault {
         match self {
             Fault::WrongPassword => f.write_str("wrong password"),
             Fault::Changed => f.write_str("input changed between passes"),
-            Fault::BadParameters(s) | Fault::Inflate(s) => f.write_str(s),
+            Fault::BadParameters(b) => write!(f, "{b}"),
+            Fault::Internal(s) => f.write_str(s),
+            Fault::Inflate(s) => f.write_str(s),
             Fault::OutputLimit => f.write_str("output limit exceeded"),
             Fault::Alloc(n) => write!(f, "could not allocate {n} bytes"),
             Fault::Deflate(s) => write!(f, "deflate failed: {s}"),
@@ -341,7 +346,7 @@ pub(crate) fn gcm_verify<R: Read>(
     ct_len: u64,
 ) -> io::Result<bool> {
     let mut gcm = GcmStream::new(key, iv)
-        .ok_or_else(|| Fault::BadParameters("AES-GCM key".into()).into_io())?;
+        .ok_or_else(|| Fault::Internal("an AES-GCM key length the screen passed").into_io())?;
     // Ciphertext is not secret, but the buffer is the same size as the others
     // and reusing the type costs nothing.
     let mut buf = vec![0u8; CHUNK.min(ct_len as usize).max(AES_GCM_TAG_LEN)];
@@ -503,12 +508,12 @@ pub(crate) struct CbcDecryptReader<R> {
 
 impl<R: Read> CbcDecryptReader<R> {
     pub(crate) fn new(src: R, key: &[u8], iv: &[u8]) -> Result<Self, Fault> {
-        let bad = |_| Fault::BadParameters("AES-CBC key/IV".into());
+        let bad = |_| Fault::Internal("an AES-CBC key or IV length the screen passed");
         let dec = match key.len() {
             16 => CbcDec::A128(cbc::Decryptor::new_from_slices(key, iv).map_err(bad)?),
             24 => CbcDec::A192(cbc::Decryptor::new_from_slices(key, iv).map_err(bad)?),
             32 => CbcDec::A256(cbc::Decryptor::new_from_slices(key, iv).map_err(bad)?),
-            n => return Err(Fault::BadParameters(format!("AES key length {n}"))),
+            _ => return Err(Fault::Internal("an AES key length the screen passed")),
         };
         Ok(Self {
             src,
@@ -541,14 +546,20 @@ impl<R: Read> CbcDecryptReader<R> {
             let room = (b.len() - off) / AES_BLOCK_LEN * AES_BLOCK_LEN;
             let n = read_full(src, &mut b[off..off + room])?;
             if n % AES_BLOCK_LEN != 0 {
-                return Err(Fault::BadParameters("not a block multiple".into()).into_io());
+                return Err(Fault::BadParameters(crate::BadParameter::Member(
+                    crate::MemberFault::NotBlockMultiple,
+                ))
+                .into_io());
             }
             dec.decrypt_blocks(&mut b[off..off + n]);
             Ok((off + n, n < room))
         })?;
         if n == 0 {
             // An empty member, as the whole-buffer path also refuses.
-            return Err(Fault::BadParameters("not a block multiple".into()).into_io());
+            return Err(Fault::BadParameters(crate::BadParameter::Member(
+                crate::MemberFault::NotBlockMultiple,
+            ))
+            .into_io());
         }
         self.start = 0;
         if at_end {
@@ -597,7 +608,7 @@ pub(crate) struct BlowfishDecryptReader<R> {
 impl<R: Read> BlowfishDecryptReader<R> {
     pub(crate) fn new(src: R, key: &[u8], iv: &[u8]) -> Result<Self, Fault> {
         let dec = BufDecryptor::<Blowfish>::new_from_slices(key, iv)
-            .map_err(|_| Fault::BadParameters("Blowfish key/IV".into()))?;
+            .map_err(|_| Fault::Internal("a Blowfish key or IV length the screen passed"))?;
         Ok(Self { src, dec })
     }
 }

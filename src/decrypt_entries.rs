@@ -15,7 +15,7 @@ use zip::{CompressionMethod, ZipArchive};
 
 use crate::classify::{member_matches_path, zip_entry_name};
 use crate::decrypt::{
-    member_for_archive, screen_shape, strip_manifest, DecryptError, DecryptLimits,
+    member_for_archive, no_member, screen_shape, strip_manifest, DecryptError, DecryptLimits,
 };
 use crate::decrypt_stream::{
     fault_error, find_key, gcm_key, gcm_member, member_shape, read_error, DecryptOutcome,
@@ -61,9 +61,9 @@ pub(crate) fn per_entry<R: Read + Seek, S: ZipSink>(
     // too, row by row.
     let mut plans: HashMap<String, Plan<'_>> = HashMap::new();
     let mut superseded: Vec<(usize, Plan<'_>)> = Vec::new();
-    for row in &class.encrypted_entries {
+    for (row_index, row) in class.encrypted_entries.iter().enumerate() {
         let expected = sizes.declared(row.size)?;
-        let (index, name) = member_for_archive(archive, &row.path)?;
+        let (index, name) = member_for_archive(archive, &row.path, no_member(row_index))?;
         let (len, head) = member_shape(archive, index)?;
         screen_shape(row, len, &head)?;
         let plan = Plan { row, expected, len };
@@ -146,7 +146,10 @@ fn with_total_limit(e: DecryptError, limits: &DecryptLimits) -> DecryptError {
 }
 
 fn read_manifest<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Vec<u8>, DecryptError> {
-    let (index, _) = member_for_archive(archive, MANIFEST_PATH)?;
+    // `classify` read this member a moment ago, so its absence is ours.
+    let (index, _) = member_for_archive(archive, MANIFEST_PATH, || {
+        DecryptError::Internal("the manifest classify read is not in the archive".into())
+    })?;
     let file = archive
         .by_index(index)
         .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
@@ -214,8 +217,8 @@ fn gated<'a>(
         Cipher::AesCbcW3c => Box::new(CbcDecryptReader::new(file, key, &row.iv)?),
         Cipher::BlowfishCfb8 => Box::new(BlowfishDecryptReader::new(file, key, &row.iv)?),
         Cipher::AesGcmW3c => {
-            return Err(Fault::BadParameters(
-                "GCM member reached the checksum path".into(),
+            return Err(Fault::Internal(
+                "an AES-GCM member reached the checksum path",
             ))
         }
     };
