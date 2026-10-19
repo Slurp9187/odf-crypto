@@ -11,6 +11,28 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.12] - Unreleased
+
+### Changed
+
+**`secure-gate` 0.9.0-rc.12 → 0.9.0-rc.13.** No API change: the public API,
+the streaming API and their errors are unchanged, and so are the output bytes.
+The release exists so a consumer's graph can hold one `secure-gate`. This
+crate pins it exactly (`=`), and two exact requirements inside one
+compatibility range cannot resolve, so `encrypted-file-vault` (whose `main`
+pins `=0.9.0-rc.12` and this crate's `=0.1.0-rc.11`, as of its commit
+`1f4a912`) cannot move to rc.13 until this crate does.
+
+- **rc.13's one breaking change does not reach this crate.** It rejects
+  `derive: [ConstantTimeEq]` on the shaped newtype arms; this crate declares
+  no newtypes, and `derive:` appears in `src/` only in a comment. The other
+  upgrade hazards were grepped as well: every `into_inner` in `src/` belongs
+  to `Cursor`, `ZipWriter` or `io::Error`, not to a secure-gate wrapper.
+- **The new `sealed` feature is not enabled.** The dependency stays `alloc`
+  only, and secure-gate's dependency list is unchanged from rc.12, so the
+  crate counts hold: 22 by default, 56 with `crypto-ops`, and `cli`
+  70 / 72 / 76 on Windows / Linux / macOS.
+
 ## [0.1.0-rc.11] - 2026-10-16
 
 ### Changed
