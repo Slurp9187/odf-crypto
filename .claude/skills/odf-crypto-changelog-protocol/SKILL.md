@@ -29,7 +29,7 @@ underneath.
 
 ## Heading format
 
-Global format, `## [0.1.0-rc.5] - 2026-09-20`, with an **ASCII hyphen**.
+Global format, `## [0.1.0-rc.N] - YYYY-MM-DD`, with an **ASCII hyphen**.
 
 Legacy deviations, both normalized rather than tolerated:
 
@@ -49,15 +49,19 @@ Annotated tag `v<version>`. No non-release tags exist in this repo.
 
 ## Registry
 
-crates.io, package `odf-crypto`. Existence query:
+crates.io, package `odf-crypto`. Existence query, against the sparse index (no
+API token or `User-Agent` needed, unlike `crates.io/api/v1`), oldest first:
 
 ```bash
-curl -s https://crates.io/api/v1/crates/odf-crypto/versions \
-  | python -c "import sys,json;print(' '.join(v['num'] for v in json.load(sys.stdin)['versions']))"
+curl -s https://index.crates.io/od/f-/odf-crypto \
+  | python -c "import sys,json;[print(d['vers'],'(yanked)' if d['yanked'] else '') for d in map(json.loads,sys.stdin)]"
 ```
 
-Published through `0.1.0-rc.6`. `rc.7` is open and unpublished, which is the expected
-transient state the global skill describes, not a violation.
+**This file records no publication state.** Which versions are live is the query's
+answer, not a sentence here. A line naming the last published version is wrong after
+the next publish, and one did sit here naming `rc.6` as latest through `rc.13`. An
+open version absent from the index is the expected transient state the global skill
+describes, not a violation.
 
 ## What a bump touches
 
