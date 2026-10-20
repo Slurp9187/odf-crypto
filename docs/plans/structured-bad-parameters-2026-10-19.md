@@ -1,4 +1,4 @@
-Status: **Approved, in progress.** Authored 2026-10-19 by the encrypted-file-vault session that consumes this crate (EFV #1064, the #309 line). The owner decided the shape and answered all five open points as recommended (2026-10-19 UTC; § Open points).
+Status: **Shipped** in [#109](https://github.com/Slurp9187/odf-crypto/pull/109), unreleased until `0.1.0-rc.13` is published. Authored 2026-10-19 by the encrypted-file-vault session that consumes this crate (EFV #1064, the #309 line). The owner decided the shape and answered all five open points as recommended (2026-10-19 UTC; § Open points). One finding changed the plan: `classify` always pushes the wholesome row when it reports Wholesome, so the three "missing encrypted-package row" sites are `Internal`, not a `MemberFault`.
 
 # Plan — a decrypt refusal carries no text from the file
 
