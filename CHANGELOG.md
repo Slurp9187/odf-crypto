@@ -11,6 +11,30 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.14] - Unreleased
+
+### Changed
+
+**`secure-gate` 0.9.0-rc.13 → 0.9.0-rc.15.** No API change: the public API,
+the streaming API and their errors are unchanged, and so are the output bytes.
+As with rc.12, the release exists so a consumer's graph can hold one
+`secure-gate`. `encrypted-file-vault` (whose `main` pins `=0.9.0-rc.13` and
+this crate's `=0.1.0-rc.13`, as of its commit `1973f7e0f`) enables
+secure-gate's `sealed` feature, whose pre-key rc.15 moves off the heap between
+guard pages, and it cannot take that fix until this crate's exact pin moves
+too.
+
+- **Neither release's changes reach this crate.** Everything rc.14 and rc.15
+  change sits behind `sealed` (`Prekey`, `LockError`), which this crate does
+  not enable. The upgrade hazards were grepped again: every `into_inner` in
+  `src/` still belongs to `Cursor`, `ZipWriter` or `io::Error`, and `derive:`
+  and the deleted alias macros appear in `src/` only in comments.
+- **The dependency stays `alloc` only.** In `Cargo.lock` only secure-gate's
+  version and checksum moved; `guarded-block`, the crate rc.15 adds, is an
+  optional dependency that only `sealed` enables. The crate counts hold: 22 by
+  default, 56 with `crypto-ops`, and `cli` 70 / 72 / 76 on Windows / Linux /
+  macOS.
+
 ## [0.1.0-rc.13] - 2026-10-19
 
 ### Changed

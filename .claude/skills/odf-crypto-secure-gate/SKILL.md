@@ -22,8 +22,18 @@ records only what is true of this crate.**
 ## Dependency
 
 ```toml
-secure-gate = { version = "=0.9.0-rc.13", default-features = false, features = ["alloc"] }
+secure-gate = { version = "=<pinned>", default-features = false, features = ["alloc"] }
 ```
+
+**This file records no version.** `Cargo.toml` is the pin and `CHANGELOG.md` records each
+re-pin and what was checked at it; a version written here goes stale at the next bump and is
+then the one claim in the file that is wrong. Read the pin with
+`grep secure-gate Cargo.toml`.
+
+**Pinned exactly (`=`), and always moved as an ecosystem wave**, since four first-party crates
+pin it exactly and two exact requirements in one compatibility range cannot resolve. At each
+bump, run the global skill's *upgrade* reference greps and record the result in the changelog
+entry, not here.
 
 `alloc` only — **no `rand`, no `ct-eq`, no `encoding`.** This crate never generates a random
 *secret* (keys come from a user-supplied password; `encrypt`'s salt and IV are public and use
@@ -38,12 +48,14 @@ secure-gate is infrastructure, not an algorithm choice. Direct `zeroize` is gone
 **There is no bare `Zeroizing` left anywhere in `src/`**, and no "this one's local so plain is
 enough" exception.
 
-**Every rule in the global skill is read against rc.13** (re-pinned from rc.12 in odf-crypto
-0.1.0-rc.12). This crate declares no newtypes, so the rc.13 `derive: [ConstantTimeEq]` break
-does **not** hit it — confirmed by grep at the bump, `derive:` occurs in `src/` only in a
-comment. The opt-in `sealed` feature rc.13 added is not enabled. The bump is still a
-coordinated ecosystem wave, since four first-party crates pin exactly. See the global skill's
-*upgrade* reference.
+**Two facts that make most upstream breaks miss this crate**, both checked by grep, not
+assumed:
+
+- **No newtypes.** `derive:` occurs in `src/` only in a comment, so the rc.13
+  `derive: [ConstantTimeEq]` rejection has nothing to hit.
+- **`sealed` is not enabled.** Upstream releases that change only `sealed` (`Prekey`,
+  `LockError`, the `guarded-block` dependency) change nothing here and add no crate to the
+  graph. `Cargo.lock` moving only secure-gate's version and checksum confirms it.
 
 ## Boundary — the public API stays plain
 
