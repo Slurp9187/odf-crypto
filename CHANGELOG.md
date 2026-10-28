@@ -124,10 +124,10 @@ PBKDF2, and `reencrypt_to` from 2432 to 854 ms.
   from rc.14's inside those members. It still matches `decrypt` member for
   member. **The whole-buffer `decrypt` is byte-identical to rc.9 as before**: it
   still recompresses, by the default of the new `ZipSink::deflated_from`.
-- **The LibreOffice gate has not been re-run** on the new per-entry output
-  (`tests/goldens/validate_decrypt_to.py`); it needs a host with LibreOffice. The
-  members are LibreOffice's own DEFLATE streams inside the same framing as
-  before, but that is an argument, not the gate.
+- **LibreOffice opens it.** `tests/goldens/validate_decrypt_to.py`, re-run on
+  LibreOffice 26.8.0.3 (Windows 11), opened all 15 streamed outputs with the
+  same text as `decrypt`'s, the per-entry goldens and the ladder fixtures among
+  them.
 - **Less memory.** No compressor per member: `tests/streaming_memory.rs`
   measures per-entry `decrypt_to` at 444 KiB (was 625) and per-entry
   `reencrypt_to` at 885 KiB (was 1066), still flat in the payload.
@@ -189,6 +189,16 @@ went from 783 to 400 ms, and from 2432 ms before rc.15.
     the stored gap without the flush. Checked by breaking it: removing the
     full flush failed that case.
   - `adaptive_deflate_stores_noise_and_compresses_text` pins the decision.
+- **LibreOffice opens it.** `tests/goldens/validate_encrypted_outputs.py`, re-run
+  on LibreOffice 26.8.0.3 (Windows 11), passed 4/4: `encrypt_to` and three
+  `reencrypt_to` outputs open with the golden's text, and a wrong password is
+  refused. Those fixtures fit in one chunk, so a further package was built to
+  force the switch: stored XML, 512 KiB of random bytes, more XML. Decrypted
+  independently (Python's argon2-cffi and cryptography), its payload holds
+  34 KB of compressed blocks, then eight of this writer's 65535 + 1 stored
+  pairs, then compressed blocks again. zlib inflates it to the input exactly,
+  and the same LibreOffice opens it with the golden's text and refuses a wrong
+  password.
 - **A bug the benchmark caught, fixed before commit.** In adaptive mode a
   partial chunk waits until `finish`, so `consumed()` (read before `finish` for
   `manifest:size`) ran behind. It now counts bytes as `write` accepts them, and

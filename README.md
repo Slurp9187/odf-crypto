@@ -477,9 +477,9 @@ would pass sixty times over, which each guard was broken to confirm. The
 whole-buffer `decrypt` is pinned to the exact bytes it returned before it moved
 onto the streaming code, and LibreOffice 26.8.0.3 opens what `decrypt_to`,
 `encrypt_to` and `reencrypt_to` write (`tests/goldens/validate_decrypt_to.py`,
-`validate_encrypted_outputs.py`), refusing each with a wrong password. That
-verdict predates rc.15, which changed the bytes inside a per-entry
-`decrypt_to` output's deflated members; it has not been re-run since.
+`validate_encrypted_outputs.py`), refusing each with a wrong password. Re-run
+for rc.15, which changed the bytes inside a per-entry `decrypt_to` output's
+deflated members and the DEFLATE inside `encrypt_to`'s payload.
 
 **322 tests, passing in every feature configuration** — 231 library, 21 CLI
 unit, 41 CLI end-to-end, 2 memory-bound, 27 doctests. All three builds run in CI, not just the
