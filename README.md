@@ -470,14 +470,16 @@ That verdict outranks the harness.
 
 **Streaming is measured, not asserted.** `tests/streaming_memory.rs` installs a
 counting allocator and runs every operation at two payload sizes, sixteen times
-apart: peak heap does not move. `decrypt_to` holds 180 KiB for a wholesome
-package and 625 KiB for a per-entry one, `encrypt_to` 506 KiB, `reencrypt_to`
-348 KiB and 1066 KiB -- against a 4 MiB bound that holding a 256 MiB member
+apart: peak heap does not move. `decrypt_to` holds 171 KiB for a wholesome
+package and 444 KiB for a per-entry one, `encrypt_to` 506 KiB, `reencrypt_to`
+347 KiB and 885 KiB -- against a 4 MiB bound that holding a 256 MiB member
 would pass sixty times over, which each guard was broken to confirm. The
 whole-buffer `decrypt` is pinned to the exact bytes it returned before it moved
 onto the streaming code, and LibreOffice 26.8.0.3 opens what `decrypt_to`,
 `encrypt_to` and `reencrypt_to` write (`tests/goldens/validate_decrypt_to.py`,
-`validate_encrypted_outputs.py`), refusing each with a wrong password.
+`validate_encrypted_outputs.py`), refusing each with a wrong password. That
+verdict predates rc.15, which changed the bytes inside a per-entry
+`decrypt_to` output's deflated members; it has not been re-run since.
 
 **322 tests, passing in every feature configuration** — 231 library, 21 CLI
 unit, 41 CLI end-to-end, 2 memory-bound, 27 doctests. All three builds run in CI, not just the

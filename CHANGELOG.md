@@ -104,6 +104,48 @@ figures drift run to run, but the ratio held across repeats.
     crypto-common 0.2, ctutils, hybrid-array, polyval 0.7, universal-hash 0.6),
     beside the `aes` 0.8 / `ctr` 0.9 line, which is unchanged.
 
+**Per-entry `decrypt_to` and `reencrypt_to` copy deflated members instead of
+compressing them again.** The per-entry rebuild inflated every encrypted member,
+and every plain member stored with DEFLATE, then compressed it again at level 6.
+Almost all of a legacy package's time went there. Each such member is now copied
+still compressed, and checked as it is copied. On a 64 MiB legacy AES-CBC
+package (XML), `decrypt_to` went from 1835 to 428 ms, about 280 ms of which is
+PBKDF2, and `reencrypt_to` from 2432 to 854 ms.
+
+- **What is checked is unchanged.** An encrypted member still passes its 1 KiB
+  checksum, must reach its DEFLATE end marker, and must inflate to exactly
+  `manifest:size` within the output limit. An inflater beside the copy enforces
+  all of it and hands the copy only the bytes it consumed up to the end marker.
+  A plain member is read a second time through `zip`'s own inflating reader, the
+  read the rebuild always made, so its CRC check, its error, and the set of
+  packages refused are all the same as before.
+- **The output's bytes changed, its contents did not.** Deflated members now
+  hold the source's DEFLATE data, so the per-entry `decrypt_to` output differs
+  from rc.14's inside those members. It still matches `decrypt` member for
+  member. **The whole-buffer `decrypt` is byte-identical to rc.9 as before**: it
+  still recompresses, by the default of the new `ZipSink::deflated_from`.
+- **The LibreOffice gate has not been re-run** on the new per-entry output
+  (`tests/goldens/validate_decrypt_to.py`); it needs a host with LibreOffice. The
+  members are LibreOffice's own DEFLATE streams inside the same framing as
+  before, but that is an argument, not the gate.
+- **Less memory.** No compressor per member: `tests/streaming_memory.rs`
+  measures per-entry `decrypt_to` at 444 KiB (was 625) and per-entry
+  `reencrypt_to` at 885 KiB (was 1066), still flat in the payload.
+- **Tests.**
+  - `per_entry_rebuild_copies_encrypted_members_still_compressed` proves the
+    copy on four goldens. A witness shows LibreOffice's zlib streams differ from
+    a miniz re-deflate, so the test can tell the two paths apart.
+  - `per_entry_rebuild_copies_plain_deflated_members_byte_for_byte` covers the
+    plain path. No golden has a plain deflated member in a per-entry package, so
+    it builds one.
+  - `a_plain_deflated_member_with_a_bad_crc_is_refused_by_both_paths` checks
+    that both paths still refuse a bad CRC.
+  - Checked by breaking each: removing the streaming override failed the first
+    two, and skipping the plain member's second read failed the third.
+- **The streaming plan said plain members were copied with `raw_copy_file`.**
+  The code never did that. The plan now records the reversal
+  (`docs/plans/odf-streaming-2026-10-15.md` §7).
+
 ## [0.1.0-rc.14] - 2026-10-20
 
 ### Changed

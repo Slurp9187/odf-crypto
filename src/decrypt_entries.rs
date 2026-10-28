@@ -7,10 +7,17 @@
 //! every other member as it was. The zip framing differs -- deflated members
 //! carry data descriptors, because this writer cannot seek back -- so the two
 //! outputs are equal member for member, not byte for byte.
+//!
+//! Since rc.15 the bytes inside deflated members differ too. A member that
+//! arrives deflated -- every encrypted member, and a plain one stored with
+//! DEFLATE -- is copied through still compressed, and checked by inflating
+//! beside the copy ([`PlainDeflated`], [`EncryptedDeflated`]). The whole-buffer
+//! `decrypt` keeps compressing again, because its output is pinned to rc.9's.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek};
+use std::io::{self, Read, Seek, Write};
 
+use secure_gate::{RevealSecret, RevealSecretMut};
 use zip::{CompressionMethod, ZipArchive};
 
 use crate::classify::{member_matches_path, zip_entry_name};
@@ -22,10 +29,13 @@ use crate::decrypt_stream::{
     IntegrityOutcome, Sizes,
 };
 use crate::limits::MANIFEST_READ_CAP;
-use crate::stream::{BlowfishDecryptReader, CbcDecryptReader, ChecksumGate, Fault, InflateReader};
+use crate::stream::{
+    chunk_buffer, BlowfishDecryptReader, CbcDecryptReader, ChecksumGate, Fault, InflateReader,
+    CHUNK,
+};
 use crate::types::{Cipher, EntryEncryption};
 use crate::zip_err;
-use crate::zip_stream::{ZipSink, ZipStreamError};
+use crate::zip_stream::{DeflatedSource, ZipSink, ZipStreamError};
 use crate::Classification;
 
 const MANIFEST_PATH: &str = "META-INF/manifest.xml";
@@ -112,15 +122,17 @@ pub(crate) fn per_entry<R: Read + Seek, S: ZipSink>(
                 weakest = IntegrityOutcome::PasswordCheckOnly;
             }
         } else {
-            let mut file = archive
-                .by_index(index)
-                .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
             match method {
-                CompressionMethod::Stored => out
-                    .stored(&name, crc, size, &mut file)
-                    .map_err(zip_stream_error(limits))?,
+                CompressionMethod::Stored => {
+                    let mut file = archive
+                        .by_index(index)
+                        .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
+                    out.stored(&name, crc, size, &mut file)
+                        .map_err(zip_stream_error(limits))?
+                }
                 CompressionMethod::Deflated => {
-                    out.deflated(&name, size, &mut file)
+                    let mut src = PlainDeflated { archive, index };
+                    out.deflated_from(&name, size, &mut src)
                         .map_err(zip_stream_error(limits))?;
                 }
                 other => {
@@ -208,7 +220,7 @@ fn key_for<R: Read + Seek>(
 }
 
 /// The decrypting reader for a CBC or Blowfish member, behind its 1K gate.
-fn gated<'a>(
+pub(crate) fn gated<'a>(
     file: impl Read + 'a,
     row: &EntryEncryption,
     key: &[u8],
@@ -270,11 +282,140 @@ fn write_inflated(
     expected: u64,
     limits: &DecryptLimits,
 ) -> Result<(), DecryptError> {
-    let mut inflate = InflateReader::new(deflated, expected, limits.max_output_bytes)
-        .map_err(fault_error(limits))?;
-    out.deflated(name, expected, &mut inflate)
+    let mut src = EncryptedDeflated {
+        deflated,
+        expected,
+        limit: limits.max_output_bytes,
+    };
+    out.deflated_from(name, expected, &mut src)
         .map_err(zip_stream_error(limits))?;
     Ok(())
+}
+
+/// A plain member the source zip stores with DEFLATE.
+///
+/// The copy takes the raw bytes (`by_index_raw`); the check then reads the
+/// member again through `zip`'s own inflating reader, the very read the rebuild
+/// made before rc.15. Its CRC check and its errors are therefore unchanged, and
+/// so is the set of packages refused -- only the output's compression moved.
+/// Reading the member twice costs an inflate, against the level-6 deflate it
+/// replaces.
+struct PlainDeflated<'a, R> {
+    archive: &'a mut ZipArchive<R>,
+    index: usize,
+}
+
+impl<R: Read + Seek> PlainDeflated<'_, R> {
+    fn open(&mut self) -> Result<zip::read::ZipFile<'_, R>, ZipStreamError> {
+        self.archive
+            .by_index(self.index)
+            .map_err(|e| ZipStreamError::Corrupt(zip_err::message(&e)))
+    }
+}
+
+impl<R: Read + Seek> DeflatedSource for PlainDeflated<'_, R> {
+    fn inflated(
+        &mut self,
+        take: &mut dyn FnMut(&mut dyn Read) -> Result<u64, ZipStreamError>,
+    ) -> Result<u64, ZipStreamError> {
+        take(&mut self.open()?)
+    }
+
+    fn copy_deflated(&mut self, out: &mut dyn Write) -> Result<(u32, u64), ZipStreamError> {
+        {
+            let mut raw = self
+                .archive
+                .by_index_raw(self.index)
+                .map_err(|e| ZipStreamError::Corrupt(zip_err::message(&e)))?;
+            let mut buf = chunk_buffer(CHUNK).map_err(|f| ZipStreamError::Read(f.into_io()))?;
+            loop {
+                let n = buf
+                    .with_secret_mut(|b| raw.read(b))
+                    .map_err(ZipStreamError::Read)?;
+                if n == 0 {
+                    break;
+                }
+                buf.with_secret(|b| out.write_all(&b[..n]))
+                    .map_err(ZipStreamError::Write)?;
+            }
+        }
+        crc_to_end(&mut self.open()?)
+    }
+}
+
+/// An encrypted member's deflated plaintext, behind its cipher's check.
+///
+/// One pass: [`InflateReader`] enforces what it always has (the end marker,
+/// `manifest:size`, the output budget) and its tap copies out exactly the
+/// DEFLATE bytes it consumed, so nothing past the end marker reaches the
+/// output, as nothing past it ever did.
+struct EncryptedDeflated<'a> {
+    deflated: &'a mut dyn Read,
+    expected: u64,
+    limit: u64,
+}
+
+impl DeflatedSource for EncryptedDeflated<'_> {
+    fn inflated(
+        &mut self,
+        take: &mut dyn FnMut(&mut dyn Read) -> Result<u64, ZipStreamError>,
+    ) -> Result<u64, ZipStreamError> {
+        let mut inflate = InflateReader::new(&mut *self.deflated, self.expected, self.limit)
+            .map_err(|f| ZipStreamError::Read(f.into_io()))?;
+        take(&mut inflate)
+    }
+
+    fn copy_deflated(&mut self, out: &mut dyn Write) -> Result<(u32, u64), ZipStreamError> {
+        let mut tap = LatchedWrite { out, failed: None };
+        let result =
+            InflateReader::with_tap(&mut *self.deflated, self.expected, self.limit, &mut tap)
+                .map_err(|f| ZipStreamError::Read(f.into_io()))
+                .and_then(|mut inflate| crc_to_end(&mut inflate));
+        // The tap's failure surfaces through the inflater as a read error;
+        // report it as the output's, which is what it was.
+        match tap.failed.take() {
+            Some(e) => Err(ZipStreamError::Write(e)),
+            None => result,
+        }
+    }
+}
+
+/// A writer that keeps its first failure, so a failure inside a reader's tap
+/// is not mistaken for the reader's own.
+struct LatchedWrite<'a> {
+    out: &'a mut dyn Write,
+    failed: Option<io::Error>,
+}
+
+impl Write for LatchedWrite<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.out.write(buf).map_err(|e| {
+            let stand_in = io::Error::new(e.kind(), "writing the output failed");
+            self.failed.get_or_insert(e);
+            stand_in
+        })
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// Read `r` to its end through a wiped buffer: the CRC-32 and length of what it
+/// yields.
+fn crc_to_end(r: &mut dyn Read) -> Result<(u32, u64), ZipStreamError> {
+    let mut hasher = crc32fast::Hasher::new();
+    let mut total = 0u64;
+    let mut buf = chunk_buffer(CHUNK).map_err(|f| ZipStreamError::Read(f.into_io()))?;
+    loop {
+        let n = buf
+            .with_secret_mut(|b| r.read(b))
+            .map_err(ZipStreamError::Read)?;
+        if n == 0 {
+            return Ok((hasher.finalize(), total));
+        }
+        buf.with_secret(|b| hasher.update(&b[..n]));
+        total += n as u64;
+    }
 }
 
 pub(crate) fn zip_stream_error(

@@ -37,7 +37,8 @@ const MIB: u64 = 1024 * 1024;
 /// What a phase may add to the heap. `decrypt_to`'s working set is a few
 /// 64 KiB chunks, a 32 KiB inflate window, miniz's compressor and
 /// decompressor state, and the zip central directory -- fixed, whatever the
-/// member -- measured at 180 KiB wholesome, 625 KiB per-entry. Holding a 256 MiB
+/// member -- measured at 171 KiB wholesome, 444 KiB per-entry (rc.15; 180 and
+/// 625 before the per-entry rebuild stopped recompressing). Holding a 256 MiB
 /// member would need 64 times this.
 const BOUND: usize = 4 * MIB as usize;
 

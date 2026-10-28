@@ -89,6 +89,176 @@ fn decrypt_to_agrees_with_decrypt_on_every_fixture() {
     );
 }
 
+/// A CBC or Blowfish member's decrypted, still-deflated bytes, read whole.
+fn source_deflated(bytes: &[u8], path: &str, password: &str) -> Vec<u8> {
+    use secure_gate::RevealSecret;
+    let class = classify(bytes).unwrap();
+    let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let row = class
+        .encrypted_entries
+        .iter()
+        .find(|r| r.path == path)
+        .unwrap();
+    let index = archive.index_for_name(path).unwrap();
+    let limits = DecryptLimits::default();
+    let key =
+        crate::decrypt_entries::checksum_key(&mut archive, index, row, password, &limits).unwrap();
+    let file = archive.by_index(index).unwrap();
+    key.with_secret(|k| {
+        let mut out = Vec::new();
+        crate::decrypt_entries::gated(file, row, k)
+            .unwrap()
+            .read_to_end(&mut out)
+            .unwrap();
+        out
+    })
+}
+
+/// A member's DEFLATE data as stored, read without inflating.
+fn raw_member(zip: &[u8], name: &str) -> Vec<u8> {
+    let mut z = ZipArchive::new(Cursor::new(zip)).unwrap();
+    let i = z.index_for_name(name).unwrap();
+    let mut f = z.by_index_raw(i).unwrap();
+    let mut body = Vec::new();
+    f.read_to_end(&mut body).unwrap();
+    body
+}
+
+/// Since rc.15 the per-entry rebuild copies an encrypted member's deflated
+/// plaintext out as it is, rather than inflating it and compressing again.
+/// LibreOffice deflates with zlib and this crate with miniz, whose streams
+/// differ, so the witness below shows the test can tell the two apart: before
+/// rc.15 the output held `compress_to_vec(plain, 6)` and this failed.
+#[test]
+fn per_entry_rebuild_copies_encrypted_members_still_compressed() {
+    let mut checked = 0;
+    for (name, pw) in [
+        ("lo-legacy-aes-cbc.odt", PASSWORD),
+        ("lo-legacy-aes-cbc-image.odt", PASSWORD),
+        ("aoo-blowfish-pbkdf2.odt", PASSWORD),
+        ("lo-odf11-nonascii-password.odt", NONASCII_PASSWORD),
+    ] {
+        let bytes = load_golden(name);
+        let (r, out) = stream(&bytes, pw);
+        r.unwrap();
+        for row in classify(&bytes).unwrap().encrypted_entries {
+            let source = source_deflated(&bytes, &row.path, pw);
+            let copied = raw_member(&out, &row.path);
+            assert!(
+                source.starts_with(&copied) && !copied.is_empty(),
+                "{name} {}: the output does not hold the source's DEFLATE data",
+                row.path
+            );
+            let mut plain = Vec::new();
+            ZipArchive::new(Cursor::new(&out))
+                .unwrap()
+                .by_name(&row.path)
+                .unwrap()
+                .read_to_end(&mut plain)
+                .unwrap();
+            if copied != miniz_oxide::deflate::compress_to_vec(&plain, 6) {
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked >= 3,
+        "only {checked} members differ from a re-deflate; the test cannot tell"
+    );
+}
+
+/// `lo-legacy-aes-cbc.odt` with one more member: plain, listed in the manifest
+/// with no `encryption-data`, and deflated at level 1, which this crate's own
+/// level-6 compressor would not reproduce.
+fn per_entry_with_plain_deflated(body: &[u8]) -> Vec<u8> {
+    use zip::write::SimpleFileOptions;
+    let golden = load_golden("lo-legacy-aes-cbc.odt");
+    let mut src = ZipArchive::new(Cursor::new(&golden)).unwrap();
+    let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for i in 0..src.len() {
+        let f = src.by_index_raw(i).unwrap();
+        if f.name().unwrap() == "META-INF/manifest.xml" {
+            continue;
+        }
+        w.raw_copy_file(f).unwrap();
+    }
+    let mut manifest = String::new();
+    src.by_name("META-INF/manifest.xml")
+        .unwrap()
+        .read_to_string(&mut manifest)
+        .unwrap();
+    let manifest = manifest.replace(
+        "</manifest:manifest>",
+        " <manifest:file-entry manifest:full-path=\"Pictures/plain.txt\" \
+         manifest:media-type=\"text/plain\"/>\n</manifest:manifest>",
+    );
+    let deflated =
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    w.start_file("Pictures/plain.txt", deflated.compression_level(Some(1)))
+        .unwrap();
+    w.write_all(body).unwrap();
+    w.start_file("META-INF/manifest.xml", deflated).unwrap();
+    w.write_all(manifest.as_bytes()).unwrap();
+    w.finish().unwrap().into_inner()
+}
+
+fn compressible_text() -> Vec<u8> {
+    (0..4000)
+        .flat_map(|i| {
+            format!("<p n=\"{i}\">line {} of the plain member</p>\n", i % 37).into_bytes()
+        })
+        .collect()
+}
+
+/// A plain deflated member is copied byte for byte, not compressed again. No
+/// golden has one -- every per-entry golden stores its plain members -- so the
+/// fixture is built here.
+#[test]
+fn per_entry_rebuild_copies_plain_deflated_members_byte_for_byte() {
+    let body = compressible_text();
+    let bytes = per_entry_with_plain_deflated(&body);
+    let source = raw_member(&bytes, "Pictures/plain.txt");
+    assert_ne!(
+        source,
+        miniz_oxide::deflate::compress_to_vec(&body, 6),
+        "witness: level 1 must differ from a level-6 re-deflate, or this tests nothing"
+    );
+    let (r, out) = stream(&bytes, PASSWORD);
+    r.unwrap();
+    assert_eq!(raw_member(&out, "Pictures/plain.txt"), source);
+    assert_eq!(members(&out), members(&decrypt(&bytes, PASSWORD).unwrap()));
+}
+
+/// The copy did not loosen the check: a plain member whose CRC does not match
+/// is refused by both paths, with the same variant, as before rc.15.
+#[test]
+fn a_plain_deflated_member_with_a_bad_crc_is_refused_by_both_paths() {
+    let mut bytes = per_entry_with_plain_deflated(&compressible_text());
+    let name = b"Pictures/plain.txt";
+    // Every header naming the member: local (CRC at 14, name at 30) and
+    // central (CRC at 16, name at 46).
+    let mut patched = 0;
+    for (sig, crc_at, name_at) in [(b"PK\x03\x04", 14, 30), (b"PK\x01\x02", 16, 46)] {
+        for at in 0..bytes.len().saturating_sub(name_at + name.len()) {
+            if &bytes[at..at + 4] == sig && &bytes[at + name_at..at + name_at + name.len()] == name
+            {
+                bytes[at + crc_at] ^= 0xFF;
+                patched += 1;
+            }
+        }
+    }
+    assert_eq!(patched, 2);
+    let whole = decrypt(&bytes, PASSWORD).unwrap_err();
+    let (streamed, _) = stream(&bytes, PASSWORD);
+    let streamed = streamed.unwrap_err();
+    assert!(matches!(whole, DecryptError::Zip(_)), "{whole:?}");
+    assert_eq!(
+        std::mem::discriminant(&whole),
+        std::mem::discriminant(&streamed),
+        "decrypt {whole:?}, decrypt_to {streamed:?}"
+    );
+}
+
 #[test]
 fn integrity_reports_what_was_checked() {
     for (name, want) in [

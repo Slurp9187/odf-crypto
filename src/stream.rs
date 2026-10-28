@@ -113,7 +113,7 @@ impl std::fmt::Display for Fault {
 impl std::error::Error for Fault {}
 
 impl Fault {
-    fn into_io(self) -> io::Error {
+    pub(crate) fn into_io(self) -> io::Error {
         io::Error::other(self)
     }
 
@@ -707,8 +707,14 @@ impl<R: Read> Read for ChecksumGate<R> {
 /// Holds the same two post-conditions as `decrypt::inflate_into`: the stream
 /// must reach its end marker, and it must inflate to exactly `expected` bytes.
 /// It also stops at `limit`, the caller's output budget.
-pub(crate) struct InflateReader<R> {
+///
+/// `tap` is handed every compressed byte the inflater consumes, in order, and
+/// nothing past the end marker. That is the member's DEFLATE data exactly as
+/// it was checked, which lets the per-entry rebuild copy it out rather than
+/// compress the inflated bytes a second time. Without a tap it is `io::Sink`.
+pub(crate) struct InflateReader<R, T = io::Sink> {
     src: R,
+    tap: T,
     dec: Box<DecompressorOxide>,
     input: ChunkBuffer,
     in_start: usize,
@@ -728,8 +734,15 @@ pub(crate) struct InflateReader<R> {
 
 impl<R: Read> InflateReader<R> {
     pub(crate) fn new(src: R, expected: u64, limit: u64) -> Result<Self, Fault> {
+        InflateReader::with_tap(src, expected, limit, io::sink())
+    }
+}
+
+impl<R: Read, T: Write> InflateReader<R, T> {
+    pub(crate) fn with_tap(src: R, expected: u64, limit: u64, tap: T) -> Result<Self, Fault> {
         Ok(Self {
             src,
+            tap,
             dec: Box::default(),
             input: chunk_buffer(CHUNK)?,
             in_start: 0,
@@ -765,6 +778,11 @@ impl<R: Read> InflateReader<R> {
         let (status, consumed, written) = self.input.with_secret(|input| {
             window.with_secret_mut(|w| decompress(dec, &input[in_start..in_end], w, out_pos, flags))
         });
+        if consumed > 0 {
+            let tap = &mut self.tap;
+            self.input
+                .with_secret(|input| tap.write_all(&input[in_start..in_start + consumed]))?;
+        }
         self.in_start += consumed;
         self.pending = out_pos;
         self.pending_len = written;
@@ -801,7 +819,7 @@ impl<R: Read> InflateReader<R> {
     }
 }
 
-impl<R: Read> Read for InflateReader<R> {
+impl<R: Read, T: Write> Read for InflateReader<R, T> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         while self.pending_len == 0 {
             if self.done {
