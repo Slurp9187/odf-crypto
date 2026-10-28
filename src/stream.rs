@@ -479,19 +479,26 @@ enum CbcDec {
 }
 
 impl CbcDec {
-    fn decrypt_blocks(&mut self, buf: &mut [u8]) {
-        macro_rules! run {
-            ($d:expr, $aes:ty) => {
-                for block in buf.chunks_exact_mut(AES_BLOCK_LEN) {
-                    $d.decrypt_block_mut(cbc::cipher::Block::<$aes>::from_mut_slice(block));
-                }
-            };
+    /// Decrypt `buf` in place with one cipher call. CBC decryption has no
+    /// chain on the cipher side -- each block is `D(c_i) xor c_{i-1}`, and
+    /// every `c_i` is already known -- so `cbc::Decryptor` hands the AES
+    /// backend its parallel block count at once (`proc_par_blocks`), where a
+    /// call per block made it work one block at a time.
+    ///
+    /// `buf` must be a whole number of blocks; the caller checks that against
+    /// the member before it gets here, so a tail is an invariant of ours
+    /// broken, reported rather than skipped.
+    fn decrypt_blocks(&mut self, buf: &mut [u8]) -> Result<(), Fault> {
+        let (blocks, tail) = cbc::cipher::inout::InOutBuf::from(buf).into_chunks();
+        if !tail.is_empty() {
+            return Err(Fault::Internal("a CBC span that is not whole blocks"));
         }
         match self {
-            CbcDec::A128(d) => run!(d, Aes128),
-            CbcDec::A192(d) => run!(d, Aes192),
-            CbcDec::A256(d) => run!(d, Aes256),
+            CbcDec::A128(d) => d.decrypt_blocks_inout_mut(blocks),
+            CbcDec::A192(d) => d.decrypt_blocks_inout_mut(blocks),
+            CbcDec::A256(d) => d.decrypt_blocks_inout_mut(blocks),
         }
+        Ok(())
     }
 }
 
@@ -556,7 +563,8 @@ impl<R: Read> CbcDecryptReader<R> {
                 ))
                 .into_io());
             }
-            dec.decrypt_blocks(&mut b[off..off + n]);
+            dec.decrypt_blocks(&mut b[off..off + n])
+                .map_err(Fault::into_io)?;
             Ok((off + n, n < room))
         })?;
         if n == 0 {
