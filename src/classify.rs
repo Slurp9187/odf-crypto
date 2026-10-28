@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use std::io::{Cursor, Read, Seek};
 
 use zip::read::HasZipMetadata;
+use zip::read::{ArchiveOffset, Config};
+use zip::result::ZipResult;
 use zip::CompressionMethod;
 use zip::ZipArchive;
 
@@ -117,8 +119,32 @@ pub fn classify_reader<R: Read + Seek>(reader: R) -> Result<Classification, Dete
     }
 }
 
+/// Opens `reader` as a zip whose first byte is the archive's first byte, as
+/// `ZipFile::readCEN` does: `nCenPos = nCenOff; // data before start of zip is
+/// not supported` (`ZipFile.cxx:1336`). The central directory is read where
+/// the end record says it is, and nowhere else.
+///
+/// `ZipArchive::new` is `ArchiveOffset::Detect`, which differs in two ways
+/// LibreOffice does not share. It accepts bytes prepended to the archive by
+/// shifting every offset. When the end record's directory offset and size
+/// disagree, it prefers the directory that abuts the end record. Either
+/// way it can read a package LibreOffice reports as corrupt, so `classify`
+/// would call encrypted a file LibreOffice never prompts for. An ODF package
+/// starts with its `mimetype` member, so offset 0 costs no real file.
+///
+/// Every archive this crate reads is opened here. #112 also measured the open
+/// for speed; the fidelity reason above is why it is `Known(0)`.
+pub(crate) fn open_archive<R: Read + Seek>(reader: R) -> ZipResult<ZipArchive<R>> {
+    ZipArchive::with_config(
+        Config {
+            archive_offset: ArchiveOffset::Known(0),
+        },
+        reader,
+    )
+}
+
 pub(crate) fn classify_latched<R: Read + Seek>(reader: R) -> Result<Classification, DetectError> {
-    let mut archive = ZipArchive::new(reader).map_err(|_| DetectError::NotZip)?;
+    let mut archive = open_archive(reader).map_err(|_| DetectError::NotZip)?;
     let members = collect_members(&mut archive)?;
     let mut tree = FolderTree::from_zip_names(members.iter().map(|m| m.name.as_str()))
         .map_err(|_| DetectError::Zip("Bad Zip File, stream as folder".into()))?;

@@ -10,7 +10,7 @@ use crate::decrypt_stream::decrypt_to;
 use crate::test_support::{load_golden, zip_with, MIME_TEXT, PASSWORD};
 use crate::Mode;
 use zip::write::SimpleFileOptions;
-use zip::CompressionMethod;
+use zip::{CompressionMethod, ZipArchive};
 
 /// The cheapest legal Argon2id, so a test that encrypts many times stays fast.
 fn cheap() -> Argon2Params {

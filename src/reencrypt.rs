@@ -10,7 +10,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use secure_gate::{RevealSecret, RevealSecretMut};
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::classify::classify_latched;
+use crate::classify::{classify_latched, open_archive};
 use crate::decrypt::{
     member_for_archive, no_member, screen_class, screen_shape, DecryptError, DecryptLimits,
 };
@@ -177,7 +177,7 @@ fn run<R: Read + Seek, W: Write + Seek>(
     }
     src.seek(SeekFrom::Start(0)).map_err(ReencryptError::Io)?;
     let mut archive =
-        ZipArchive::new(&mut *src).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
+        open_archive(&mut *src).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     let mimetype = resolve_mimetype(&mut archive, class.media_type.as_deref())?;
     match class.mode {
         Mode::Wholesome => wholesome(
