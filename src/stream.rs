@@ -42,7 +42,7 @@ use cbc::cipher::{BlockDecryptMut, KeyIvInit as CbcKeyIvInit};
 use cfb_mode::BufDecryptor;
 use ctr::{flavors, Ctr32BE, CtrCore};
 use ghash::universal_hash::UniversalHash;
-use ghash::GHash;
+use ghash::{Block as GhashBlock, GHash, Key as GhashKey};
 use miniz_oxide::deflate::core::{
     compress, create_comp_flags_from_zip_params, CompressorOxide, TDEFLFlush, TDEFLStatus,
 };
@@ -213,13 +213,13 @@ impl GhashStream {
             if self.partial_len < 16 {
                 return;
             }
-            self.h.update(&[*GenericArray::from_slice(&self.partial)]);
+            self.h.update(&[GhashBlock::from(self.partial)]);
             self.partial_len = 0;
         }
         let whole = data.len() - data.len() % 16;
-        for block in data[..whole].as_chunks::<16>().0 {
-            self.h.update(&[*GenericArray::from_slice(block)]);
-        }
+        // A multiple of 16, so nothing is padded: this is `update` over the
+        // whole span at once, cast in place rather than copied block by block.
+        self.h.update_padded(&data[..whole]);
         let rest = &data[whole..];
         self.partial[..rest.len()].copy_from_slice(rest);
         self.partial_len = rest.len();
@@ -233,7 +233,7 @@ impl GhashStream {
         }
         let mut lengths = [0u8; 16];
         lengths[8..].copy_from_slice(&(self.ct_len * 8).to_be_bytes());
-        self.h.update(&[*GenericArray::from_slice(&lengths)]);
+        self.h.update(&[GhashBlock::from(lengths)]);
         self.h.finalize().into()
     }
 }
@@ -287,13 +287,18 @@ impl GcmStream {
             }
             _ => return None,
         };
+        // `aes` 0.8 and `ghash` 0.6 sit on different array crates, so H crosses
+        // between them through a plain array, wiped with `h` below.
+        let mut h_key = GhashKey::default();
+        h_key.copy_from_slice(&h);
         let ghash = GhashStream {
-            h: GHash::new(&h),
+            h: GHash::new(&h_key),
             partial: [0; 16],
             partial_len: 0,
             ct_len: 0,
         };
         h.iter_mut().for_each(|b| *b = 0);
+        h_key.iter_mut().for_each(|b| *b = 0);
         let mut stream = GcmStream {
             ctr,
             ghash,

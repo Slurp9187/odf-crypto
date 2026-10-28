@@ -416,15 +416,14 @@ simply the smaller one.
 | Build | How | What you get |
 | --- | --- | --- |
 | **Detection-only** | `odf-crypto = "0.1.0-rc.15"` | `classify` alone. No cryptographic dependency. **25 crates** on Windows, 24 on Linux, 27 on macOS. |
-| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **59 crates** on Windows, 58 on Linux, 61 on macOS. |
-| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **71 crates** on Windows, 73 on Linux, 77 on macOS. |
+| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **61 crates** on Windows, 60 on Linux, 63 on macOS. |
+| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **73 crates** on Windows, 75 on Linux, 79 on macOS. |
 
 **Detection is the default because it is cheap.** `classify` parses
 `META-INF/manifest.xml` and the zip central directory; it never derives a key or
-touches a cipher. Enabling `crypto-ops` adds `aes`, `aes-gcm`, `argon2`,
-`blowfish`, `pbkdf2`, `sha1`, `sha2`, `hmac` and their transitive graph, plus
-`libc` and `getrandom`. Nobody should pay for that to ask whether a file is
-encrypted.
+touches a cipher. Enabling `crypto-ops` adds `aes`, `ctr`, `ghash`, `cbc`,
+`argon2`, `blowfish`, `pbkdf2`, `sha1`, `sha2`, `hmac` and their transitive
+graph. Nobody should pay for that to ask whether a file is encrypted.
 
 The feature is named for what it gates, which is not only ciphers: `pbkdf2` and
 `argon2` are KDFs, `sha1`/`sha2` are hashes, `hmac` is a MAC, and `miniz_oxide`

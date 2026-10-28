@@ -80,6 +80,30 @@ The public API, the streaming API and their errors are unchanged.
   figure is now given per target. `getrandom` is an OS randomness binding,
   not a cipher, so detection-only still has no cryptographic dependency.
 
+**`ghash` 0.5 → 0.6: wholesome `decrypt_to` is about 1.8x faster.** GHASH runs
+twice per byte of a GCM member: once in the verify pass and again in the
+release pass. It was most of the streaming time. ghash 0.6 (on polyval 0.7)
+gives identical output. Also, `GhashStream` now hashes each whole-block span
+in one call instead of copying it block by block.
+
+Measured on a 64 MiB wholesome package, 12 interleaved rounds per build,
+release build. The median went from 421 to 773 MiB/s. This machine's absolute
+figures drift run to run, but the ratio held across repeats.
+
+- **`aes-gcm` is a dev-dependency now.** Its only runtime use was
+  `aes_gcm::aead::OsRng` for `encrypt`'s salt and IV. That is now
+  `getrandom::fill`, from the getrandom 0.4 that `zip` already depends on. The
+  streaming GCM is still proved against `aes-gcm` and the NIST vectors in
+  `stream_tests.rs`. Checked by breaking it: an off-by-one in the GHASH length
+  block failed both proofs and the changed-between-passes test.
+- **Crates.** `crypto-ops` 61 / 60 / 63 and `cli` 73 / 75 / 79
+  (Windows / Linux / macOS), up 2 each; detection-only is untouched.
+  - Removed: aead, aes-gcm, getrandom 0.2, ghash 0.5, opaque-debug, polyval 0.6
+    and universal-hash 0.5.
+  - Added: ghash 0.6 and its generation (cmov, cpubits, cpufeatures 0.3,
+    crypto-common 0.2, ctutils, hybrid-array, polyval 0.7, universal-hash 0.6),
+    beside the `aes` 0.8 / `ctr` 0.9 line, which is unchanged.
+
 ## [0.1.0-rc.14] - 2026-10-20
 
 ### Changed
