@@ -60,8 +60,8 @@ pub enum DecryptError {
     ///   passphrase over that key, an agent socket, or a smartcard PIN
     ///   prompt -- none of which a `&str` password can carry, and none of
     ///   which a library should invent a side channel for.
-    /// - **The cost is the crate's whole premise.** Detection-only is 25
-    ///   crates and the point of the default; an OpenPGP implementation is a
+    /// - **The cost is the crate's whole premise.** Detection-only is about
+    ///   two dozen crates and the point of the default; an OpenPGP implementation is a
     ///   dependency tree of a different order, for a path `classify` already
     ///   reports without it.
     ///

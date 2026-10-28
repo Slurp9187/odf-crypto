@@ -1,7 +1,7 @@
 //! Reproduces `zip::result::ZipError`'s `Display` wording without ever
 //! calling `ZipError::to_string`.
 //!
-//! `ZipError` is `#[non_exhaustive]` (`zip-9.0.4/src/result.rs:14`) — semver
+//! `ZipError` is `#[non_exhaustive]` (`zip-9.1.3/src/result.rs:14`) — semver
 //! protects the shape of the variants already enumerated, not that the
 //! enumeration stays complete. Calling `.to_string()` on it directly would
 //! flow whatever a future variant's `Display` writes straight into a public
@@ -10,10 +10,10 @@
 //! `InvalidArchive(&'static str)` to `InvalidArchive(Cow<'static, str>)` and
 //! began interpolating an archive entry name into it
 //! (`"Duplicate filename: {}"`, `zip-6.0.0/src/write.rs:1061`, still present
-//! at `zip-8.6.0/src/write.rs:1382`, and as `{:?}` at
-//! `zip-9.0.4/src/write.rs:786`).
+//! at `zip-8.6.0/src/write.rs:1382`, as `{:?}` at
+//! `zip-9.0.4/src/write.rs:786`, and at `zip-9.1.3/src/write.rs:883, 1182`).
 //!
-//! [`message`] matches every variant `zip` 9.0.4 declares and reproduces its
+//! [`message`] matches every variant `zip` 9.1.3 declares and reproduces its
 //! `Display` string byte for byte — pinned by a test in this module that
 //! asserts `message(&e) == e.to_string()` for each one. That test is the
 //! guard: it is the one that fires the day a `zip` minor release changes its
@@ -28,19 +28,19 @@
 //! text. Checked rather than reasoned about at the time — the binding
 //! compiled against `&'static str` and failed against `Cow<'static, str>`
 //! with `lifetime may not live long enough` — and it fired exactly so on the
-//! move to 8.6.0 (and on 2.6.1, which made the same change; 9.0.4 is the
-//! same again). The answer is
+//! move to 8.6.0 (and on 2.6.1, which made the same change; 9.0.4 and 9.1.3
+//! are the same again). The answer is
 //! to split on the `Cow` rather than drop the guard: `Cow::Borrowed` holds a
 //! `&'static str`, which in `zip` is a literal, so it is quoted (the binding
 //! still forces `'static`); `Cow::Owned` was formatted at run time — e.g.
-//! `"Extra field {} header truncated"` (`zip-9.0.4/src/extra_fields/extra_field.rs:106`) — and
+//! `"Extra field {} header truncated"` (`zip-9.1.3/src/extra_fields/extra_field.rs:106`) — and
 //! gets the variant's fixed prefix only. That is the one place `message`
 //! and `Display` intentionally differ, and a test pins it.
 
 use std::borrow::Cow;
 use zip::result::ZipError;
 
-/// Formats `err` the way `zip` 9.0.4's `Display` impl does, except that an
+/// Formats `err` the way `zip` 9.1.3's `Display` impl does, except that an
 /// owned `InvalidArchive` message is not quoted.
 ///
 /// Every call site in this crate that turns a `ZipError` into one of the
@@ -64,6 +64,14 @@ pub(crate) fn message(err: &ZipError) -> String {
         ZipError::CompressionMethodNotSupported(id) => {
             format!("compression method not supported: {id}")
         }
+        // Added in 9.1.0 for `ExtractOptions::size_limit`, which this crate
+        // never sets, so neither is reachable here. Both quote only numbers.
+        ZipError::DecompressedSizeLimitExceeded { size, limit } => {
+            format!("decompressed size {size} exceeds limit {limit}")
+        }
+        ZipError::DecompressedSizeUnknown => {
+            "decompressed size is unknown, so a size limit cannot be checked".to_string()
+        }
         _ => "zip error (unrecognized variant)".to_string(),
     }
 }
@@ -75,7 +83,7 @@ mod tests {
     use std::io;
     use zip::result::ZipError;
 
-    /// Methods whose `Result` carries a [`ZipError`] in `zip` 9.0.4.
+    /// Methods whose `Result` carries a [`ZipError`] in `zip` 9.1.3.
     const ZIP_RETURNING: [&str; 5] = [
         "ZipArchive::new",
         ".by_index(",
@@ -166,7 +174,7 @@ mod tests {
     }
 
     /// Pins `message` to `ZipError`'s own `Display` for every variant `zip`
-    /// 9.0.4 declares, with `InvalidArchive` in its borrowed form. Broken on
+    /// 9.1.3 declares, with `InvalidArchive` in its borrowed form. Broken on
     /// purpose once to prove it fires (CLAUDE.md: "test the guard by breaking
     /// the thing it guards") — deleting the `FileNotFound` arm's string made
     /// this fail, as expected, and it was restored.
@@ -179,6 +187,8 @@ mod tests {
             ZipError::FileNotFound,
             ZipError::InvalidPassword,
             ZipError::CompressionMethodNotSupported(99),
+            ZipError::DecompressedSizeLimitExceeded { size: 7, limit: 3 },
+            ZipError::DecompressedSizeUnknown,
         ];
         for case in cases {
             assert_eq!(message(&case), case.to_string());

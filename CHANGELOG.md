@@ -11,6 +11,45 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.15] - Unreleased
+
+### Changed
+
+**`zip` 9.0.4 → 9.1.3.** The requirement is now `"9.1.3"`, not `"9.0"`. That
+sets a floor, so a consumer cannot resolve back to the 9.0.x read path.
+9.1.0 stopped the full-file forward scan that `ZipArchive::new` ran in 1 KiB
+reads with a seek before each one (zip-rs/zip2#1142). `encrypted-file-vault`
+measured decrypt on a 64 MiB package at 168 MiB/s on 9.0.4 and 456 MiB/s on
+9.1.2 (#112). 9.1.3 adds a reusable 64 KiB read buffer (zip-rs/zip2#1206).
+The public API, the streaming API and their errors are unchanged.
+
+- **Output bytes are unchanged.** The rc.9 byte pins on `decrypt` and the
+  field-by-field comparison of the streaming zip writer against `zip`'s own
+  both hold. `zip`'s writer still records the build host in "version made by"
+  (`zip-9.1.3/src/types.rs:425-436`), and `file_options` still pins Unix.
+- **MSRV unchanged at 1.88.** 9.1.3 declares the same `rust-version`.
+- **`zip_err` covers the two variants 9.1.0 added.**
+  `DecompressedSizeLimitExceeded` and `DecompressedSizeUnknown` come only from
+  `ExtractOptions::size_limit`, which this crate never sets. Before this, they
+  would have reached the wildcard arm's generic text. Each now has an arm that
+  reproduces its `Display`, and the fidelity test asserts both. Their
+  `Display` quotes only numbers.
+- **More crates, and the default build is now per target.** `zip` 9.1.3 depends
+  unconditionally on `getrandom` 0.4, which it uses to name a staging
+  directory in `extract`. On Windows it also needs `windows-sys`.
+  `typed-path` moves 0.12 → 0.13.
+
+  | build | Windows | Linux | macOS |
+  | --- | --- | --- | --- |
+  | default | 25 (was 22) | 24 (was 22) | 27 (was 26) |
+  | `crypto-ops` | 59 (was 56) | 58 (was 57) | 61 (was 60) |
+  | `cli` | 71 (was 70) | 73 (was 72) | 77 (was 76) |
+
+  The single figures this crate used to print (22 and 56) were the Windows
+  counts. On Linux, `crypto-ops` was already 57, and macOS was 26 / 60. Every
+  figure is now given per target. `getrandom` is an OS randomness binding,
+  not a cipher, so detection-only still has no cryptographic dependency.
+
 ## [0.1.0-rc.14] - 2026-10-20
 
 ### Changed
