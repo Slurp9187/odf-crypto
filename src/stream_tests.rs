@@ -276,6 +276,100 @@ fn cbc_reader_with_gate_matches_the_whole_buffer_result() {
     }
 }
 
+/// The reference the batched decrypt must equal: one `decrypt_block_mut` per
+/// block, the shape `CbcDec::decrypt_blocks` had before rc.16.
+fn cbc_per_block(key: &[u8], iv: &[u8], ct: &[u8]) -> Vec<u8> {
+    let mut buf = ct.to_vec();
+    macro_rules! run {
+        ($aes:ty) => {{
+            let mut d = cbc::Decryptor::<$aes>::new_from_slices(key, iv).unwrap();
+            for block in buf.as_chunks_mut::<AES_BLOCK_LEN>().0 {
+                d.decrypt_block_mut(cbc::cipher::Block::<$aes>::from_mut_slice(block));
+            }
+        }};
+    }
+    match key.len() {
+        16 => run!(Aes128),
+        24 => run!(Aes192),
+        _ => run!(Aes256),
+    }
+    buf
+}
+
+/// One cipher call per span must equal one per block, for every key size and
+/// however the stream is split: directly, over uneven whole-block spans of
+/// one buffer with the state carried between calls, and through
+/// `CbcDecryptReader` on a dribbling source, whose refills land at every
+/// offset. The ciphertext is arbitrary blocks, so no padding is involved in
+/// the direct half.
+#[test]
+fn batched_cbc_decrypt_equals_per_block() {
+    let mut rng = XorShift(31);
+    for key_len in [16, 24, 32] {
+        for blocks in [1, 2, 7, 8, 9, 63, 64, 65, 4096, 4097, 3 * 4096 + 5] {
+            let (key, iv) = (rng.bytes(key_len), rng.bytes(16));
+            let ct = rng.bytes(blocks * AES_BLOCK_LEN);
+            let want = cbc_per_block(&key, &iv, &ct);
+
+            let mut dec = match key_len {
+                16 => CbcDec::A128(cbc::Decryptor::new_from_slices(&key, &iv).unwrap()),
+                24 => CbcDec::A192(cbc::Decryptor::new_from_slices(&key, &iv).unwrap()),
+                _ => CbcDec::A256(cbc::Decryptor::new_from_slices(&key, &iv).unwrap()),
+            };
+            let mut got = ct.clone();
+            let mut at = 0;
+            while at < got.len() {
+                let span = (1 + rng.below(20)) * AES_BLOCK_LEN;
+                let end = (at + span).min(got.len());
+                dec.decrypt_blocks(&mut got[at..end]).unwrap();
+                at = end;
+            }
+            assert!(
+                got == want,
+                "key {key_len}, {blocks} blocks: split calls differ"
+            );
+        }
+        for len in [0, 15, 16, 1024, CHUNK - 1, CHUNK, 2 * CHUNK + 17] {
+            let (key, iv, pt) = (rng.bytes(key_len), rng.bytes(16), rng.bytes(len));
+            let mut padded = pt.clone();
+            let pad = AES_BLOCK_LEN - len % AES_BLOCK_LEN;
+            padded.extend(std::iter::repeat_n(pad as u8, pad));
+            let ct = {
+                macro_rules! seal {
+                    ($aes:ty) => {{
+                        let mut e = cbc::Encryptor::<$aes>::new_from_slices(&key, &iv).unwrap();
+                        let mut b = padded.clone();
+                        for block in b.as_chunks_mut::<AES_BLOCK_LEN>().0 {
+                            e.encrypt_block_mut(cbc::cipher::Block::<$aes>::from_mut_slice(block));
+                        }
+                        b
+                    }};
+                }
+                match key_len {
+                    16 => seal!(Aes128),
+                    24 => seal!(Aes192),
+                    _ => seal!(Aes256),
+                }
+            };
+            assert_eq!(
+                cbc_per_block(&key, &iv, &ct),
+                padded,
+                "reference, len {len}"
+            );
+            let src = Dribble {
+                inner: Cursor::new(ct),
+                rng: XorShift(len as u64 + key_len as u64),
+            };
+            let reader = CbcDecryptReader::new(src, &key, &iv).unwrap();
+            assert_eq!(
+                drain(reader).unwrap(),
+                pt,
+                "key {key_len}, reader, len {len}"
+            );
+        }
+    }
+}
+
 /// A wrong key fails the gate before anything is released: the first `read`
 /// returns the fault, so no plaintext byte reaches the caller.
 #[test]
