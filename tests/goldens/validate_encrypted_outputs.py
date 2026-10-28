@@ -1,4 +1,4 @@
-"""LibreOffice gate for `encrypt_to` and `reencrypt_to`: does real LibreOffice
+r"""LibreOffice gate for `encrypt_to` and `reencrypt_to`: does real LibreOffice
 open what they write, with the password they were given, and refuse it with
 any other?
 

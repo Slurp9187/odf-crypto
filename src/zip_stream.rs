@@ -298,7 +298,64 @@ impl<W: Write> ZipStreamWriter<W> {
         let compressed = sink.written;
         self.pos += compressed;
         let crc = hasher.finalize();
+        self.end_deflated(name, flags, offset, crc, compressed, uncompressed, zip64)?;
+        Ok(uncompressed)
+    }
 
+    /// A member that is already DEFLATE data: its compressed bytes are copied
+    /// as they are, and `src` checks them by inflating as they go. The CRC and
+    /// size in the data descriptor are the inflated bytes', so the member is
+    /// the one [`ZipStreamWriter::deflated`] would describe, holding the
+    /// source's compression instead of a second one.
+    pub(crate) fn deflated_from(
+        &mut self,
+        name: &str,
+        size_hint: u64,
+        src: &mut dyn DeflatedSource,
+    ) -> Result<u64, ZipStreamError> {
+        let name = name.as_bytes();
+        let offset = self.pos;
+        let zip64 = deflate_bound(size_hint) >= U32_LIMIT || size_hint >= U32_LIMIT;
+        let flags = name_flags(name) | FLAG_DESCRIPTOR;
+        self.local_header(name, DEFLATED, flags, 0, 0, 0, zip64)?;
+        let mut sink = Counting {
+            out: &mut self.out,
+            written: 0,
+        };
+        let (crc, uncompressed) = src.copy_deflated(&mut sink)?;
+        let compressed = sink.written;
+        self.pos += compressed;
+        if uncompressed > size_hint {
+            return Err(ZipStreamError::Corrupt(format!(
+                "member is larger than the {size_hint} bytes expected"
+            )));
+        }
+        // Zip64 was decided from DEFLATE's bound on `size_hint`, which bounds
+        // what a compressor writes, not what a source's stream may hold: empty
+        // blocks inflate to nothing. A stream that outgrew the 32-bit fields
+        // it was promised cannot be described, so it is refused.
+        if !zip64 && compressed >= U32_LIMIT {
+            return Err(ZipStreamError::Corrupt(
+                "member's DEFLATE data outgrew its 32-bit header".into(),
+            ));
+        }
+        self.end_deflated(name, flags, offset, crc, compressed, uncompressed, zip64)?;
+        Ok(uncompressed)
+    }
+
+    /// The data descriptor and central-directory entry that close a deflated
+    /// member.
+    #[allow(clippy::too_many_arguments)]
+    fn end_deflated(
+        &mut self,
+        name: &[u8],
+        flags: u16,
+        offset: u64,
+        crc: u32,
+        compressed: u64,
+        uncompressed: u64,
+        zip64: bool,
+    ) -> Result<(), ZipStreamError> {
         let mut d = Vec::with_capacity(24);
         d.extend_from_slice(&DESCRIPTOR.to_le_bytes());
         d.extend_from_slice(&crc.to_le_bytes());
@@ -320,7 +377,7 @@ impl<W: Write> ZipStreamWriter<W> {
             offset,
             zip64_local: zip64,
         });
-        Ok(uncompressed)
+        Ok(())
     }
 
     /// Write the central directory and the end records, and return the output.
@@ -439,6 +496,32 @@ pub(crate) trait ZipSink {
         size_hint: u64,
         data: &mut dyn Read,
     ) -> Result<u64, ZipStreamError>;
+    /// A member that arrives already deflated. By default it is inflated and
+    /// compressed again through [`ZipSink::deflated`] -- which is what keeps
+    /// the whole-buffer `decrypt`'s output byte for byte what rc.9 wrote. A
+    /// sink free of that contract copies the DEFLATE data instead.
+    fn deflated_from(
+        &mut self,
+        name: &str,
+        size_hint: u64,
+        src: &mut dyn DeflatedSource,
+    ) -> Result<u64, ZipStreamError> {
+        src.inflated(&mut |data| self.deflated(name, size_hint, data))
+    }
+}
+
+/// A member that is already DEFLATE data, offered both ways a [`ZipSink`] can
+/// take it.
+pub(crate) trait DeflatedSource {
+    /// Hand the member's inflated bytes to `take`, returning what it returns.
+    fn inflated(
+        &mut self,
+        take: &mut dyn FnMut(&mut dyn Read) -> Result<u64, ZipStreamError>,
+    ) -> Result<u64, ZipStreamError>;
+    /// Write the member's DEFLATE data to `out`, checking it as fully as
+    /// [`DeflatedSource::inflated`]'s reader would, and return the CRC-32 and
+    /// length of what it inflates to.
+    fn copy_deflated(&mut self, out: &mut dyn Write) -> Result<(u32, u64), ZipStreamError>;
 }
 
 impl<W: Write> ZipSink for ZipStreamWriter<W> {
@@ -458,6 +541,14 @@ impl<W: Write> ZipSink for ZipStreamWriter<W> {
         data: &mut dyn Read,
     ) -> Result<u64, ZipStreamError> {
         ZipStreamWriter::deflated(self, name, size_hint, data)
+    }
+    fn deflated_from(
+        &mut self,
+        name: &str,
+        size_hint: u64,
+        src: &mut dyn DeflatedSource,
+    ) -> Result<u64, ZipStreamError> {
+        ZipStreamWriter::deflated_from(self, name, size_hint, src)
     }
 }
 

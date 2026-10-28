@@ -416,15 +416,14 @@ simply the smaller one.
 | Build | How | What you get |
 | --- | --- | --- |
 | **Detection-only** | `odf-crypto = "0.1.0-rc.15"` | `classify` alone. No cryptographic dependency. **25 crates** on Windows, 24 on Linux, 27 on macOS. |
-| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **59 crates** on Windows, 58 on Linux, 61 on macOS. |
-| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **71 crates** on Windows, 73 on Linux, 77 on macOS. |
+| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **61 crates** on Windows, 60 on Linux, 63 on macOS. |
+| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **73 crates** on Windows, 75 on Linux, 79 on macOS. |
 
 **Detection is the default because it is cheap.** `classify` parses
 `META-INF/manifest.xml` and the zip central directory; it never derives a key or
-touches a cipher. Enabling `crypto-ops` adds `aes`, `aes-gcm`, `argon2`,
-`blowfish`, `pbkdf2`, `sha1`, `sha2`, `hmac` and their transitive graph, plus
-`libc` and `getrandom`. Nobody should pay for that to ask whether a file is
-encrypted.
+touches a cipher. Enabling `crypto-ops` adds `aes`, `ctr`, `ghash`, `cbc`,
+`argon2`, `blowfish`, `pbkdf2`, `sha1`, `sha2`, `hmac` and their transitive
+graph. Nobody should pay for that to ask whether a file is encrypted.
 
 The feature is named for what it gates, which is not only ciphers: `pbkdf2` and
 `argon2` are KDFs, `sha1`/`sha2` are hashes, `hmac` is a MAC, and `miniz_oxide`
@@ -471,14 +470,16 @@ That verdict outranks the harness.
 
 **Streaming is measured, not asserted.** `tests/streaming_memory.rs` installs a
 counting allocator and runs every operation at two payload sizes, sixteen times
-apart: peak heap does not move. `decrypt_to` holds 180 KiB for a wholesome
-package and 625 KiB for a per-entry one, `encrypt_to` 506 KiB, `reencrypt_to`
-348 KiB and 1066 KiB -- against a 4 MiB bound that holding a 256 MiB member
+apart: peak heap does not move. `decrypt_to` holds 171 KiB for a wholesome
+package and 444 KiB for a per-entry one, `encrypt_to` 570 KiB, `reencrypt_to`
+347 KiB and 949 KiB -- against a 4 MiB bound that holding a 256 MiB member
 would pass sixty times over, which each guard was broken to confirm. The
 whole-buffer `decrypt` is pinned to the exact bytes it returned before it moved
 onto the streaming code, and LibreOffice 26.8.0.3 opens what `decrypt_to`,
 `encrypt_to` and `reencrypt_to` write (`tests/goldens/validate_decrypt_to.py`,
-`validate_encrypted_outputs.py`), refusing each with a wrong password.
+`validate_encrypted_outputs.py`), refusing each with a wrong password. Re-run
+for rc.15, which changed the bytes inside a per-entry `decrypt_to` output's
+deflated members and the DEFLATE inside `encrypt_to`'s payload.
 
 **322 tests, passing in every feature configuration** — 231 library, 21 CLI
 unit, 41 CLI end-to-end, 2 memory-bound, 27 doctests. All three builds run in CI, not just the

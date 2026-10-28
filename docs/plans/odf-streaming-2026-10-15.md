@@ -184,6 +184,45 @@ Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9. *S3 and S4 ship as one P
 
 - **S8: the whole-buffer API's bytes, pinned before its code was replaced.** SHA-256 of rc.9's own `decrypt` output for all 15 fixture/password pairs was recorded from rc.9's code, then that code was removed; `whole_buffer_decrypt_returns_rc9_bytes` holds the new path to it. The first run caught a real difference: `zip`'s writer seeks to `End` for its central directory, and over a `Cursor` on a preallocated slice that is the slice's capacity, not the bytes written. `SliceWriter` answers `End` with the high-water mark.
 - **S8: the CLI's temporary output (coordinator, owner).** Created beside the target with its permissions, deleted on every `Err`; Ctrl-C cancels through the library's reader-driven cancel (`ctrlc =3.5.2`, `cli` only, approved by the coordinator) and exits 130. **A hard kill can leave the temp: owner decision, no `unsafe` in the CLI** -- `forbid(unsafe_code)` stays the crate's identity, and the limit is stated in the README and CHANGELOG. (For a later change: `rustix` offers a safe `O_TMPFILE` + `linkat` on Linux; only Windows needs `unsafe`.)
+- **Plain members "copied with `raw_copy_file`" (§5): never true, and reversed in rc.15.**
+  - §5 said the per-entry rebuild copies plain members with `raw_copy_file`. The code
+    S4 shipped did not: a plain member stored with DEFLATE went through `zip`'s
+    inflating reader and was compressed again at level 6 by `ZipStreamWriter::deflated`.
+    Encrypted members were inflated and recompressed the same way. Nothing caught it,
+    because every test compares member *contents* and no golden has a plain deflated
+    member inside a per-entry package.
+  - It mattered once measured. A 64 MiB legacy AES-CBC package took 1.8 s through
+    `decrypt_to`, almost all of it miniz level-6 deflate of data that had arrived
+    deflated.
+  - rc.15 copies the DEFLATE data instead (`ZipSink::deflated_from`), and checks it
+    beside the copy. Plain members are read a second time through `zip`'s own inflating
+    reader, so the CRC check and the set of refused packages are unchanged. Encrypted
+    members go through `InflateReader`'s tap, which hands out exactly the bytes it
+    consumed up to the end marker.
+  - Measured: `decrypt_to` 1835 → 428 ms on that package, about 280 ms of which is
+    PBKDF2; `reencrypt_to` 2432 → 854 ms.
+  - Not `raw_copy_file` even now. The output's descriptor needs a CRC the rebuild
+    computed itself, and an encrypted member has no raw form to copy until it is decrypted.
+  - **The whole-buffer `decrypt` is unchanged.** It still recompresses, through
+    `SeekableZipSink`'s default `deflated_from`, because its bytes are pinned to rc.9
+    (S8). The two outputs now differ inside deflated members as well as in framing.
+    They still agree member for member.
+- **Deflate "at level 6, matching `raw_deflate`" (§5): narrowed in rc.15.**
+  - Level 6 everywhere was right for byte-identity in S2, but nothing pins
+    `encrypt`'s payload bytes: salt and IV are fresh per call, and the tests
+    assert on the round trip.
+  - Measured, the payload's level 6 spent almost all its time on members that
+    arrive compressed: 27 MiB/s on a LibreOffice-like package.
+  - `DeflateWriter::adaptive` stores each 64 KiB chunk whose byte entropy says it
+    is already compressed, and is now used by `encrypt_to` and `reencrypt_to`'s
+    payload. That package went to 411 MiB/s for +0.012% output.
+  - The rebuild's own members keep plain level 6, because the comparison with
+    `zip`'s writer needs it.
+  - The draft of this change built a byte-range map from the input's central
+    directory. It was dropped for the entropy test, which reads no
+    package-supplied count, allocates nothing sized by one, and covers
+    `reencrypt_to` without plumbing.
+
 - **S9: the rc.10 line opened** in the S8/S9 PR rather than direct to `main`, so the bump carries a review record; `CHANGELOG.md` has `## [0.1.0-rc.10] - Unreleased`. Publishing stays the owner's.
 
 ## 8. Verification

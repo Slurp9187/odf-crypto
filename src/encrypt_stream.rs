@@ -173,7 +173,7 @@ fn run<R: Read + Seek, W: Write + Seek>(
         let gcm = GcmStream::new(k, &iv)
             .ok_or_else(|| EncryptError::Internal("AES-256-GCM key".into()))?;
         let sealer = GcmEncryptWriter::new(&mut out, gcm).map_err(fault)?;
-        let mut deflate = DeflateWriter::new(sealer).map_err(fault)?;
+        let mut deflate = DeflateWriter::adaptive(sealer).map_err(fault)?;
         pump(src, &mut deflate)?;
         if deflate.consumed() != size {
             return Err(EncryptError::Internal(format!(

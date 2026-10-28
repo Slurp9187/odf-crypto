@@ -9,7 +9,6 @@
 
 use std::io::Read;
 
-use aes_gcm::aead::{rand_core::RngCore as _, OsRng};
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
 use quick_xml::Writer;
 use secure_gate::{RevealSecret, RevealSecretMut};
@@ -730,15 +729,13 @@ pub(crate) fn screen_input(class: &crate::Classification) -> Result<(), EncryptE
 }
 
 /// `len` random bytes via a CSPRNG (`ZipPackageStream.cxx:590,594` -- LO's
-/// `rtl_random_getBytes`, here `aes_gcm::aead::OsRng`, reachable through the
-/// `aes-gcm` dependency the crate already has; plan OQ2). Uses the fallible
-/// `try_fill_bytes`, not `fill_bytes`, which panics -- a library must not
-/// panic for an ordinary CSPRNG failure (plan §4).
+/// `rtl_random_getBytes`, here `getrandom::fill`, the OS generator `zip`
+/// already depends on; plan OQ2 chose `aes_gcm`'s `OsRng`, which wrapped the
+/// same source, until rc.15 dropped aes-gcm from the runtime graph). Fallible:
+/// a library must not panic for an ordinary CSPRNG failure (plan §4).
 pub(crate) fn random_bytes(len: usize) -> Result<Vec<u8>, EncryptError> {
     let mut buf = vec![0u8; len];
-    OsRng
-        .try_fill_bytes(&mut buf)
-        .map_err(|e| EncryptError::Random(e.to_string()))?;
+    getrandom::fill(&mut buf).map_err(|e| EncryptError::Random(e.to_string()))?;
     Ok(buf)
 }
 

@@ -37,7 +37,7 @@ entry, not here.
 
 `alloc` only — **no `rand`, no `ct-eq`, no `encoding`.** This crate never generates a random
 *secret* (keys come from a user-supplied password; `encrypt`'s salt and IV are public and use
-`aes-gcm`'s RNG) and never displays or copies key material. Confirmed by measurement: zero call
+`getrandom`, which replaced `aes-gcm`'s `OsRng` in rc.15) and never displays or copies key material. Confirmed by measurement: zero call
 sites for `from_random`, `from_rng` or `ct_eq`.
 
 **Unconditional — not gated on `crypto-ops`**, unlike `sha1`/`aes`/`argon2` and the rest. Those

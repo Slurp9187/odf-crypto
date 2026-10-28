@@ -412,8 +412,9 @@ fn inflate_reader_enforces_size_and_limit() {
 }
 
 /// Fed in uneven pieces, the writer emits the same bytes as
-/// `compress_to_vec(_, 6)`, which `encrypt::raw_deflate` calls -- so streaming
-/// encrypt deflates exactly as the whole-buffer one did.
+/// `compress_to_vec(_, 6)`. The per-entry rebuild's comparison with `zip`'s own
+/// writer depends on it. Encrypt's payload has used the adaptive mode since
+/// rc.15, so this no longer describes encrypt.
 #[test]
 fn deflate_writer_matches_compress_to_vec() {
     let mut rng = XorShift(43);
@@ -432,6 +433,89 @@ fn deflate_writer_matches_compress_to_vec() {
             "input {i}: deflate bytes differ"
         );
     }
+}
+
+/// Text, then noise, then the same text: the third chunk's best matches are in
+/// the first, across the stored noise the compressor never saw.
+fn text_noise_text() -> Vec<u8> {
+    let line = b"<text:p>odf-crypto adaptive deflate</text:p>\n";
+    let text: Vec<u8> = (0..CHUNK).map(|i| line[i % line.len()]).collect();
+    let mut plain = text.clone();
+    plain.extend(XorShift(7).bytes(CHUNK));
+    plain.extend(&text);
+    plain
+}
+
+/// Inflated with miniz's own whole-buffer decoder: the reference, not ours.
+fn inflate_ref(deflated: &[u8]) -> Vec<u8> {
+    miniz_oxide::inflate::decompress_to_vec(deflated).unwrap()
+}
+
+/// Also pins `consumed` before `finish`, which both callers read for
+/// `manifest:size` while a partial chunk may still be held.
+fn adaptive(plain: &[u8], rng: &mut XorShift) -> Vec<u8> {
+    let mut w = DeflateWriter::adaptive(Vec::new()).unwrap();
+    let mut at = 0;
+    while at < plain.len() {
+        let end = (at + 1 + rng.below(3 * CHUNK)).min(plain.len());
+        w.write_all(&plain[at..end]).unwrap();
+        at = end;
+    }
+    assert_eq!(w.consumed(), plain.len() as u64);
+    w.finish().unwrap()
+}
+
+/// Whatever mix of stored and compressed chunks it chooses, the adaptive
+/// writer's output inflates to its input. The text-noise-text case is the one
+/// a missing full flush breaks: without the dictionary reset, the third
+/// chunk's matches point at the wrong bytes.
+#[test]
+fn adaptive_deflate_round_trips() {
+    let mut rng = XorShift(44);
+    let mut inputs = deflate_inputs();
+    inputs.push(text_noise_text());
+    inputs.push(XorShift(9).bytes(5 * CHUNK + 3));
+    // The most switches: every chunk flips mode, so every stored chunk pays a
+    // full flush on top of its block headers.
+    let mut alternating = Vec::new();
+    for _ in 0..8 {
+        alternating.extend_from_slice(&text_noise_text()[..2 * CHUNK]);
+    }
+    inputs.push(alternating);
+    for (i, plain) in inputs.into_iter().enumerate() {
+        let got = adaptive(&plain, &mut rng);
+        assert!(inflate_ref(&got) == plain, "input {i}: round trip differs");
+        // Encrypt decides Zip64 from this bound before writing a byte, so the
+        // adaptive mode's headers and flushes must stay inside it.
+        assert!(
+            got.len() as u64 <= crate::zip_stream::deflate_bound(plain.len() as u64),
+            "input {i}: {} bytes exceed deflate_bound({})",
+            got.len(),
+            plain.len()
+        );
+    }
+}
+
+/// The decision itself: noise is stored, close to its own size and nowhere
+/// near what level 6 spends on it, and text is still compressed.
+#[test]
+fn adaptive_deflate_stores_noise_and_compresses_text() {
+    let mut rng = XorShift(45);
+    let noise = XorShift(10).bytes(8 * CHUNK);
+    let stored = adaptive(&noise, &mut rng);
+    // A 64 KiB chunk is two stored blocks (65535 + 1 bytes), 5 header bytes
+    // each, and the stream ends with a final empty block.
+    assert!(
+        stored.len() <= noise.len() + 2 * 5 * (noise.len() / CHUNK) + 8,
+        "noise grew to {} from {}",
+        stored.len(),
+        noise.len()
+    );
+    // A stored block is the bytes themselves, so the output contains them.
+    assert!(stored.windows(64).any(|w| w == &noise[..64]));
+    let text = &text_noise_text()[..CHUNK];
+    let squeezed = adaptive(text, &mut rng);
+    assert!(squeezed.len() < text.len() / 10, "text was not compressed");
 }
 
 #[test]

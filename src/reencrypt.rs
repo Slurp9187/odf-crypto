@@ -388,7 +388,7 @@ fn per_entry<R: Read + Seek, W: Write + Seek>(
         mimetype,
         deflate_bound(could_reach),
         |sealer, _| {
-            let mut deflate = DeflateWriter::new(sealer).map_err(alloc)?;
+            let mut deflate = DeflateWriter::adaptive(sealer).map_err(alloc)?;
             let mut zip = ZipStreamWriter::new(&mut deflate);
             outcome = Some(crate::decrypt_entries::per_entry(
                 archive,
