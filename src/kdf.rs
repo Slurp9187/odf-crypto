@@ -191,6 +191,10 @@ pub(crate) enum KdfError {
     /// working buffer. Says nothing about the tuple: the same tuple may
     /// derive fine on a machine with more free memory.
     HostCannotAllocate { requested_bytes: usize },
+    /// This host could not start even one thread to run the lanes on
+    /// ([`on_lane_threads`]). Like `HostCannotAllocate`, about the machine
+    /// and not the tuple; `requested_bytes` is the one thread's stack.
+    HostCannotSpawn { requested_bytes: usize },
 }
 
 /// Argon2id `(t, m, p)` over `start_key` with `salt`, filling `out` (whose
@@ -213,9 +217,9 @@ pub(crate) enum KdfError {
 ///
 /// # The block buffer is ours on purpose
 ///
-/// `Argon2::hash_password_into` allocates argon2's working memory itself, with
-/// `vec![Block::default(); self.params.block_count()]` (argon2 0.5.3
-/// `src/lib.rs:230`), sized from `m` -- which on the decrypt side is
+/// Through argon2 0.5.3, `Argon2::hash_password_into` allocated argon2's working
+/// memory itself, with `vec![Block::default(); self.params.block_count()]`
+/// (argon2 0.5.3 `src/lib.rs:230`), sized from `m` -- which on the decrypt side is
 /// `manifest:argon2-memory`, a field the package author chose. An allocation
 /// that cannot be satisfied does not return and does not unwind: Rust *aborts*
 /// through `handle_alloc_error`, whatever the panic strategy, because an abort
@@ -227,8 +231,24 @@ pub(crate) enum KdfError {
 ///
 /// So the buffer is allocated here instead, with [`Vec::try_reserve_exact`],
 /// which returns `Err` where `vec!` aborts, and handed to
-/// `hash_password_into_with_memory` (argon2 0.5.3 `src/lib.rs:243`), whose
+/// `hash_password_into_with_memory` (argon2 0.6.0 `src/lib.rs:307`), whose
 /// `impl AsMut<[Block]>` parameter exists for exactly this.
+///
+/// argon2 0.6 made its own allocation fallible too (`Blocks::new` over
+/// `alloc_zeroed`, returning `Error::OutOfMemory`, `src/lib.rs:286-287`). The
+/// buffer stays ours anyway: it is what lets the error carry the byte count,
+/// and this crate's no-abort guarantee should not rest on a dependency staying
+/// fallible.
+///
+/// # Lanes run in parallel
+///
+/// argon2 0.6's `parallel` feature fills each slice's lanes on rayon threads,
+/// on a pool [`on_lane_threads`] builds for the call. Beneath
+/// `hash_password_into_with_memory` the only heap use is rayon's: the local
+/// pool's registry and per-thread deques, and job bookkeeping. All of it is
+/// sized by the thread count, which is at most the host's cores, and none of
+/// it by `m`. It allocates infallibly, like miniz's boxed state elsewhere in
+/// this crate: a fixed cost, not one a manifest can raise.
 ///
 /// What this does **not** fix: `blocks` is a plain `Vec<Block>`, not a
 /// secure-gate wrapper, so argon2's working memory -- which is derived from the
@@ -245,8 +265,10 @@ pub(crate) enum KdfError {
 /// (and the matching `m`/`p` bounds), or fails the crate's own parameter
 /// check (`m >= 8p`, `p <= 0xFFFFFF`) is a [`KdfError::Params`] here rather
 /// than a panic inside `Params::new`, whose `m_cost < p_cost * 8` test
-/// overflows on `p >= 2^29` *before* it range-checks `p` (argon2 0.5.3
-/// `params.rs:119`). The working buffer now joins that list: it is a
+/// overflowed on `p >= 2^29` *before* it range-checked `p` (argon2 0.5.3
+/// `params.rs:119`). 0.6 checks `p` first (`params.rs:139-145`), so the
+/// overflow is gone upstream; the screen stays, because it is what gives the
+/// structured [`crate::BadParameter`]. The working buffer joins that list: it is a
 /// [`KdfError::HostCannotAllocate`] here rather than an abort inside
 /// `hash_password_into`.
 pub(crate) fn derive_argon2id(
@@ -391,9 +413,51 @@ pub(crate) fn derive_argon2id(
     // this function exists to avoid, put straight back where it was removed.
     blocks.resize(block_count, Block::default());
 
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into_with_memory(start_key, salt, out, &mut blocks)
-        .map_err(argon2_internal)
+    let lanes = params.p_cost() as usize;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    on_lane_threads(lanes, || {
+        argon2.hash_password_into_with_memory(start_key, salt, out, &mut blocks)
+    })?
+    .map_err(argon2_internal)
+}
+
+/// The stack each Argon2 lane thread asks for: `std`'s own default, named so
+/// [`KdfError::HostCannotSpawn`] can say what was refused.
+const LANE_THREAD_STACK: usize = 2 * 1024 * 1024;
+
+/// Run `hash` on a thread pool built for this one call, with as many threads
+/// as there are lanes, up to the host's parallelism. argon2 0.6's `parallel`
+/// feature fills each slice's lanes with `into_par_iter`
+/// (`memory.rs:57`), on whichever rayon pool it is running in.
+///
+/// **Never rayon's global pool.** Its first use builds it, and a host that
+/// cannot spawn its threads makes that a panic, not an error. A local pool's
+/// `build` returns a `Result` instead. That is the no-panic rule: rayon is a
+/// dependency, but this crate chooses which of its doors to use.
+///
+/// The pool is dropped when the call returns, so a library leaves no threads
+/// behind. Spawning per call costs microseconds against a KDF that is tuned to
+/// take tens of milliseconds. `use_current_thread` would avoid the spawn, but
+/// rayon documents that a local pool built with it leaks its registry.
+///
+/// If `lanes` threads cannot be spawned, one is tried; if that fails too, it
+/// is [`KdfError::HostCannotSpawn`]. One thread computes the same output as
+/// many, only slower.
+fn on_lane_threads<T: Send>(lanes: usize, hash: impl FnOnce() -> T + Send) -> Result<T, KdfError> {
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let want = lanes.clamp(1, cores);
+    let pool = |n: usize| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .stack_size(LANE_THREAD_STACK)
+            .build()
+    };
+    let pool = pool(want)
+        .or_else(|_| pool(1))
+        .map_err(|_| KdfError::HostCannotSpawn {
+            requested_bytes: LANE_THREAD_STACK,
+        })?;
+    Ok(pool.install(hash))
 }
 
 /// An `argon2::Error` the checks in [`derive_argon2id`] leave reachable only
@@ -469,5 +533,69 @@ mod tests {
         keys.sort();
         keys.dedup();
         assert_eq!(keys.len(), n);
+    }
+
+    /// Known answers from libargon2, the reference implementation LibreOffice
+    /// links, through argon2-cffi 25's `hash_secret_raw` (Argon2id, v0x13, no
+    /// secret or associated data -- the shape ODF uses). Several lanes in each,
+    /// so the parallel fill is what is being checked, at LibreOffice's own
+    /// tuple among them.
+    #[test]
+    fn argon2id_matches_the_reference_implementation() {
+        let start = b"start key bytes, 32 long........";
+        let salt = b"saltsaltsaltsalt";
+        let limits = crate::DecryptLimits::default();
+        for (t, m, p, want) in [
+            (
+                2,
+                256,
+                4,
+                "a4022fe20744a918661506e69a8cd366d894c11359ce49ffec42c75caa26ffc5",
+            ),
+            (
+                3,
+                65536,
+                4,
+                "cb0e4d45be1b5338783f5f3fea374cd1a705e6d84131e3a7930cadcdd3074677",
+            ),
+            (
+                1,
+                64,
+                8,
+                "26c3f9dd5063a88489e501c23dc687ee72a57fc141b8069237a5e6c2d1956603",
+            ),
+        ] {
+            let mut out = [0u8; 32];
+            derive_argon2id(start, salt, t, m, p, &limits, &mut out).unwrap();
+            let got: String = out.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(got, want, "(t, m, p) = ({t}, {m}, {p})");
+        }
+    }
+
+    /// The fallback is a one-thread pool, so one thread must compute what many
+    /// do. Run directly on pools of 1 and 8 threads: same lanes, same bytes.
+    #[test]
+    fn one_lane_thread_derives_what_many_do() {
+        let params = Params::new(256, 2, 8, Some(32)).unwrap();
+        let run = |threads: usize| {
+            let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params.clone());
+            let mut blocks = vec![Block::default(); params.block_count()];
+            let mut out = [0u8; 32];
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    argon2.hash_password_into_with_memory(
+                        b"pw",
+                        b"saltsaltsaltsalt",
+                        &mut out,
+                        &mut blocks,
+                    )
+                })
+                .unwrap();
+            out
+        };
+        assert_eq!(run(1), run(8));
     }
 }

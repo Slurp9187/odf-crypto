@@ -698,7 +698,8 @@ pub(crate) fn derive_write_key(
                 |e| match e {
                     crate::kdf::KdfError::Params(b) => EncryptError::Internal(b.to_string()),
                     crate::kdf::KdfError::Internal(s) => EncryptError::Internal(s.into()),
-                    crate::kdf::KdfError::HostCannotAllocate { requested_bytes } => {
+                    crate::kdf::KdfError::HostCannotAllocate { requested_bytes }
+                    | crate::kdf::KdfError::HostCannotSpawn { requested_bytes } => {
                         EncryptError::HostCannotAllocate { requested_bytes }
                     }
                 },

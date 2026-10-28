@@ -82,8 +82,8 @@ Three configurations, and every change must hold in all of them.
 | Feature | Default | What it adds |
 | --- | --- | --- |
 | *(none)* | **yes** | `classify` / `classify_reader` only. 25 crates on Windows, 24 on Linux, 27 on macOS; no cryptographic dependency. |
-| `crypto-ops` | opt-in | `decrypt`, `encrypt` and their streaming `*_to` forms, and `reencrypt_to`. 61 crates on Windows, 60 on Linux, 63 on macOS. |
-| `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`, `ctrlc`. 73 crates on Windows, 75 on Linux, 79 on macOS. Every count in this table is per target, measured with `--target`. |
+| `crypto-ops` | opt-in | `decrypt`, `encrypt` and their streaming `*_to` forms, and `reencrypt_to`. 67 crates on Windows, 66 on Linux, 69 on macOS. |
+| `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`, `ctrlc`. 79 crates on Windows, 81 on Linux, 85 on macOS. Every count in this table is per target, measured with `--target`. |
 
 **Detection-only is the default on purpose.** Nobody should resolve a cipher
 stack to ask whether a file is encrypted, and it makes the crate cheap for a
@@ -132,7 +132,12 @@ the block buffer itself with `try_reserve_exact` and hands it to
 `hash_password_into_with_memory`, so an unaffordable `manifest:argon2-memory`
 returns `HostCannotAllocate` instead of killing the process. Verified that the
 abort closed rather than moved: everything beneath that entry point in argon2
-0.5.3 is heap-free.
+0.5.3 was heap-free. Since rc.15 (argon2 0.6, parallel lanes) rayon allocates
+beneath it -- the call's local pool, its deques, job bookkeeping -- all sized by
+the thread count, which is capped at the host's cores, and none by `m`. That is
+a fixed cost like miniz's boxed state, not one a manifest can raise. The pool
+is local because rayon's global pool panics when it cannot spawn
+(`kdf::on_lane_threads`).
 
 `decrypt.rs`'s own allocations followed in the same release: the inflate slots,
 the cipher buffers and the derived-key buffer all go through `try_reserve_exact`
@@ -222,7 +227,7 @@ to *anyone who reads the paragraph*.
 
 ## Tests
 
-332 of them: 241 library, 21 CLI unit, 41 CLI end-to-end (one Unix-only, so
+334 of them: 243 library, 21 CLI unit, 41 CLI end-to-end (one Unix-only, so
 `--list` shows 40 on Windows), 2 memory-bound, 27 doctests. All must pass in every feature configuration.
 
 **Count test functions, not passing tests.** `cargo test`'s summary line omits

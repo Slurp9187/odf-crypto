@@ -416,8 +416,8 @@ simply the smaller one.
 | Build | How | What you get |
 | --- | --- | --- |
 | **Detection-only** | `odf-crypto = "0.1.0-rc.15"` | `classify` alone. No cryptographic dependency. **25 crates** on Windows, 24 on Linux, 27 on macOS. |
-| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **61 crates** on Windows, 60 on Linux, 63 on macOS. |
-| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **73 crates** on Windows, 75 on Linux, 79 on macOS. |
+| **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **67 crates** on Windows, 66 on Linux, 69 on macOS. |
+| **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **79 crates** on Windows, 81 on Linux, 85 on macOS. |
 
 **Detection is the default because it is cheap.** `classify` parses
 `META-INF/manifest.xml` and the zip central directory; it never derives a key or
