@@ -271,6 +271,10 @@ pub enum AllocationSite {
     /// chunk, the inflate window or the 1K hold-back. Never sized from the
     /// package.
     StreamBuffer,
+    /// A thread to run Argon2id's lanes on: the host could not spawn even one.
+    /// `requested_bytes` is that thread's stack. Added in `0.1.0-rc.15` with
+    /// parallel lanes; before it, the lanes ran on the caller's thread.
+    KdfThread,
 }
 
 impl core::fmt::Display for AllocationSite {
@@ -286,6 +290,7 @@ impl core::fmt::Display for AllocationSite {
             Self::PackagePlaintext => "the decrypted package",
             Self::CipherBuffer => "a cipher buffer",
             Self::StreamBuffer => "a streaming buffer",
+            Self::KdfThread => "an Argon2id lane thread's stack",
         })
     }
 }
@@ -648,6 +653,10 @@ fn kdf_error(e: KdfError) -> DecryptError {
         KdfError::Internal(s) => DecryptError::Internal(s.into()),
         KdfError::HostCannotAllocate { requested_bytes } => DecryptError::HostCannotAllocate {
             site: AllocationSite::KeyDerivation,
+            requested_bytes,
+        },
+        KdfError::HostCannotSpawn { requested_bytes } => DecryptError::HostCannotAllocate {
+            site: AllocationSite::KdfThread,
             requested_bytes,
         },
     }

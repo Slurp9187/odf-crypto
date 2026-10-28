@@ -176,6 +176,12 @@ leaving a tail of zeros that only the written-vs-slot-length comparison catches.
 - `sha1::compress` / `sha2::compress256` spill their message schedule; `W[0..16]` *is* the
   message block verbatim.
 
+- Argon2id's block buffer is a plain `Vec<Block>`, derived from the password and dropped
+  unwiped (`kdf::derive_argon2id` says so). Since rc.15 the lanes are filled on rayon threads
+  (`kdf::on_lane_threads`), so `compress`'s stack temporaries land on those threads' stacks
+  rather than the caller's. The pool is dropped when the call returns, and the stacks with it.
+  This moves the same residue rather than adding a new kind.
+
 `digest`/`sha1`/`sha2` at 0.10 expose no `zeroize` feature — checked, zero references in all
 three manifests. Hand-rolling the hash over the public `compress` function would remove the
 first copy and leave the second, buying nothing an attacker reading the stack would notice.

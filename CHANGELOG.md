@@ -194,6 +194,43 @@ went from 783 to 400 ms, and from 2432 ms before rc.15.
   `manifest:size`) ran behind. It now counts bytes as `write` accepts them, and
   the round-trip helper asserts it before finishing. Checked by breaking it.
 
+**Argon2id runs its lanes in parallel: argon2 0.5.3 → 0.6.0 with `parallel`.**
+At LibreOffice's own tuple (t=3, 64 MiB, 4 lanes) the KDF is most of the time
+for a typical document, and 0.5.3 filled the lanes one after another. Each lane
+now gets a thread, up to the host's cores. Decrypting
+`lo-wholesome-gcm-argon2.odt` went from 203 to 90 ms on 4 vCPU (interleaved A/B,
+release build), with identical output. `encrypt` and `reencrypt_to` derive the
+same way, and `reencrypt_to` derives twice.
+
+- **The pool is ours, built per call, and never rayon's global one.** The global
+  pool panics on first use if the host cannot spawn its threads.
+  `kdf::on_lane_threads` builds a local pool, whose `build` returns a `Result`.
+  - If a pool with as many threads as lanes cannot start, a one-thread pool is
+    tried, which computes the same output more slowly. If that fails too, the
+    error is `HostCannotAllocate` with a new `AllocationSite::KdfThread`, and
+    `requested_bytes` is the thread's stack. No new error variant, so no exit
+    code changes.
+  - The pool drops when the call returns, so a library leaves no threads
+    behind. `use_current_thread` would avoid spawning, but rayon documents that
+    a local pool built with it leaks its registry.
+- **Still no allocation sized by the manifest beneath the KDF.** The block buffer
+  stays ours (`try_reserve_exact` into `hash_password_into_with_memory`).
+  Rayon's allocations are sized by the thread count, capped at the host's
+  cores. argon2 0.6 also made its own buffer allocation fallible and now
+  range-checks `p` before `p * 8`; `kdf.rs` records both.
+- **Tests.**
+  - `argon2id_matches_the_reference_implementation`: three tuples, LibreOffice's
+    among them, against libargon2 (the C reference LibreOffice links, via
+    argon2-cffi). Checked by breaking it: switching to version 0x10 failed it.
+  - `one_lane_thread_derives_what_many_do`: the one-thread fallback computes
+    the same bytes as eight threads.
+- **Crates.** `crypto-ops` 67 / 66 / 69 and `cli` 79 / 81 / 85 (Windows / Linux /
+  macOS), up 6 each; detection-only is untouched.
+  - Added: rayon, rayon-core, crossbeam-deque, crossbeam-epoch,
+    crossbeam-utils, either, and argon2's generation (blake2 0.11,
+    block-buffer 0.12, digest 0.11).
+  - Removed: blake2 0.10, password-hash and rand_core.
+
 ## [0.1.0-rc.14] - 2026-10-20
 
 ### Changed

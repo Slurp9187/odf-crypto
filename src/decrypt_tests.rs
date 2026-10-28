@@ -639,7 +639,9 @@ fn overstated_manifest_size_is_rejected_rather_than_zero_padded() {
 fn set_argon2_lanes_to_overflow(xml: &[u8]) -> Vec<u8> {
     // 2^29: `Params::new` computes `m_cost < p_cost * 8` *before* range-checking
     // `p_cost`, so this overflows u32 and panics in any overflow-checks build
-    // (argon2 0.5.3 params.rs:119) unless `kdf.rs` rejects it first.
+    // (argon2 0.5.3 params.rs:119) unless `kdf.rs` rejects it first. argon2 0.6
+    // range-checks `p` first, so the hazard is upstream history now; the test
+    // still pins that the answer is `BadParameters`.
     String::from_utf8_lossy(xml)
         .replace(
             "loext:argon2-lanes=\"4\"",

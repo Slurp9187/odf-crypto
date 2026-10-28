@@ -85,7 +85,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Detection only. `classify` needs no cryptographic dependency, so the default
-# build pulls 24 crates on Linux where a cryptographic one pulls 60. Nobody pays for a
+# build pulls 24 crates on Linux where a cryptographic one pulls 66. Nobody pays for a
 # cipher stack to ask whether a file is encrypted.
 #
 # It does still pull an inflate implementation -- zip -> flate2 -> miniz_oxide,
@@ -125,6 +125,7 @@ crypto-ops = [
     "dep:hmac",
     "dep:pbkdf2",
     "dep:argon2",
+    "dep:rayon",
     "dep:aes",
     "dep:cbc",
     "dep:getrandom",
@@ -189,7 +190,13 @@ sha1 = { version = "0.10", optional = true, features = ["compress"] }
 sha2 = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
 pbkdf2 = { version = "0.12", optional = true }
-argon2 = { version = "0.5", optional = true }
+# 0.6 with `parallel`: Argon2id's lanes run on threads, one per lane up to the
+# host's cores. At LibreOffice's (t=3, 64 MiB, p=4), 118 -> 53 ms on 4 vCPU with
+# identical output (measured rc.15). rayon is named too, because `kdf.rs`
+# builds the pool itself: rayon's global pool panics if it cannot spawn, and a
+# local pool's `build` returns an error instead.
+argon2 = { version = "0.6", optional = true, default-features = false, features = ["alloc", "parallel"] }
+rayon = { version = "1.10", optional = true }
 # Same reasoning as the streaming GCM's "zeroize" below, applied to the per-entry ciphers:
 # secure-gate wraps the derived key, but each cipher expands its own key
 # schedule from it, and those allocations are outside the wrapper's reach.
