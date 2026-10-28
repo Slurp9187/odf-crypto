@@ -83,9 +83,11 @@ mod tests {
     use std::io;
     use zip::result::ZipError;
 
-    /// Methods whose `Result` carries a [`ZipError`] in `zip` 9.1.3.
-    const ZIP_RETURNING: [&str; 5] = [
+    /// Methods whose `Result` carries a [`ZipError`] in `zip` 9.1.3, plus
+    /// `classify::open_archive`, which every read path opens through.
+    const ZIP_RETURNING: [&str; 6] = [
         "ZipArchive::new",
+        "open_archive(",
         ".by_index(",
         ".by_name(",
         ".start_file(",
@@ -96,10 +98,19 @@ mod tests {
     /// not depend on the directory the tests are run from, and they are plain
     /// text -- the gated modules are readable here even in a detection-only
     /// build, so this guard runs in every feature configuration.
-    const SOURCES: [(&str, &str); 3] = [
+    ///
+    /// The streaming modules were missing until rc.15, although every archive
+    /// `decrypt`, `encrypt` and `reencrypt_to` reads has been opened in them
+    /// since the streaming arc moved those opens there.
+    const SOURCES: [(&str, &str); 8] = [
         ("classify.rs", include_str!("classify.rs")),
         ("decrypt.rs", include_str!("decrypt.rs")),
+        ("decrypt_entries.rs", include_str!("decrypt_entries.rs")),
+        ("decrypt_stream.rs", include_str!("decrypt_stream.rs")),
         ("encrypt.rs", include_str!("encrypt.rs")),
+        ("encrypt_stream.rs", include_str!("encrypt_stream.rs")),
+        ("reencrypt.rs", include_str!("reencrypt.rs")),
+        ("zip_stream.rs", include_str!("zip_stream.rs")),
     ];
 
     /// The invariant the module exists for: no `ZipError` reaches a

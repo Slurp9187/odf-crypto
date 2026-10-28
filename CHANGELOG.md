@@ -15,6 +15,36 @@ LibreOffice citation and a reproduction for each.
 
 ### Changed
 
+**Archives open at offset 0, as LibreOffice does (#112).** `ZipFile::readCEN`
+sets `nCenPos = nCenOff; // data before start of zip is not supported`
+(`ZipFile.cxx:1336`). It reads the central directory exactly where the end
+record says, with nothing before the archive. Every archive this crate reads
+now opens through `classify::open_archive`, which uses
+`ArchiveOffset::Known(0)` in place of `ZipArchive::new`'s
+`ArchiveOffset::Detect`.
+
+- **Behaviour change: a package with bytes before the zip is `NotZip`.**
+  `Detect` shifted past the prefix, so `classify` called such a file
+  encrypted and `decrypt` opened it. LibreOffice reports it as corrupt and
+  never prompts. `decrypt`, `decrypt_to`, `encrypt` and `reencrypt_to` all
+  classify first, so each now refuses it with `Classify(NotZip)`.
+  `reencrypt_to` wraps that in `Decrypt`. A real ODF
+  package starts with its `mimetype` member, so no LibreOffice output is
+  affected. `Detect` also preferred the directory that abuts the end record
+  when its stated offset and size disagree. `Known(0)` reads the stated
+  offset, as `readCEN` does.
+- **Speed is not why it changed.** #112 asked whether `Known(0)` still beats
+  `Detect` on zip 9.1.x. It does not, by more than noise. On a 64 MiB package
+  read from a file, 20 interleaved rounds per build gave a median `decrypt_to`
+  of 651 MiB/s with `Known(0)` and 647 MiB/s with `Detect`, each ranging over
+  about 600-680. The difference is 0.6% between medians (median paired
+  difference 0.9%). The open inside `classify_reader` was 0.12 ms vs 0.13 ms.
+- **`zip_err`'s routing guard now scans the streaming modules.** It read
+  `classify.rs`, `decrypt.rs` and `encrypt.rs` only. Since the streaming arc,
+  `decrypt_stream.rs`, `encrypt_stream.rs` and `reencrypt.rs` had held every
+  read-path open, unscanned. Checked by breaking it: routing
+  `reencrypt.rs:180` through `to_string()` now fails the guard.
+
 **`zip` 9.0.4 → 9.1.3.** The requirement is now `"9.1.3"`, not `"9.0"`. That
 sets a floor, so a consumer cannot resolve back to the 9.0.x read path.
 9.1.0 stopped the full-file forward scan that `ZipArchive::new` ran in 1 KiB

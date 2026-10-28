@@ -1203,6 +1203,31 @@ fn not_zip_is_detect_error() {
     assert!(matches!(classify_err(b"not a zip"), DetectError::NotZip));
 }
 
+/// LibreOffice reads the central directory at the offset the end record names
+/// and supports no data before the zip (`ZipFile.cxx:1336`), so a package with
+/// bytes prepended is corrupt to it and never prompts for a password.
+/// `ZipArchive::new`'s `ArchiveOffset::Detect` shifts past the prefix and
+/// reads it fine. The first assertion is the witness that this input separates
+/// the two openers. Without it, the test would pass for an unrelated reason.
+#[test]
+fn data_before_the_zip_is_not_zip_as_in_libreoffice() {
+    for name in ["lo-wholesome-gcm-argon2.odt", "lo-legacy-aes-cbc.odt"] {
+        let golden = load_golden(name);
+        assert!(classify(&golden).unwrap().package_encrypted, "{name}");
+
+        let mut prefixed = b"#!/bin/sh\nexit 0\n".to_vec();
+        prefixed.extend_from_slice(&golden);
+        assert!(
+            zip::ZipArchive::new(std::io::Cursor::new(&prefixed)).is_ok(),
+            "{name}: Detect must still open it, or this tests nothing"
+        );
+        assert!(
+            matches!(classify_err(&prefixed), DetectError::NotZip),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn missing_manifest_is_detect_error() {
     let bytes = zip_with(&[("mimetype", MIME_TEXT.as_bytes())]);

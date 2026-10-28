@@ -8,6 +8,7 @@ use std::io::Cursor;
 use crate::classify::classify;
 use crate::decrypt::decrypt;
 use crate::test_support::{load_golden, NONASCII_PASSWORD, PASSWORD};
+use crate::DetectError;
 
 fn every_fixture() -> Vec<std::path::PathBuf> {
     let goldens = crate::test_support::goldens_dir();
@@ -165,6 +166,23 @@ fn input_changed_between_passes_fails_the_call() {
         DecryptError::Zip(_) => {}
         other => panic!("expected Zip or Io(InvalidData), got {other:?}"),
     }
+}
+
+/// A package with bytes before the zip is refused before any key work, by
+/// both entry points, as LibreOffice refuses it (`ZipFile.cxx:1336`).
+/// The classify-side test proves that `Detect` would have opened this input.
+#[test]
+fn data_before_the_zip_is_refused() {
+    let mut prefixed = vec![0u8; 512];
+    prefixed.extend_from_slice(&load_golden("lo-wholesome-gcm-argon2.odt"));
+    assert!(matches!(
+        decrypt(&prefixed, PASSWORD),
+        Err(DecryptError::Classify(DetectError::NotZip))
+    ));
+    assert!(matches!(
+        decrypt_to(Cursor::new(&prefixed), io::sink(), PASSWORD),
+        Err(DecryptError::Classify(DetectError::NotZip))
+    ));
 }
 
 #[derive(Debug)]

@@ -11,7 +11,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use secure_gate::{RevealSecret, RevealSecretMut};
 use zip::ZipArchive;
 
-use crate::classify::classify_latched;
+use crate::classify::{classify_latched, open_archive};
 use crate::decrypt::{
     derive_key, member_for_archive, no_member, screen_class, screen_shape, AllocationSite,
     DecryptError, DecryptLimits,
@@ -144,7 +144,7 @@ fn run<R: Read + Seek, W: Write>(
     screen_class(&class, limits)?;
     src.seek(SeekFrom::Start(0)).map_err(DecryptError::Io)?;
     let mut archive =
-        ZipArchive::new(&mut *src).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
+        open_archive(&mut *src).map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     match class.mode {
         Mode::Wholesome => {
             let row = crate::decrypt::wholesome_row(&class)?;
@@ -191,7 +191,7 @@ pub(crate) fn decrypt_slice(
     }
     let class = crate::classify::classify(bytes)?;
     screen_class(&class, limits)?;
-    let mut archive = ZipArchive::new(io::Cursor::new(bytes))
+    let mut archive = open_archive(io::Cursor::new(bytes))
         .map_err(|e| DecryptError::Zip(zip_err::message(&e)))?;
     let mut out;
     let len = match class.mode {
