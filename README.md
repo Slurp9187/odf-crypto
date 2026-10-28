@@ -471,8 +471,8 @@ That verdict outranks the harness.
 **Streaming is measured, not asserted.** `tests/streaming_memory.rs` installs a
 counting allocator and runs every operation at two payload sizes, sixteen times
 apart: peak heap does not move. `decrypt_to` holds 171 KiB for a wholesome
-package and 444 KiB for a per-entry one, `encrypt_to` 506 KiB, `reencrypt_to`
-347 KiB and 885 KiB -- against a 4 MiB bound that holding a 256 MiB member
+package and 444 KiB for a per-entry one, `encrypt_to` 570 KiB, `reencrypt_to`
+347 KiB and 949 KiB -- against a 4 MiB bound that holding a 256 MiB member
 would pass sixty times over, which each guard was broken to confirm. The
 whole-buffer `decrypt` is pinned to the exact bytes it returned before it moved
 onto the streaming code, and LibreOffice 26.8.0.3 opens what `decrypt_to`,

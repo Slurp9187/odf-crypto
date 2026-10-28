@@ -207,6 +207,22 @@ Order: S1 → S2 → {S3, S4, S5} → S6 → S8 → S9. *S3 and S4 ship as one P
     `SeekableZipSink`'s default `deflated_from`, because its bytes are pinned to rc.9
     (S8). The two outputs now differ inside deflated members as well as in framing.
     They still agree member for member.
+- **Deflate "at level 6, matching `raw_deflate`" (§5): narrowed in rc.15.**
+  - Level 6 everywhere was right for byte-identity in S2, but nothing pins
+    `encrypt`'s payload bytes: salt and IV are fresh per call, and the tests
+    assert on the round trip.
+  - Measured, the payload's level 6 spent almost all its time on members that
+    arrive compressed: 27 MiB/s on a LibreOffice-like package.
+  - `DeflateWriter::adaptive` stores each 64 KiB chunk whose byte entropy says it
+    is already compressed, and is now used by `encrypt_to` and `reencrypt_to`'s
+    payload. That package went to 411 MiB/s for +0.012% output.
+  - The rebuild's own members keep plain level 6, because the comparison with
+    `zip`'s writer needs it.
+  - The draft of this change built a byte-range map from the input's central
+    directory. It was dropped for the entropy test, which reads no
+    package-supplied count, allocates nothing sized by one, and covers
+    `reencrypt_to` without plumbing.
+
 - **S9: the rc.10 line opened** in the S8/S9 PR rather than direct to `main`, so the bump carries a review record; `CHANGELOG.md` has `## [0.1.0-rc.10] - Unreleased`. Publishing stays the owner's.
 
 ## 8. Verification

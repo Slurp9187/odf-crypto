@@ -146,6 +146,54 @@ PBKDF2, and `reencrypt_to` from 2432 to 854 ms.
   The code never did that. The plan now records the reversal
   (`docs/plans/odf-streaming-2026-10-15.md` §7).
 
+**Encrypt stores what is already compressed.** The encrypted payload is the
+whole plaintext package, deflated, and level 6 spent nearly all its time failing
+to shrink it. A LibreOffice package's XML members arrive deflated, and its
+pictures as JPEG or PNG. The payload's compressor (`DeflateWriter::adaptive`)
+now looks at each 64 KiB chunk's byte entropy:
+
+- 7.5 bits per byte or more is already compressed, so the chunk is written as
+  stored DEFLATE blocks after a full flush. The flush byte-aligns the stream and
+  clears the dictionary, so no later match reaches back across bytes the
+  compressor never saw.
+- Anything less is compressed at level 6, as before.
+- Measured on 64 KiB chunks: XML 4.6-5.5 bits, DEFLATE streams and random
+  (JPEG-like) bytes 7.99-8.0. The threshold sits in that gap.
+- The output is valid DEFLATE whichever way a chunk goes, so a wrong call costs
+  size or time, never correctness.
+
+Measured with `encrypt_to`, interleaved A/B, release build:
+
+| package | before | after | output size |
+| --- | --- | --- | --- |
+| LibreOffice-like, 37 MB (24 MiB of deflated XML, eight 4 MiB pictures) | 27 MiB/s | 411 MiB/s | +0.012% |
+| stored XML, 27 MB | 46 MiB/s | 45 MiB/s | unchanged |
+
+`reencrypt_to` from a per-entry source gains the same way: its rebuilt inner
+package now holds still-compressed members. On the 64 MiB legacy package it
+went from 783 to 400 ms, and from 2432 ms before rc.15.
+
+- **Memory.** The held chunk adds 64 KiB: `encrypt_to` 570 KiB (was 506),
+  per-entry `reencrypt_to` 949 KiB (885 after the change above), still flat in
+  the payload.
+- **Zip64 is still decided correctly.** Encrypt picks Zip64 from
+  `deflate_bound` before writing anything. The round-trip test asserts the
+  adaptive output stays inside that bound, including an input that flips mode
+  at every chunk.
+- **Not in this mode:** the per-entry rebuild's own members
+  (`ZipStreamWriter::deflated`). Those stay byte-identical to
+  `compress_to_vec(_, 6)`, which the comparison with `zip`'s writer relies on.
+- **Tests.**
+  - `adaptive_deflate_round_trips` mixes stored and compressed chunks,
+    including text, then noise, then the same text, whose matches would cross
+    the stored gap without the flush. Checked by breaking it: removing the
+    full flush failed that case.
+  - `adaptive_deflate_stores_noise_and_compresses_text` pins the decision.
+- **A bug the benchmark caught, fixed before commit.** In adaptive mode a
+  partial chunk waits until `finish`, so `consumed()` (read before `finish` for
+  `manifest:size`) ran behind. It now counts bytes as `write` accepts them, and
+  the round-trip helper asserts it before finishing. Checked by breaking it.
+
 ## [0.1.0-rc.14] - 2026-10-20
 
 ### Changed

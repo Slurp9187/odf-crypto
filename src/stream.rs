@@ -839,14 +839,43 @@ impl<R: Read, T: Write> Read for InflateReader<R, T> {
 
 // --- Deflate -------------------------------------------------------------------
 
-/// Raw DEFLATE at level 6 -- the level and framing of `encrypt::raw_deflate`
-/// -- written to `dst` a chunk at a time. [`DeflateWriter::finish`] must be
+/// A chunk whose bytes carry at least this many bits of order-0 entropy is
+/// already compressed, and [`DeflateWriter::adaptive`] stores it rather than
+/// compressing it again.
+///
+/// Measured on 64 KiB chunks (rc.15): XML and HTML 4.6-5.5 bits, their DEFLATE
+/// streams 7.99, random bytes (a JPEG's stand-in) 7.997, a PNG-like zlib stream
+/// 7.99. The threshold sits in the wide gap between. Wrong either way it costs
+/// only size or time, never correctness: a stored chunk is valid DEFLATE.
+const STORE_AT_BITS: f64 = 7.5;
+
+/// The most bytes one stored DEFLATE block can carry (RFC 1951 §3.2.4).
+const STORED_BLOCK_MAX: usize = 0xFFFF;
+
+/// Raw DEFLATE at level 6 -- the level and framing of `compress_to_vec(_, 6)`,
+/// which the whole-buffer `encrypt` called before S8 -- written to `dst` a
+/// chunk at a time. [`DeflateWriter::finish`] must be
 /// called; dropping it without does not end the stream.
+///
+/// [`DeflateWriter::adaptive`] stores chunks that are already compressed
+/// instead; [`DeflateWriter::new`] compresses everything, byte for byte as
+/// `compress_to_vec(_, 6)` does, which the per-entry rebuild's comparison with
+/// `zip`'s own writer relies on.
 pub(crate) struct DeflateWriter<W: Write> {
     dst: W,
     comp: Box<CompressorOxide>,
     out: ChunkBuffer,
     consumed: u64,
+    /// `Some` in adaptive mode: input gathered into a chunk before deciding.
+    held: Option<Held>,
+}
+
+struct Held {
+    buf: ChunkBuffer,
+    len: usize,
+    /// The compressor has taken input since its last full flush, so it must
+    /// flush before a stored block can follow.
+    compressing: bool,
 }
 
 impl<W: Write> DeflateWriter<W> {
@@ -859,10 +888,70 @@ impl<W: Write> DeflateWriter<W> {
             comp: Box::new(CompressorOxide::new(flags)),
             out: chunk_buffer(CHUNK)?,
             consumed: 0,
+            held: None,
         })
     }
 
+    /// As [`DeflateWriter::new`], but each 64 KiB chunk whose entropy says it
+    /// is already compressed ([`STORE_AT_BITS`]) is written as stored blocks.
+    ///
+    /// For the encrypted payload, whose input is a whole ODF package: its XML
+    /// members arrive deflated and its pictures as JPEG or PNG, so level 6 there
+    /// spends nearly all its time failing to shrink them. Before a stored block
+    /// the compressor is flushed with `TDEFLFlush::Full`, which byte-aligns the
+    /// stream and clears its dictionary (`miniz_oxide` 0.8.9
+    /// `deflate/core.rs:2311-2315`), so no later match reaches back across the
+    /// stored bytes it never saw.
+    pub(crate) fn adaptive(dst: W) -> Result<Self, Fault> {
+        let mut w = Self::new(dst)?;
+        w.held = Some(Held {
+            buf: chunk_buffer(CHUNK)?,
+            len: 0,
+            compressing: false,
+        });
+        Ok(w)
+    }
+
+    /// Decide `held`'s chunk: stored if it is already compressed, else into the
+    /// compressor.
+    fn release(&mut self, held: &mut Held) -> io::Result<()> {
+        let len = held.len;
+        if len == 0 {
+            return Ok(());
+        }
+        held.len = 0;
+        let incompressible = held.buf.with_secret(|b| entropy_bits(&b[..len])) >= STORE_AT_BITS;
+        if !incompressible {
+            held.compressing = true;
+            return held
+                .buf
+                .with_secret(|b| self.pump(&b[..len], TDEFLFlush::None));
+        }
+        if held.compressing {
+            self.pump(&[], TDEFLFlush::Full)?;
+            held.compressing = false;
+        }
+        let dst = &mut self.dst;
+        held.buf.with_secret(|b| -> io::Result<()> {
+            for block in b[..len].chunks(STORED_BLOCK_MAX) {
+                // BFINAL 0, BTYPE 00, padded to the byte the flush left us
+                // on; then LEN and its complement, little-endian.
+                let n = block.len() as u16;
+                let [lo, hi] = n.to_le_bytes();
+                let [nlo, nhi] = (!n).to_le_bytes();
+                dst.write_all(&[0, lo, hi, nlo, nhi])?;
+                dst.write_all(block)?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     /// Uncompressed bytes accepted so far -- `manifest:size` once finished.
+    ///
+    /// Counted as `write` accepts them, not as the compressor takes them: in
+    /// adaptive mode up to a chunk waits in `held` until `finish`, and both
+    /// callers read this before finishing.
     pub(crate) fn consumed(&self) -> u64 {
         self.consumed
     }
@@ -874,7 +963,6 @@ impl<W: Write> DeflateWriter<W> {
                 .out
                 .with_secret_mut(|o| compress(comp, input, &mut o[..], flush));
             input = &input[used..];
-            self.consumed += used as u64;
             let dst = &mut self.dst;
             self.out.with_secret(|o| dst.write_all(&o[..made]))?;
             match status {
@@ -897,15 +985,58 @@ impl<W: Write> DeflateWriter<W> {
 
     /// End the DEFLATE stream and return the inner writer.
     pub(crate) fn finish(mut self) -> io::Result<W> {
+        if let Some(mut held) = self.held.take() {
+            self.release(&mut held)?;
+        }
         self.pump(&[], TDEFLFlush::Finish)?;
         Ok(self.dst)
     }
 }
 
+/// Order-0 entropy of `bytes`, in bits per byte. The histogram is of
+/// plaintext, so it is wiped before returning.
+fn entropy_bits(bytes: &[u8]) -> f64 {
+    let mut counts = [0u32; 256];
+    for &b in bytes {
+        counts[b as usize] += 1;
+    }
+    let n = bytes.len() as f64;
+    let bits = counts
+        .iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            let p = f64::from(c) / n;
+            -p * p.log2()
+        })
+        .sum();
+    counts.iter_mut().for_each(|c| *c = 0);
+    bits
+}
+
 impl<W: Write> Write for DeflateWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.pump(buf, TDEFLFlush::None)?;
-        Ok(buf.len())
+        self.consumed += buf.len() as u64;
+        let Some(mut held) = self.held.take() else {
+            self.pump(buf, TDEFLFlush::None)?;
+            return Ok(buf.len());
+        };
+        let mut rest = buf;
+        let result = loop {
+            let at = held.len;
+            let take = (CHUNK - at).min(rest.len());
+            held.buf
+                .with_secret_mut(|b| b[at..at + take].copy_from_slice(&rest[..take]));
+            held.len += take;
+            rest = &rest[take..];
+            if held.len < CHUNK {
+                break Ok(buf.len());
+            }
+            if let Err(e) = self.release(&mut held) {
+                break Err(e);
+            }
+        };
+        self.held = Some(held);
+        result
     }
 
     fn flush(&mut self) -> io::Result<()> {
