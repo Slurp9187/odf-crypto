@@ -11,6 +11,50 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.17] - Unreleased
+
+### Changed
+
+**Hash state, HMAC key state and Argon2's working memory are wiped on drop.**
+No API change, and the output bytes are unchanged: every golden, the SHA-1
+ladder and the PBKDF2 and Argon2id paths derive the same keys as before.
+
+- **sha1 0.10 → 0.11, sha2 0.10 → 0.11, hmac 0.12 → 0.13, pbkdf2 0.12 →
+  0.13**, the first three with `zeroize`. Each forwards to `digest/zeroize`,
+  which wipes the hash core's state and its buffer of not-yet-compressed input
+  when the hasher drops; hmac's covers the ipad/opad cores that hold the HMAC
+  key state, which is PBKDF2-HMAC-SHA1's key here. The 0.10 line had no such
+  feature, so the password bytes `start_key` hashes and PBKDF2's key state were
+  freed unwiped. sha1/sha2 drop their default `oid` feature.
+- **argon2 gains `zeroize`, and its working memory is wrapped.**
+  `kdf::derive_argon2id`'s block buffer, `m` KiB derived from the password, was
+  a plain `Vec<Block>`, freed unwiped (its doc comment said so). It is now
+  moved into a secure-gate `Dynamic<Vec<Block>>` before the hash runs, so it is
+  wiped on every path out, unwinding included. argon2's feature is what makes
+  `Block: Zeroize`; without it the wrapper does not compile. The same feature
+  wipes argon2's internal `initial_hash` and per-block hash temporaries.
+- **What still is not wiped:** `compress`'s message schedule on the stack, on
+  the caller's thread or Argon2's lane threads, and `staroffice_sha1`'s local
+  chaining state. The secure-gate skill's *Residue* section lists both.
+- **`staroffice_sha1` calls `sha1::block_api::compress`.** sha1 0.10's
+  `compress` feature is gone; in 0.11 the function is public unconditionally
+  and takes `&[[u8; 64]]`, so the per-block wrapping went too. Checked by
+  breaking it: skipping the full-block call failed 2 tests and skipping the
+  padded-block call failed 6. `start_key` uses `Output::try_from` in place of
+  digest 0.11's deprecated, panicking `from_mut_slice`; skipping its write
+  failed 29.
+- **CI: a `zeroize features` job** reads `cargo tree -e features` and fails if
+  aes, blowfish, cbc, cfb-mode, ctr, ghash, sha1, sha2, hmac or argon2 is
+  built without `zeroize`. Losing one is otherwise silent, since no test can
+  observe memory after a drop. Checked by breaking it: removing hmac's feature
+  failed the step naming hmac, and restoring it passed.
+- **Crates.** `crypto-ops` 64 / 63 / 66 and `cli` 76 / 78 / 82 (Windows / Linux /
+  macOS), down 3 each; detection-only is untouched. argon2 0.6 had already
+  brought in the digest 0.11 generation, so the hashes joined it and the 0.10
+  one left: removed digest 0.10, block-buffer 0.10 and subtle.
+- **Patch updates** within existing requirements: clap 4.6.7, crc32fast 1.5.3,
+  serde_json 1.0.154, thiserror 2.0.21.
+
 ## [0.1.0-rc.16] - 2026-10-29
 
 ### Changed

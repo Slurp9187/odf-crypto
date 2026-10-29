@@ -207,6 +207,31 @@ jobs:
       # this repo already hit once, at 0.1.0 -> 0.1.0-rc.1.
       - run: cargo package --locked --features cli
 
+  zeroize:
+    name: zeroize features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      # Every crate that holds key material or password-derived state keeps its
+      # "zeroize" feature on. Losing one is silent otherwise: the build, the
+      # output bytes and every test stay the same, because no test can see
+      # memory after a drop. `cargo tree -e features` is the one place the
+      # resolved feature set is observable.
+      #
+      # Checked by breaking it: dropping hmac's feature from Cargo.toml failed
+      # this step naming hmac, and restoring it passed.
+      - run: |
+          tree=$(cargo tree --locked -e features --features crypto-ops --prefix none)
+          missing=0
+          for c in aes blowfish cbc cfb-mode ctr ghash sha1 sha2 hmac argon2; do
+            if ! grep -q "^$c feature \"zeroize\"" <<<"$tree"; then
+              echo "::error::$c is built without its zeroize feature"
+              missing=1
+            fi
+          done
+          exit $missing
+
   prose:
     name: audit claims
     runs-on: ubuntu-latest

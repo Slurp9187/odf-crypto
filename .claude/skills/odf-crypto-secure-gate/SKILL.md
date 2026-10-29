@@ -171,22 +171,31 @@ leaving a tail of zeros that only the written-vs-slot-length comparison catches.
 
 ## Residue
 
-- The `Sha1`/`Sha256` hasher buffers the raw password until `finalize` and drops unzeroized —
-  `BlockBuffer::reset` only zeroes the position, not the bytes.
-- `sha1::compress` / `sha2::compress256` spill their message schedule; `W[0..16]` *is* the
-  message block verbatim.
+**Closed in rc.17**, by the hash crates' and argon2's own `zeroize` features rather than by
+wrapping:
 
-- Argon2id's block buffer is a plain `Vec<Block>`, derived from the password and dropped
-  unwiped (`kdf::derive_argon2id` says so). Since rc.15 the lanes are filled on rayon threads
-  (`kdf::on_lane_threads`), so `compress`'s stack temporaries land on those threads' stacks
-  rather than the caller's. The pool is dropped when the call returns, and the stacks with it.
-  This moves the same residue rather than adding a new kind.
+- The `Sha1`/`Sha256` hasher's buffered password bytes and chaining state, and HMAC's
+  ipad/opad cores (the PBKDF2 key state). sha1/sha2 0.11 and hmac 0.13 forward `zeroize` to
+  `digest/zeroize`, which wipes the core and the block buffer on drop. The 0.10 line had no
+  such feature; `BlockBuffer::reset` there zeroed only the position.
+- Argon2id's block buffer, derived from the password, all `m` KiB. It is now a
+  `Dynamic<Vec<Block>>` in `kdf::derive_argon2id`: built as a plain `Vec` for the fallible
+  reservation, moved into the wrapper before the hash runs. It is the one `Dynamic` that is
+  not one of the five aliases, because its element is argon2's `Block`, not `u8`. argon2's
+  `zeroize` feature supplies `Block: Zeroize`, so dropping that feature is a compile error.
 
-`digest`/`sha1`/`sha2` at 0.10 expose no `zeroize` feature — checked, zero references in all
-three manifests. Hand-rolling the hash over the public `compress` function would remove the
-first copy and leave the second, buying nothing an attacker reading the stack would notice.
-**Do not reimplement SHA here.** In practice the KDF that runs next overwrites that stack
-region within microseconds.
+A CI job (`zeroize features`) asserts every one of these crates, and the ciphers, keeps its
+feature. Losing one is otherwise silent: no test can see memory after a drop.
+
+**Still open:**
+
+- `compress` spills its message schedule on the stack; `W[0..16]` *is* the message block
+  verbatim. No feature reaches a stack frame. Since rc.15 Argon2's lanes run on rayon threads
+  (`kdf::on_lane_threads`), so their temporaries land on those threads' stacks, which go when
+  the pool drops. **Do not reimplement SHA to chase this**: it would remove nothing an attacker
+  reading the stack would miss, and the KDF that runs next overwrites that region within
+  microseconds.
+- `staroffice_sha1`'s own `[u32; 5]` chaining state is a plain local.
 
 `start_key` writes the digest straight into the wrapper's heap buffer via `finalize_into`, so
 no stack copy of the *digest* survives.
