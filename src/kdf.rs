@@ -13,10 +13,9 @@
 //! crate's only zeroizing primitive.
 
 use argon2::{Algorithm, Argon2, Block, Params, Version};
-use secure_gate::RevealSecret;
-use sha1::digest::core_api::Block as Sha1Block;
+use secure_gate::{Dynamic, RevealSecret, RevealSecretMut};
 use sha1::digest::Output;
-use sha1::{Digest, Sha1, Sha1Core};
+use sha1::{Digest, Sha1};
 use sha2::Sha256;
 
 use crate::limits::{ARGON2_MIN_M_COST_KIB, ARGON2_MIN_P_COST, ARGON2_MIN_T_COST};
@@ -29,21 +28,27 @@ use crate::types::StartKeyAlg;
 ///
 /// `finalize_into` writes the digest straight into the wrapper's heap buffer,
 /// so no stack copy of it is left behind (a plain `finalize().to_vec()` would
-/// return it through a stack `GenericArray` first). What this cannot reach:
-/// the hasher buffers the raw password bytes internally until finalize, and
-/// `compress` spills its message schedule on the stack; the 0.10 digest /
-/// sha1 / sha2 crates offer no zeroize feature for either. That residual is
-/// inherent to the hash crates at this version -- see the secure-gate skill.
+/// return it through a stack array first). The hasher buffers the raw password
+/// bytes internally until finalize; sha1/sha2 0.11's `zeroize` feature wipes
+/// that buffer and the chaining state when the hasher drops. What it cannot
+/// reach is `compress`'s message schedule, spilled on the stack and left
+/// there -- see the secure-gate skill.
 ///
-/// The slot is exactly `output_size()` bytes, so `from_mut_slice` cannot
-/// mismatch: both read the same associated constant. secure-gate zeroes the
-/// slot before the closure runs, and `finalize_into` overwrites all of it.
+/// The slot is exactly `output_size()` bytes, so the `try_from` cannot fail:
+/// both read the same associated constant. It is fallible only because
+/// digest 0.11 deprecated the panicking `from_mut_slice`; were it ever to
+/// fail, the slot would stay the zeroes secure-gate wrote, the derived key
+/// would be wrong, and the caller would see a wrong password -- not a panic.
+/// secure-gate zeroes the slot before the closure runs, and `finalize_into`
+/// overwrites all of it.
 pub(crate) fn start_key(password: &str, alg: StartKeyAlg) -> PasswordDigest {
     fn digest_into<D: Digest>(password: &str) -> PasswordDigest {
         let mut h = D::new();
         h.update(password.as_bytes());
         PasswordDigest::new_with(<D as Digest>::output_size(), |slot| {
-            h.finalize_into(Output::<D>::from_mut_slice(slot));
+            if let Ok(out) = <&mut Output<D>>::try_from(slot) {
+                h.finalize_into(out);
+            }
         })
     }
     match alg {
@@ -133,12 +138,7 @@ fn staroffice_sha1(msg: &[u8]) -> PasswordDigest {
     let mut state = SHA1_INIT;
     let full = msg.len() - msg.len() % SHA1_BLOCK;
     let (blocks, tail) = msg.split_at(full);
-    for block in blocks.as_chunks::<SHA1_BLOCK>().0 {
-        sha1::compress(
-            &mut state,
-            core::slice::from_ref(Sha1Block::<Sha1Core>::from_slice(block)),
-        );
-    }
+    sha1::block_api::compress(&mut state, blocks.as_chunks::<SHA1_BLOCK>().0);
     // Real SHA-1 needs a second block only when the terminator and the 8-byte
     // length do not fit: tail >= 56. rtl's `i >= 14` makes it tail >= 52.
     let padded_len = if tail.len() >= 52 {
@@ -159,12 +159,7 @@ fn staroffice_sha1(msg: &[u8]) -> PasswordDigest {
         }
     });
     padded.with_secret(|buf| {
-        for block in buf.as_chunks::<SHA1_BLOCK>().0 {
-            sha1::compress(
-                &mut state,
-                core::slice::from_ref(Sha1Block::<Sha1Core>::from_slice(block)),
-            );
-        }
+        sha1::block_api::compress(&mut state, buf.as_chunks::<SHA1_BLOCK>().0);
     });
     PasswordDigest::new_with(20, |slot| {
         for (dst, word) in slot.as_chunks_mut::<4>().0.iter_mut().zip(state) {
@@ -250,15 +245,21 @@ pub(crate) enum KdfError {
 /// it by `m`. It allocates infallibly, like miniz's boxed state elsewhere in
 /// this crate: a fixed cost, not one a manifest can raise.
 ///
-/// What this does **not** fix: `blocks` is a plain `Vec<Block>`, not a
-/// secure-gate wrapper, so argon2's working memory -- which is derived from the
-/// password -- is not zeroized when it drops, on this path or on the default
-/// one. That residual is unchanged by this function and is a separate question
-/// from the abort; conflating the two would claim a wipe that does not happen.
+/// # The working memory is wiped
+///
+/// `blocks` is derived from the password, all `m` KiB of it. It is built as a
+/// plain `Vec<Block>`, because the fallible reservation needs one, then moved
+/// into a secure-gate `Dynamic<Vec<Block>>` before the hash writes a byte of
+/// it, so it is wiped on drop on every path out, error and unwind included.
+/// argon2's `zeroize` feature is what makes `Block: Zeroize`, and so the
+/// wrapper possible; the same feature wipes argon2's own `initial_hash` and
+/// per-block hash temporaries. Not covered: an abort, which skips every
+/// `Drop` (see above), and whatever the lane threads spill onto their own
+/// stacks.
 ///
 /// Both slices are already inside their callers' `with_secret`/
-/// `with_secret_mut` closures, so this takes bare slices and never holds
-/// secret material of its own.
+/// `with_secret_mut` closures, so this takes bare slices. The only secret
+/// material it holds of its own is `blocks`, wrapped as above.
 ///
 /// The `i32`s are the manifest's own type (`sal_Int32`). Anything that does
 /// not fit `u32`, falls outside [`ARGON2_MIN_T_COST`]..=[`ARGON2_MAX_T_COST`]
@@ -415,8 +416,13 @@ pub(crate) fn derive_argon2id(
 
     let lanes = params.p_cost() as usize;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    // A move: the box takes the Vec's header, and the block buffer behind it,
+    // filled once at its final size above, is the one the wrapper wipes.
+    let mut blocks = Dynamic::<Vec<Block>>::new(blocks);
     on_lane_threads(lanes, || {
-        argon2.hash_password_into_with_memory(start_key, salt, out, &mut blocks)
+        blocks.with_secret_mut(|b| {
+            argon2.hash_password_into_with_memory(start_key, salt, out, b.as_mut_slice())
+        })
     })?
     .map_err(argon2_internal)
 }

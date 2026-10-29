@@ -1,6 +1,6 @@
 [package]
 name = "odf-crypto"
-version = "0.1.0-rc.16"
+version = "0.1.0-rc.17"
 edition = "2021"
 description = "LibreOffice-faithful encryption for ODF packages (.odt, .ods, .odp): detect it, decrypt it, write it"
 rust-version = "1.88"
@@ -85,7 +85,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Detection only. `classify` needs no cryptographic dependency, so the default
-# build pulls 24 crates on Linux where a cryptographic one pulls 66. Nobody pays for a
+# build pulls 24 crates on Linux where a cryptographic one pulls 63. Nobody pays for a
 # cipher stack to ask whether a file is encrypted.
 #
 # It does still pull an inflate implementation -- zip -> flate2 -> miniz_oxide,
@@ -186,16 +186,27 @@ secure-gate = { version = "=0.9.0-rc.16", default-features = false, features = [
     "alloc",
 ] }
 
-sha1 = { version = "0.10", optional = true, features = ["compress"] }
-sha2 = { version = "0.10", optional = true }
-hmac = { version = "0.12", optional = true }
-pbkdf2 = { version = "0.12", optional = true }
+# The digest 0.11 line, for its "zeroize": each forwards to `digest/zeroize`,
+# which wipes the hash core's state and its buffer of not-yet-compressed input
+# on drop, and hmac's covers the ipad/opad cores that hold the HMAC key state.
+# Those are password and start-key bytes on every path here (`kdf::start_key`,
+# PBKDF2-HMAC-SHA1 in `decrypt`). The 0.10 line had no such feature, so all of
+# it was freed unwiped. `default-features = false` drops sha1/sha2's `oid`.
+# sha1 0.10's `compress` feature is gone: `block_api::compress`, which
+# `kdf::staroffice_sha1` needs, is public unconditionally in 0.11.
+sha1 = { version = "0.11", optional = true, default-features = false, features = ["zeroize"] }
+sha2 = { version = "0.11", optional = true, default-features = false, features = ["zeroize"] }
+hmac = { version = "0.13", optional = true, features = ["zeroize"] }
+pbkdf2 = { version = "0.13", optional = true }
 # 0.6 with `parallel`: Argon2id's lanes run on threads, one per lane up to the
 # host's cores. At LibreOffice's (t=3, 64 MiB, p=4), 118 -> 53 ms on 4 vCPU with
 # identical output (measured rc.15). rayon is named too, because `kdf.rs`
 # builds the pool itself: rayon's global pool panics if it cannot spawn, and a
 # local pool's `build` returns an error instead.
-argon2 = { version = "0.6", optional = true, default-features = false, features = ["alloc", "parallel"] }
+# "zeroize" makes argon2's `Block` implement `Zeroize`, so `kdf.rs` can hold
+# the password-derived working memory in a secure-gate `Dynamic<Vec<Block>>`,
+# and wipes argon2's own `initial_hash` and per-block hash temporaries.
+argon2 = { version = "0.6", optional = true, default-features = false, features = ["alloc", "parallel", "zeroize"] }
 rayon = { version = "1.10", optional = true }
 # Same reasoning as the streaming GCM's "zeroize" below, applied to the per-entry ciphers:
 # secure-gate wraps the derived key, but each cipher expands its own key

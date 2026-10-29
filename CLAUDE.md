@@ -83,8 +83,8 @@ Three configurations, and every change must hold in all of them.
 | Feature | Default | What it adds |
 | --- | --- | --- |
 | *(none)* | **yes** | `classify` / `classify_reader` only. 25 crates on Windows, 24 on Linux, 27 on macOS; no cryptographic dependency. |
-| `crypto-ops` | opt-in | `decrypt`, `encrypt` and their streaming `*_to` forms, and `reencrypt_to`. 67 crates on Windows, 66 on Linux, 69 on macOS. |
-| `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`, `ctrlc`. 79 crates on Windows, 81 on Linux, 85 on macOS. Every count in this table is per target, measured with `--target`. |
+| `crypto-ops` | opt-in | `decrypt`, `encrypt` and their streaming `*_to` forms, and `reencrypt_to`. 64 crates on Windows, 63 on Linux, 66 on macOS. |
+| `cli` | opt-in | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword`, `ctrlc`. 76 crates on Windows, 78 on Linux, 82 on macOS. Every count in this table is per target, measured with `--target`. |
 
 **Detection-only is the default on purpose.** Nobody should resolve a cipher
 stack to ask whether a file is encrypted, and it makes the crate cheap for a
