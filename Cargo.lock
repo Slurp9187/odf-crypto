@@ -571,7 +571,7 @@ checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
 
 [[package]]
 name = "odf-crypto"
-version = "0.1.0-rc.15"
+version = "0.1.0-rc.16"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -763,9 +763,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "secure-gate"
-version = "0.9.0-rc.15"
+version = "0.9.0-rc.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a61215834c24de98e1326f8e7d471fda47419ef1369786add84de59daad7735"
+checksum = "2a46f2c31a81579c9be1e5e141bc1c3662a23a4d39d0ad828bb3ddfb9921b9ee"
 dependencies = [
  "base16ct",
  "base32ct",
@@ -999,9 +999,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.9.0"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zip"
