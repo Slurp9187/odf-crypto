@@ -11,6 +11,61 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.16] - Unreleased
+
+### Changed
+
+**`secure-gate` 0.9.0-rc.15 → 0.9.0-rc.16.** No API change here: the public
+API, the streaming API, their errors and the output bytes are unchanged. As
+with rc.12 and rc.14, the release exists so a consumer's graph can hold one
+`secure-gate`, which this crate's exact pin otherwise prevents.
+
+- **What rc.16 removes is unused here.** It deletes `from_rng` and the
+  `FromHexStr` family of decoding traits; neither appears in `src/` or
+  `tests/`. Nothing here encodes or decodes a secret.
+- **Its MSRV, 1.87, is below this crate's 1.88**, so `rust-version` stays.
+  secure-gate raised it for RUSTSEC-2026-0385 (`ctutils` before 0.4.4), which
+  it reaches only through `sealed`. This crate reaches `ctutils` independently,
+  through argon2's `digest` 0.11 and ghash's `universal-hash`, and already
+  locked 0.4.6, a patched release.
+- **`Cargo.lock` moved three lines of substance:** secure-gate, `zeroize` 1.9.0
+  → 1.9.1 (rc.16 requires `^1.9.1`; it declares `rust-version` 1.85), and this
+  crate's own version. No crate was added or removed, so the counts hold.
+
+**Legacy AES-CBC members decrypt with one cipher call per chunk.**
+`CbcDec::decrypt_blocks` called `decrypt_block_mut` once per 16-byte block. CBC
+decryption has no chain on the cipher side: each block is `D(c_i) xor c_{i-1}`,
+and every `c_i` is already known. One `decrypt_blocks_inout_mut` call per chunk
+lets `cbc::Decryptor` hand AES its parallel block count at once.
+
+Measured with an interleaved A/B, release build, Windows 11 workstation. Every
+row was at one PBKDF2 iteration, so the figure is the stream and not the KDF:
+
+| package (64 MiB inflated, 5 rows) | `decrypt_to` | `reencrypt_to` |
+| --- | --- | --- |
+| incompressible member (64 MiB of ciphertext) | 22.6 → 17.9 ms, 2.8 → 3.5 GiB/s | 70.7 → 66.4 ms |
+| XML member (5.7 MB of ciphertext) | 38.6 → 34.4 ms | 40.8 → 41.0 ms (noise) |
+
+The gain tracks how much ciphertext there is. On XML, CBC touches little, and
+`reencrypt_to`'s new AES-GCM encrypt is most of its cost.
+
+- **Output and checks are unchanged.** A span that is not whole blocks was
+  already refused before it reached the cipher; if one ever arrives, the
+  batched call reports `Fault::Internal` rather than skip the tail. Padding,
+  the 1 KiB checksum gate and wrong-key behavior stay as they were.
+- **Test.** `batched_cbc_decrypt_equals_per_block` covers AES-128, -192 and -256
+  against a per-block reference. It splits one buffer into uneven whole-block
+  calls with the state carried between them, and runs `CbcDecryptReader` on a
+  dribbling source. Checked by breaking it: decrypting with a cloned state,
+  which drops the chain between calls, failed it and the existing round-trip
+  test. Restored.
+- **Not in this release: deriving per-entry rows in parallel.** Each row's
+  PBKDF2 key is found inside that member's own check, including the legacy
+  SHA-1 ladder and superseded rows, so running them on threads means
+  restructuring that path. `lo-legacy-aes-cbc.odt` (5 rows at 100,000
+  iterations) decrypts in 77 ms on the workstation and in 9 ms with every row at
+  one iteration, so about 68 ms is the KDF.
+
 ## [0.1.0-rc.15] - 2026-10-28
 
 ### Changed
@@ -240,40 +295,6 @@ same way, and `reencrypt_to` derives twice.
     crossbeam-utils, either, and argon2's generation (blake2 0.11,
     block-buffer 0.12, digest 0.11).
   - Removed: blake2 0.10, password-hash and rand_core.
-
-**Legacy AES-CBC members decrypt with one cipher call per chunk.**
-`CbcDec::decrypt_blocks` called `decrypt_block_mut` once per 16-byte block. CBC
-decryption has no chain on the cipher side: each block is `D(c_i) xor c_{i-1}`,
-and every `c_i` is already known. One `decrypt_blocks_inout_mut` call per chunk
-lets `cbc::Decryptor` hand AES its parallel block count at once.
-
-Measured with an interleaved A/B, release build, Windows 11 workstation. Every
-row was at one PBKDF2 iteration, so the figure is the stream and not the KDF:
-
-| package (64 MiB inflated, 5 rows) | `decrypt_to` | `reencrypt_to` |
-| --- | --- | --- |
-| incompressible member (64 MiB of ciphertext) | 22.6 → 17.9 ms, 2.8 → 3.5 GiB/s | 70.7 → 66.4 ms |
-| XML member (5.7 MB of ciphertext) | 38.6 → 34.4 ms | 40.8 → 41.0 ms (noise) |
-
-The gain tracks how much ciphertext there is. On XML, CBC touches little, and
-`reencrypt_to`'s new AES-GCM encrypt is most of its cost.
-
-- **Output and checks are unchanged.** A span that is not whole blocks was
-  already refused before it reached the cipher; if one ever arrives, the
-  batched call reports `Fault::Internal` rather than skip the tail. Padding,
-  the 1 KiB checksum gate and wrong-key behavior stay as they were.
-- **Test.** `batched_cbc_decrypt_equals_per_block` covers AES-128, -192 and -256
-  against a per-block reference. It splits one buffer into uneven whole-block
-  calls with the state carried between them, and runs `CbcDecryptReader` on a
-  dribbling source. Checked by breaking it: decrypting with a cloned state,
-  which drops the chain between calls, failed it and the existing round-trip
-  test. Restored.
-- **Not in this release: deriving per-entry rows in parallel.** Each row's
-  PBKDF2 key is found inside that member's own check, including the legacy
-  SHA-1 ladder and superseded rows, so running them on threads means
-  restructuring that path. `lo-legacy-aes-cbc.odt` (5 rows at 100,000
-  iterations) decrypts in 77 ms on the workstation and in 9 ms with every row at
-  one iteration, so about 68 ms is the KDF.
 
 ## [0.1.0-rc.14] - 2026-10-20
 
