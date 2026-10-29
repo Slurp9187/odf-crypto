@@ -11,6 +11,22 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.18] - Unreleased
+
+### Changed
+
+**`secure-gate` 0.9.0-rc.16 → 0.9.0-rc.17.** No API change: the public API,
+the streaming API, their errors and the output bytes are unchanged. As with
+rc.14 and rc.16, the release exists so a consumer's graph can hold one
+`secure-gate`, which this crate's exact pin otherwise prevents.
+
+- **Nothing rc.17 changes reaches this crate.** It moves bech32 0.11 → 0.12,
+  which only its encoding features use, and wipes Poly1305 state under
+  `sealed`. This crate enables `alloc` alone, so it builds neither.
+- **`Cargo.lock` moved secure-gate, bech32 and this crate's version.** bech32
+  is an optional dependency of secure-gate that is locked but not built here,
+  so the crate counts hold. Its MSRV, 1.87, is below this crate's 1.88.
+
 ## [0.1.0-rc.17] - 2026-10-29
 
 ### Changed

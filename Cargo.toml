@@ -1,6 +1,6 @@
 [package]
 name = "odf-crypto"
-version = "0.1.0-rc.17"
+version = "0.1.0-rc.18"
 edition = "2021"
 description = "LibreOffice-faithful encryption for ODF packages (.odt, .ods, .odp): detect it, decrypt it, write it"
 rust-version = "1.88"
@@ -182,7 +182,7 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 # argument expires then; the yank argument does not. Revisit it as a decision,
 # with whoever maintains secure-gate, rather than treating a stable version
 # number as permission.
-secure-gate = { version = "=0.9.0-rc.16", default-features = false, features = [
+secure-gate = { version = "=0.9.0-rc.17", default-features = false, features = [
     "alloc",
 ] }
 
