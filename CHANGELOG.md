@@ -11,6 +11,23 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.19] - Unreleased
+
+### Changed
+
+**`secure-gate` 0.9.0-rc.17 → 0.9.0-rc.18**, the last candidate before 0.9.0.
+No API change: the public API, the streaming API, their errors and the output
+bytes are unchanged. As with rc.14, rc.16 and rc.18, the release exists so a
+consumer's graph can hold one `secure-gate`, which this crate's exact pin
+otherwise prevents.
+
+- **Nothing rc.18 changes reaches this crate.** It makes the bech32 checksum
+  types private, renames `traits::revealed_secrets` to `traits::encoded_secret`,
+  stops enabling serde's `derive` and raises its serde floor to 1.0.95, and
+  wipes the decode buffer when hex, Base32 or Base64url input is rejected. This
+  crate enables `alloc` alone, so it builds none of the encoding or serde code,
+  and it names none of the moved types.
+
 ## [0.1.0-rc.18] - 2026-10-29
 
 ### Changed
