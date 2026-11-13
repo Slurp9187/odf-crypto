@@ -11,6 +11,21 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0-rc.20] - Unreleased
+
+### Changed
+
+**`secure-gate` 0.9.0-rc.18 → 0.9.0-rc.19.** No API change: the public API,
+the streaming API, their errors and the output bytes are unchanged. As with
+rc.14, rc.16, rc.18 and rc.19, the release exists so a consumer's graph can
+hold one `secure-gate`, which this crate's exact pin otherwise prevents.
+
+- **Nothing rc.19 changes reaches this crate.** It adds
+  `sealed_dynamic_newtype!` behind its `sealed` feature, documents the
+  `std` / `alloc` / `no_std` tiers, and widens its own CI to Windows, macOS,
+  Linux ARM64 and 32-bit Linux. This crate enables `alloc` alone, so it builds
+  none of the sealed code, and no existing type or path moved.
+
 ## [0.1.0-rc.19] - 2026-11-12
 
 ### Changed
