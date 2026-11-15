@@ -19,7 +19,7 @@ accept predicates, so a package this crate calls encrypted is one LibreOffice
 would prompt for, and a package it refuses is one LibreOffice would refuse to
 open.
 
-> **Stable.** This is `0.1.0`, the first stable release. Its public API follows
+> **Stable.** This is `0.1.1`; `0.1.0` was the first stable release. Its public API follows
 > semantic versioning: a breaking change waits for `0.2.0`.
 
 ## What it does
@@ -85,10 +85,10 @@ the file afterwards. It is evidenced separately — see
 ```toml
 [dependencies]
 # Detection only — no cryptographic dependency.
-odf-crypto = "0.1.0"
+odf-crypto = "0.1.1"
 
 # Detection, reading and writing.
-odf-crypto = { version = "0.1.0", features = ["crypto-ops"] }
+odf-crypto = { version = "0.1.1", features = ["crypto-ops"] }
 ```
 
 ## Supported algorithms
@@ -413,7 +413,7 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0"` | `classify` alone. No cryptographic dependency. **25 crates** on Windows, 24 on Linux, 27 on macOS. |
+| **Detection-only** | `odf-crypto = "0.1.1"` | `classify` alone. No cryptographic dependency. **25 crates** on Windows, 24 on Linux, 27 on macOS. |
 | **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **64 crates** on Windows, 63 on Linux, 66 on macOS. |
 | **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **76 crates** on Windows, 78 on Linux, 82 on macOS. |
 
