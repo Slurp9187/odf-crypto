@@ -22,7 +22,7 @@ records only what is true of this crate.**
 ## Dependency
 
 ```toml
-secure-gate = { version = "=<pinned>", default-features = false, features = ["alloc"] }
+secure-gate = { version = "<requirement>", default-features = false, features = ["alloc"] }
 ```
 
 **This file records no version.** `Cargo.toml` is the pin and `CHANGELOG.md` records each
@@ -30,10 +30,10 @@ re-pin and what was checked at it; a version written here goes stale at the next
 then the one claim in the file that is wrong. Read the pin with
 `grep secure-gate Cargo.toml`.
 
-**Pinned exactly (`=`), and always moved as an ecosystem wave**, since four first-party crates
-pin it exactly and two exact requirements in one compatibility range cannot resolve. At each
-bump, run the global skill's *upgrade* reference greps and record the result in the changelog
-entry, not here.
+**This file records no requirement shape either.** Whether the requirement is exact or a
+caret, and why, is the comment beside it in `Cargo.toml`. When the requirement moves, run the
+global skill's *upgrade* reference greps and record the result in the changelog entry, not
+here.
 
 `alloc` only — **no `rand`, no `ct-eq`, no `encoding`.** This crate never generates a random
 *secret* (keys come from a user-supplied password; `encrypt`'s salt and IV are public and use

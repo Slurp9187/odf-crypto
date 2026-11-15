@@ -11,6 +11,23 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.1] - Unreleased
+
+### Changed
+
+**The `secure-gate` requirement is `"0.9"`, no longer `=0.9.0`.** No API
+change: the public API, the streaming API, their errors and the output bytes
+are those of `0.1.0`.
+
+- **Why.** `0.1.0` kept the exact pin, which obliges every graph holding this
+  crate to resolve `secure-gate` to exactly 0.9.0, so a consumer could not take
+  a 0.9.1 without a new release here. The pin's pre-release reason ended with
+  secure-gate 0.9.0. Its yank reason was kept at `0.1.0` and is reversed here
+  by the owner, who also maintains secure-gate; the comment beside the
+  requirement in `Cargo.toml` records both.
+- **The lockfile still names `secure-gate` 0.9.0**, the newest version, so
+  this release builds the same code `0.1.0` did.
+
 ## [0.1.0] - 2026-11-14
 
 The first stable release. The public API, the streaming API, their errors and
