@@ -44,7 +44,7 @@ Eleven headings, same words, same order, both crates.
 | 3 | pitch paragraph + status blockquote | |
 | 4 | `## What it does` | ✅/❌/n-a capability grid, `Needs` row |
 | | *slot C* | |
-| 5 | `## Install` | commented two-line toml + pre-release caveat |
+| 5 | `## Install` | commented two-line toml (+ pre-release caveat while a crate is on an rc; odf-crypto dropped it at 0.1.0) |
 | | *slot A* | |
 | 6 | `## Usage` | |
 | 7 | `## Command line` | |

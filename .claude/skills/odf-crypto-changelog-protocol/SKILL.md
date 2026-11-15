@@ -69,7 +69,7 @@ One commit, first change after a tagged state:
 
 - `Cargo.toml` — `version`
 - `Cargo.lock` — via `cargo update --offline -p odf-crypto`
-- `README.md` — **four** references: the pre-release note, both install snippets, and
+- `README.md` — **four** references: the status note (pre-release until 0.1.0), both install snippets, and
   the feature table near the bottom. The last is the one that gets missed.
 - `CHANGELOG.md` — the new `## [x] - Unreleased` heading
 
