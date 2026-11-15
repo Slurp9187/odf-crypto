@@ -11,6 +11,27 @@ Finding ids (`A1`–`A10`, `B1`–`B7`, `C1`–`C7`, `D1`–`D7`) index into
 [the audit](docs/audits/classify-lo-fidelity-2026-09-01.md), which carries the
 LibreOffice citation and a reproduction for each.
 
+## [0.1.0] - Unreleased
+
+The first stable release. The public API, the streaming API, their errors and
+the output bytes are those of `0.1.0-rc.20`. From here they follow semantic
+versioning: a breaking change waits for `0.2.0`.
+
+### Changed
+
+**`secure-gate` 0.9.0-rc.19 → 0.9.0**, its first stable release, whose API is
+rc.19's. Its changes since rc.19 are documentation and a fuzz target for its
+`sealed` module, which this crate does not enable, so nothing reaches it.
+
+- **The pin stays exact (`=0.9.0`).** The pre-release reason for `=` ended with
+  0.9.0. The yank reason, recorded beside the pin in `Cargo.toml`, still holds:
+  a yank should stop the build rather than let it quietly resolve to a
+  neighboring version. Relaxing the pin is left as a decision to make with
+  secure-gate's maintainer, not a side effect of a stable number.
+- **README.** The status note says the crate is stable, the install snippets
+  name `0.1.0`, the "pre-release versions are not matched" caveat is gone, and
+  the crates.io badge no longer asks for pre-releases.
+
 ## [0.1.0-rc.20] - 2026-11-13
 
 ### Changed

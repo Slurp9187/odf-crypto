@@ -1,6 +1,6 @@
 # odf-crypto
 
-[![crates.io](https://img.shields.io/crates/v/odf-crypto.svg?include_prereleases)](https://crates.io/crates/odf-crypto)
+[![crates.io](https://img.shields.io/crates/v/odf-crypto.svg)](https://crates.io/crates/odf-crypto)
 [![docs.rs](https://img.shields.io/docsrs/odf-crypto)](https://docs.rs/odf-crypto)
 [![CI](https://github.com/Slurp9187/odf-crypto/actions/workflows/ci.yml/badge.svg)](https://github.com/Slurp9187/odf-crypto/actions/workflows/ci.yml)
 [![MSRV](https://img.shields.io/crates/msrv/odf-crypto)](https://github.com/Slurp9187/odf-crypto#msrv)
@@ -19,7 +19,8 @@ accept predicates, so a package this crate calls encrypted is one LibreOffice
 would prompt for, and a package it refuses is one LibreOffice would refuse to
 open.
 
-> **Pre-release.** This is `0.1.0-rc.20`. The API may change before `0.1.0`.
+> **Stable.** This is `0.1.0`, the first stable release. Its public API follows
+> semantic versioning: a breaking change waits for `0.2.0`.
 
 ## What it does
 
@@ -84,14 +85,11 @@ the file afterwards. It is evidenced separately — see
 ```toml
 [dependencies]
 # Detection only — no cryptographic dependency.
-odf-crypto = "0.1.0-rc.20"
+odf-crypto = "0.1.0"
 
 # Detection, reading and writing.
-odf-crypto = { version = "0.1.0-rc.20", features = ["crypto-ops"] }
+odf-crypto = { version = "0.1.0", features = ["crypto-ops"] }
 ```
-
-Pre-release versions are not matched by ordinary requirements — name the full
-version as above; `"0.1"` will not resolve to it.
 
 ## Supported algorithms
 
@@ -415,7 +413,7 @@ simply the smaller one.
 
 | Build | How | What you get |
 | --- | --- | --- |
-| **Detection-only** | `odf-crypto = "0.1.0-rc.20"` | `classify` alone. No cryptographic dependency. **25 crates** on Windows, 24 on Linux, 27 on macOS. |
+| **Detection-only** | `odf-crypto = "0.1.0"` | `classify` alone. No cryptographic dependency. **25 crates** on Windows, 24 on Linux, 27 on macOS. |
 | **Full** | `features = ["crypto-ops"]` | `classify`, `decrypt` and `encrypt`. **64 crates** on Windows, 63 on Linux, 66 on macOS. |
 | **CLI** | `features = ["cli"]` | The `odf-crypto` binary. Implies `crypto-ops`; adds `clap`, `serde_json`, `rpassword` for the prompt and `ctrlc` for a clean Ctrl-C. **76 crates** on Windows, 78 on Linux, 82 on macOS. |
 
